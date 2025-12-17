@@ -65,9 +65,13 @@ export BEADSFLOW_CONFIG="$PWD/beadsflow.toml"
 Safe first runs:
 
 ```bash
-uvx beadsflow run <epic-id> --dry-run --verbose
-uvx beadsflow run <epic-id> --once --verbose
-uvx beadsflow run <epic-id> --interval 30 --verbose
+# Prefer running beadsflow from a local checkout (so bugs can be fixed directly):
+uvx --from "$PWD/../beadsflow" beadsflow run <epic-id> --dry-run --verbose
+uvx --from "$PWD/../beadsflow" beadsflow run <epic-id> --once --verbose
+uvx --from "$PWD/../beadsflow" beadsflow run <epic-id> --interval 30 --verbose
+
+# Convenience wrapper:
+just beadsflow run <epic-id> --dry-run --verbose
 ```
 
 
