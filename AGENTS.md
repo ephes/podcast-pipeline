@@ -43,6 +43,33 @@ If `just` shorthands are not available yet, run: `uv run ruff check .`, `uv run 
 Beads hierarchical parents can require `--force` with hyphenated repo prefixes. If `bd create --parent ...` fails with a
 prefix mismatch, re-run with `--force`.
 
+## beadsflow (autopilot) workflow (optional)
+
+If you want the same implement→review loop automation as `../llm-node-bare`, this repo can use `beadsflow` with the config in `beadsflow.toml`.
+
+Prereqs:
+- The epic has at least one open child task linked as `parent-child` (see `bd show <epic-id>`).
+- Comment markers (first non-empty line) drive the state machine:
+  - `Ready for review:` (implementer → reviewer)
+  - `LGTM` (reviewer → close)
+  - `Changes requested:` (reviewer → implement)
+
+Recommended env (direnv-friendly):
+
+```bash
+export BEADS_NO_DAEMON=1
+export BEADS_DIR="$PWD/.beads"
+export BEADSFLOW_CONFIG="$PWD/beadsflow.toml"
+```
+
+Safe first runs:
+
+```bash
+uvx beadsflow run <epic-id> --dry-run --verbose
+uvx beadsflow run <epic-id> --once --verbose
+uvx beadsflow run <epic-id> --interval 30 --verbose
+```
+
 
 ## Landing the Plane (Session Completion)
 

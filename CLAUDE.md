@@ -47,3 +47,20 @@ just test
 - Finish: `bd close <id> --reason "Done: <summary>"`
 - Keep in sync: `bd sync`
 
+## beadsflow (autopilot) integration (optional)
+
+This repo can run an implementer↔reviewer epic loop using `beadsflow` with `beadsflow.toml`.
+
+Recommended env:
+
+```bash
+export BEADS_NO_DAEMON=1
+export BEADS_DIR="$PWD/.beads"
+export BEADSFLOW_CONFIG="$PWD/beadsflow.toml"
+```
+
+Safe first run:
+
+```bash
+uvx beadsflow run <epic-id> --dry-run --verbose
+```
