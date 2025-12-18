@@ -5,7 +5,7 @@ implementer = "codex"
 reviewer = "claude"
 
 # This config is intended for running `beadsflow` against this repo.
-# It runs quality gates locally after the implementer step.
+# Quality gates are run by the reviewer by default in `just beadsflow-local` (see `BEADSFLOW_RUN_GATES`).
 
 [implementers.codex]
 command = """bash -lc 'set -euo pipefail
@@ -14,7 +14,14 @@ export BEADS_DIR="$PWD/.beads"
 issue="$BEADSFLOW_ISSUE_ID"
 epic="$BEADSFLOW_EPIC_ID"
 msgfile="$(mktemp -t beadsflow-codex-msg.XXXXXX)"
-trap "rm -f \\"$msgfile\\"" EXIT
+gate_dir=""
+cleanup() {
+  rm -f "$msgfile"
+  if [ -n "$gate_dir" ]; then
+    rm -rf "$gate_dir"
+  fi
+}
+trap cleanup EXIT
 
 # Ensure we are not racing a background Beads daemon that may hold locks or mutate JSONL.
 daemon_pid_file="${BEADS_DIR}/daemon.pid"
@@ -58,7 +65,7 @@ if [ "${BEADSFLOW_SKIP_CODEX:-0}" = "1" ]; then
   printf "Skipped codex (BEADSFLOW_SKIP_CODEX=1); using existing working-tree changes.\n\nCurrent diff:\n%s\n" "$diff_stat" > "$msgfile"
 else
   set +e
-  codex --ask-for-approval never exec --sandbox workspace-write --output-last-message "$msgfile" "Implement bead ${issue} under epic ${epic}. First, read the bead and its dependency chain: bd --no-daemon sync --import-only; bd --no-daemon show ${issue}; bd --no-daemon dep tree ${issue}. Implement the acceptance criteria by editing files in this repo. Ensure there is a non-empty git diff when done. Do not post Beads comments yourself. IMPORTANT: Do not run lint/tests or any install commands (no uv/just); leave validation to the caller script. Only edit files and use read-only inspection commands (rg/cat/sed/ls) as needed."
+  codex --ask-for-approval never exec --sandbox workspace-write --output-last-message "$msgfile" "Implement bead ${issue} under epic ${epic}. First, read the bead and its dependency chain: bd --no-daemon sync --import-only; bd --no-daemon show ${issue}; bd --no-daemon dep tree ${issue}. Implement the acceptance criteria by editing files in this repo. Ensure there is a non-empty git diff when done. Do not post Beads comments yourself. IMPORTANT: Do not run lint/tests or any install commands (no uv/just); leave validation to the caller script. Still ensure code is already formatted and import-sorted so ruff would pass. Only edit files and use read-only inspection commands (rg/cat/sed/ls) as needed."
   codex_rc=$?
   set -e
 fi
@@ -72,9 +79,70 @@ if [ "$after_sig" = "$before_sig" ]; then
   echo "Warning: no new changes in this run; proceeding with existing working-tree changes." >&2
 fi
 
-just lint
-just typecheck
-just test
+validation_block="$(cat <<EOF
+Validation:
+- (skipped; run by reviewer)
+EOF
+)"
+if [ "${BEADSFLOW_RUN_GATES:-1}" = "1" ]; then
+  gate_dir="$(mktemp -d -t beadsflow-gates.XXXXXX)"
+  lint_log="$gate_dir/lint.log"
+  typecheck_log="$gate_dir/typecheck.log"
+  test_log="$gate_dir/test.log"
+
+  lint_rc=0
+  if just lint >"$lint_log" 2>&1; then :; else lint_rc=$?; fi
+  typecheck_rc=0
+  if just typecheck >"$typecheck_log" 2>&1; then :; else typecheck_rc=$?; fi
+  test_rc=0
+  if just test >"$test_log" 2>&1; then :; else test_rc=$?; fi
+
+  lint_status="PASS"
+  if [ "$lint_rc" != "0" ]; then lint_status="FAIL ($lint_rc)"; fi
+  typecheck_status="PASS"
+  if [ "$typecheck_rc" != "0" ]; then typecheck_status="FAIL ($typecheck_rc)"; fi
+  test_status="PASS"
+  if [ "$test_rc" != "0" ]; then test_status="FAIL ($test_rc)"; fi
+
+  validation_block="$(cat <<EOF
+Validation:
+- just lint: $lint_status
+- just typecheck: $typecheck_status
+- just test: $test_status
+EOF
+)"
+
+  if [ "$lint_rc" != "0" ]; then
+    lint_tail="$(tail -n 80 "$lint_log" 2>/dev/null || true)"
+    validation_block="$(cat <<EOF
+$validation_block
+
+just lint (tail):
+$lint_tail
+EOF
+)"
+  fi
+  if [ "$typecheck_rc" != "0" ]; then
+    typecheck_tail="$(tail -n 80 "$typecheck_log" 2>/dev/null || true)"
+    validation_block="$(cat <<EOF
+$validation_block
+
+just typecheck (tail):
+$typecheck_tail
+EOF
+)"
+  fi
+  if [ "$test_rc" != "0" ]; then
+    test_tail="$(tail -n 80 "$test_log" 2>/dev/null || true)"
+    validation_block="$(cat <<EOF
+$validation_block
+
+just test (tail):
+$test_tail
+EOF
+)"
+  fi
+fi
 
 body="$(cat "$msgfile")"
 codex_note=""
@@ -87,10 +155,7 @@ Ready for review:
 
 $body
 
-Validation:
-- just lint
-- just typecheck
-- just test
+$validation_block
 ${codex_note}
 EOF
 )"
@@ -128,7 +193,7 @@ out="$(claude -p "Review bead ${issue} under epic ${epic}.
 Checklist:
 - Read the bead and confirm the acceptance criteria are met.
 - Review the actual code changes (git diff) for correctness, edge cases, and maintainability.
-- Confirm the implementer ran the quality gates listed in the latest Ready for review comment (just lint/typecheck/test) and that the results look credible; if anything is missing/failed, request changes.
+- Confirm the latest Ready for review comment includes a Validation section; if anything is missing/failed, request changes.
 
 Important:
 - Ignore older comments like “implementer command failed …” if there is a newer Ready for review comment.
@@ -171,12 +236,64 @@ export BEADS_DIR="$PWD/.beads"
 
 bd --no-daemon sync --import-only
 
-if just lint && just typecheck && just test; then
+gate_dir="$(mktemp -d -t beadsflow-review-gates.XXXXXX)"
+cleanup() {
+  rm -rf "$gate_dir"
+}
+trap cleanup EXIT
+
+lint_log="$gate_dir/lint.log"
+typecheck_log="$gate_dir/typecheck.log"
+test_log="$gate_dir/test.log"
+
+lint_rc=0
+if just lint >"$lint_log" 2>&1; then :; else lint_rc=$?; fi
+typecheck_rc=0
+if just typecheck >"$typecheck_log" 2>&1; then :; else typecheck_rc=$?; fi
+test_rc=0
+if just test >"$test_log" 2>&1; then :; else test_rc=$?; fi
+
+if [ "$lint_rc" = "0" ] && [ "$typecheck_rc" = "0" ] && [ "$test_rc" = "0" ]; then
   bd --no-daemon comment "$issue" "LGTM\n\nValidation:\n- just lint\n- just typecheck\n- just test"
-else
-  bd --no-daemon comment "$issue" "Changes requested: quality gates failing (see terminal output)."
-  exit 1
+  exit 0
 fi
+
+infra_pattern='uv sync failed|Failed to (download|fetch|resolve)|Could not resolve host|timed out|timeout|TLS|SSL|Connection (reset|refused)|Temporary failure|Permission denied'
+infra=0
+if [ "$lint_rc" != "0" ] && grep -Eqi "$infra_pattern" "$lint_log" 2>/dev/null; then infra=1; fi
+if [ "$typecheck_rc" != "0" ] && grep -Eqi "$infra_pattern" "$typecheck_log" 2>/dev/null; then infra=1; fi
+if [ "$test_rc" != "0" ] && grep -Eqi "$infra_pattern" "$test_log" 2>/dev/null; then infra=1; fi
+
+lint_tail="$(tail -n 80 "$lint_log" 2>/dev/null || true)"
+typecheck_tail="$(tail -n 80 "$typecheck_log" 2>/dev/null || true)"
+test_tail="$(tail -n 80 "$test_log" 2>/dev/null || true)"
+
+header="Changes requested: quality gates failing"
+exit_rc=0
+if [ "$infra" = "1" ]; then
+  header="Changes requested: quality gates failed due to infra/environment issue (stopping beadsflow run)"
+  exit_rc=1
+fi
+
+bd --no-daemon comment "$issue" "$(cat <<EOF
+$header
+
+Validation:
+- just lint: $(if [ "$lint_rc" = "0" ]; then echo PASS; else echo "FAIL ($lint_rc)"; fi)
+- just typecheck: $(if [ "$typecheck_rc" = "0" ]; then echo PASS; else echo "FAIL ($typecheck_rc)"; fi)
+- just test: $(if [ "$test_rc" = "0" ]; then echo PASS; else echo "FAIL ($test_rc)"; fi)
+
+just lint (tail):
+$lint_tail
+
+just typecheck (tail):
+$typecheck_tail
+
+just test (tail):
+$test_tail
+EOF
+)"
+exit "$exit_rc"
 '"""
 
 [run]

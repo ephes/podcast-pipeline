@@ -1,0 +1,7 @@
+00:00 Intro: why “boring” is good
+00:20 Inputs: audio, transcript, notes
+00:45 Transcript as artifact (chunking + summaries)
+01:15 Chapters: stability and parsing
+02:10 Assets: candidates + creator/reviewer loop
+02:55 Outro
+
