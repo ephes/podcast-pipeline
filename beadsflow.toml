@@ -262,19 +262,17 @@ fi
 
 infra_pattern="uv sync failed|Failed to (download|fetch|resolve)|Could not resolve host|timed out|timeout|TLS|SSL|Connection (reset|refused)|Temporary failure|Permission denied"
 infra=0
-if [ "$lint_rc" != "0" ] && grep -Eqi "$infra_pattern" "$lint_log" 2>/dev/null; then infra=1; fi
-if [ "$typecheck_rc" != "0" ] && grep -Eqi "$infra_pattern" "$typecheck_log" 2>/dev/null; then infra=1; fi
-if [ "$test_rc" != "0" ] && grep -Eqi "$infra_pattern" "$test_log" 2>/dev/null; then infra=1; fi
+if [ "$lint_rc" != "0" ] && tail -n +2 "$lint_log" 2>/dev/null | grep -Eqi "$infra_pattern"; then infra=1; fi
+if [ "$typecheck_rc" != "0" ] && tail -n +2 "$typecheck_log" 2>/dev/null | grep -Eqi "$infra_pattern"; then infra=1; fi
+if [ "$test_rc" != "0" ] && tail -n +2 "$test_log" 2>/dev/null | grep -Eqi "$infra_pattern"; then infra=1; fi
 
 lint_tail="$(tail -n 80 "$lint_log" 2>/dev/null || true)"
 typecheck_tail="$(tail -n 80 "$typecheck_log" 2>/dev/null || true)"
 test_tail="$(tail -n 80 "$test_log" 2>/dev/null || true)"
 
 header="Changes requested: quality gates failing"
-exit_rc=0
 if [ "$infra" = "1" ]; then
-  header="Changes requested: quality gates failed due to infra/environment issue (stopping beadsflow run)"
-  exit_rc=1
+  header="Changes requested: quality gates failed due to infra/environment issue"
 fi
 
 bd --no-daemon comment "$issue" "$(cat <<EOF
@@ -296,7 +294,7 @@ $test_tail
 EOF
 )"
 bd --no-daemon sync --flush-only
-exit "$exit_rc"
+exit 0
 '"""
 
 [run]
