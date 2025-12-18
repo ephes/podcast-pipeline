@@ -160,6 +160,7 @@ ${codex_note}
 EOF
 )"
 bd --no-daemon comment "$issue" "$comment_text"
+bd --no-daemon sync --flush-only
 '"""
 
 [reviewers.claude]
@@ -255,10 +256,11 @@ if just test >"$test_log" 2>&1; then :; else test_rc=$?; fi
 
 if [ "$lint_rc" = "0" ] && [ "$typecheck_rc" = "0" ] && [ "$test_rc" = "0" ]; then
   bd --no-daemon comment "$issue" "LGTM\n\nValidation:\n- just lint\n- just typecheck\n- just test"
+  bd --no-daemon sync --flush-only
   exit 0
 fi
 
-infra_pattern='uv sync failed|Failed to (download|fetch|resolve)|Could not resolve host|timed out|timeout|TLS|SSL|Connection (reset|refused)|Temporary failure|Permission denied'
+infra_pattern="uv sync failed|Failed to (download|fetch|resolve)|Could not resolve host|timed out|timeout|TLS|SSL|Connection (reset|refused)|Temporary failure|Permission denied"
 infra=0
 if [ "$lint_rc" != "0" ] && grep -Eqi "$infra_pattern" "$lint_log" 2>/dev/null; then infra=1; fi
 if [ "$typecheck_rc" != "0" ] && grep -Eqi "$infra_pattern" "$typecheck_log" 2>/dev/null; then infra=1; fi
@@ -293,6 +295,7 @@ just test (tail):
 $test_tail
 EOF
 )"
+bd --no-daemon sync --flush-only
 exit "$exit_rc"
 '"""
 
