@@ -13,6 +13,7 @@ def test_workspace_layout_is_deterministic(tmp_path: Path) -> None:
     assert layout.episode_yaml == tmp_path / "episode.yaml"
     assert layout.state_json == tmp_path / "state.json"
     assert layout.copy_candidates_dir == tmp_path / "copy" / "candidates"
+    assert layout.copy_protocol_dir == tmp_path / "copy" / "protocol"
 
 
 def test_fixture_files_exist() -> None:

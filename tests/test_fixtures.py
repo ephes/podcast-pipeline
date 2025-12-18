@@ -5,7 +5,8 @@ from pathlib import Path
 
 import pytest
 
-_TIMECODE_RE = re.compile(r"^(?P<m>\d{2}):(?P<s>\d{2})\s+")
+_CHAPTER_MMSS_RE = re.compile(r"^(?P<m>\d{2}):(?P<s>\d{2})\s+")
+_TRANSCRIPT_HHMMSS_RE = re.compile(r"^(?P<h>\d{2}):(?P<m>\d{2}):(?P<s>\d{2})\s+")
 
 
 def _fixture_dir() -> Path:
@@ -22,7 +23,7 @@ def _parse_chapters(chapters_raw: str) -> list[tuple[int, str]]:
         line = line.strip()
         if not line:
             continue
-        match = _TIMECODE_RE.match(line)
+        match = _CHAPTER_MMSS_RE.match(line)
         if match is None:
             raise ValueError(f"Invalid chapter line (expected MM:SS ...): {line!r}")
         minutes = int(match.group("m"))
@@ -34,6 +35,22 @@ def _parse_chapters(chapters_raw: str) -> list[tuple[int, str]]:
     return chapters
 
 
+def _parse_transcript_timecodes(transcript_raw: str) -> list[int]:
+    seconds: list[int] = []
+    for line in transcript_raw.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        match = _TRANSCRIPT_HHMMSS_RE.match(line)
+        if match is None:
+            raise ValueError(f"Invalid transcript line (expected HH:MM:SS ...): {line!r}")
+        hours = int(match.group("h"))
+        minutes = int(match.group("m"))
+        secs = int(match.group("s"))
+        seconds.append(hours * 3600 + minutes * 60 + secs)
+    return seconds
+
+
 def test_fixture_transcript_exists_is_small_and_has_timecodes() -> None:
     path = _fixture_dir() / "transcript.txt"
     raw = _load_text(path)
@@ -41,7 +58,7 @@ def test_fixture_transcript_exists_is_small_and_has_timecodes() -> None:
     assert raw, "transcript fixture must be non-empty"
     assert raw.endswith("\n"), "transcript fixture should end with a newline"
     assert len(raw.encode("utf-8")) < 20_000, "transcript fixture must remain small and stable"
-    assert raw.count("00:") >= 3, "transcript fixture should contain multiple timecoded lines"
+    assert len(_parse_transcript_timecodes(raw)) >= 3, "transcript fixture should contain multiple timecoded lines"
 
 
 def test_fixture_chapters_exists_is_small_and_parses_monotonic() -> None:
@@ -66,7 +83,24 @@ def test_fixture_chapters_timecodes_are_mmss() -> None:
         line = line.strip()
         if not line:
             continue
-        assert _TIMECODE_RE.match(line) is not None
+        assert _CHAPTER_MMSS_RE.match(line) is not None
+
+
+def test_fixture_transcript_timecodes_are_hhmmss_and_monotonic() -> None:
+    raw = _load_text(_fixture_dir() / "transcript.txt")
+    timecodes = _parse_transcript_timecodes(raw)
+    assert timecodes == sorted(timecodes)
+    assert len(timecodes) == len(set(timecodes))
+
+
+def test_fixture_chapter_times_exist_in_transcript_timecodes() -> None:
+    chapters_raw = _load_text(_fixture_dir() / "chapters.txt")
+    transcript_raw = _load_text(_fixture_dir() / "transcript.txt")
+
+    transcript_times = set(_parse_transcript_timecodes(transcript_raw))
+    chapter_times = [t for (t, _) in _parse_chapters(chapters_raw)]
+    missing = [t for t in chapter_times if t not in transcript_times]
+    assert not missing
 
 
 @pytest.mark.parametrize(
