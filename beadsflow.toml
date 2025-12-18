@@ -22,7 +22,7 @@ if [ -f "$daemon_pid_file" ]; then
   daemon_pid="$(cat "$daemon_pid_file" 2>/dev/null || true)"
   if [ -n "$daemon_pid" ] && kill -0 "$daemon_pid" 2>/dev/null; then
     if command -v lsof >/dev/null 2>&1; then
-      if lsof -p "$daemon_pid" 2>/dev/null | grep -F -q "$PWD/.beads/beads.db"; then
+      if lsof -p "$daemon_pid" 2>/dev/null | grep -F "$PWD/.beads/beads.db" >/dev/null; then
         echo "Stopping Beads daemon for this repo (pid=$daemon_pid) to run in direct mode..." >&2
         kill "$daemon_pid" || true
         for _ in $(seq 1 50); do
@@ -47,30 +47,29 @@ if ! command -v "$hash_cmd" >/dev/null 2>&1; then
   exit 1
 fi
 sig() {
-  (git diff; git diff --staged; git ls-files --others --exclude-standard | LC_ALL=C sort) | "$hash_cmd" - <<PY
-import sys
-import hashlib
-
-h = hashlib.sha256()
-while True:
-    chunk = sys.stdin.buffer.read(8192)
-    if not chunk:
-        break
-    h.update(chunk)
-print(h.hexdigest())
-PY
+  (git diff; git diff --staged; git ls-files --others --exclude-standard | LC_ALL=C sort) | "$hash_cmd" -c "import sys,hashlib; h=hashlib.sha256(); h.update(sys.stdin.buffer.read()); print(h.hexdigest())"
 }
 before_sig="$(sig)"
 
-set +e
-codex --ask-for-approval never exec --sandbox workspace-write --output-last-message "$msgfile" "Implement bead ${issue} under epic ${epic}. First, read the bead and its dependency chain: bd --no-daemon sync --import-only; bd --no-daemon show ${issue}; bd --no-daemon dep tree ${issue}. Implement the acceptance criteria by editing files in this repo. Ensure there is a non-empty git diff when done. Do not post Beads comments yourself. IMPORTANT: Do not run lint/tests or any install commands (no uv/just); leave validation to the caller script. Only edit files and use read-only inspection commands (rg/cat/sed/ls) as needed."
-codex_rc=$?
-set -e
+codex_rc=0
+if [ "${BEADSFLOW_SKIP_CODEX:-0}" = "1" ]; then
+  echo "Skipping codex (BEADSFLOW_SKIP_CODEX=1); using existing working-tree changes." >&2
+  diff_stat="$(git diff --stat || true)"
+  printf "Skipped codex (BEADSFLOW_SKIP_CODEX=1); using existing working-tree changes.\n\nCurrent diff:\n%s\n" "$diff_stat" > "$msgfile"
+else
+  set +e
+  codex --ask-for-approval never exec --sandbox workspace-write --output-last-message "$msgfile" "Implement bead ${issue} under epic ${epic}. First, read the bead and its dependency chain: bd --no-daemon sync --import-only; bd --no-daemon show ${issue}; bd --no-daemon dep tree ${issue}. Implement the acceptance criteria by editing files in this repo. Ensure there is a non-empty git diff when done. Do not post Beads comments yourself. IMPORTANT: Do not run lint/tests or any install commands (no uv/just); leave validation to the caller script. Only edit files and use read-only inspection commands (rg/cat/sed/ls) as needed."
+  codex_rc=$?
+  set -e
+fi
 
 after_sig="$(sig)"
 if [ "$after_sig" = "$before_sig" ]; then
-  bd --no-daemon comment "$issue" "Implementer finished but produced no new working-tree changes; stopping."
-  exit 1
+  if git diff --quiet && git diff --staged --quiet && [ -z "$(git ls-files --others --exclude-standard)" ]; then
+    bd --no-daemon comment "$issue" "Implementer finished but produced no new working-tree changes; stopping."
+    exit 1
+  fi
+  echo "Warning: no new changes in this run; proceeding with existing working-tree changes." >&2
 fi
 
 just lint
@@ -110,7 +109,7 @@ if [ -f "$daemon_pid_file" ]; then
   daemon_pid="$(cat "$daemon_pid_file" 2>/dev/null || true)"
   if [ -n "$daemon_pid" ] && kill -0 "$daemon_pid" 2>/dev/null; then
     if command -v lsof >/dev/null 2>&1; then
-      if lsof -p "$daemon_pid" 2>/dev/null | grep -F -q "$PWD/.beads/beads.db"; then
+      if lsof -p "$daemon_pid" 2>/dev/null | grep -F "$PWD/.beads/beads.db" >/dev/null; then
         echo "Stopping Beads daemon for this repo (pid=$daemon_pid) to run in direct mode..." >&2
         kill "$daemon_pid" || true
         for _ in $(seq 1 50); do
@@ -129,10 +128,55 @@ out="$(claude -p "Review bead ${issue} under epic ${epic}.
 Checklist:
 - Read the bead and confirm the acceptance criteria are met.
 - Review the actual code changes (git diff) for correctness, edge cases, and maintainability.
-- Confirm the implementer ran the quality gates listed in the Ready for review comment (just lint/typecheck/test) and that the results look credible; if anything is missing/failed, request changes.
+- Confirm the implementer ran the quality gates listed in the latest Ready for review comment (just lint/typecheck/test) and that the results look credible; if anything is missing/failed, request changes.
+
+Important:
+- Ignore older comments like “implementer command failed …” if there is a newer Ready for review comment.
+- Base your decision on the current code state plus the latest Ready for review comment only.
+
+You are not running any commands. Do not mention tool/permission constraints.
 
 Respond with a single Beads comment. The first non-empty line must be exactly LGTM or start with Changes requested:. Do not wrap that marker in markdown/backticks.")"
+
+# Defensive: some CLIs prepend meta text. Force a valid marker on the first non-empty line.
+first_non_empty="$(printf "%s" "$out" | awk "NF{print; exit}")"
+case "$first_non_empty" in
+  LGTM|"Changes requested:"*) ;;
+  *)
+    marker="$(printf "%s" "$out" | awk "
+      /^[[:space:]]*LGTM[[:space:]]*$/ {print \\\"LGTM\\\"; exit}
+      /^[[:space:]]*Changes requested:/ {sub(/^[[:space:]]*/, \\\"\\\"); print; exit}
+    ")"
+    if [ -z "$marker" ]; then
+      marker="Changes requested:"
+    fi
+    out="$(cat <<EOF
+$marker
+
+$out
+EOF
+)"
+    ;;
+esac
 bd --no-daemon comment "$issue" "$out"
+'"""
+
+[reviewers.local]
+command = """bash -lc 'set -euo pipefail
+issue="$BEADSFLOW_ISSUE_ID"
+epic="$BEADSFLOW_EPIC_ID"
+
+export BEADS_NO_DAEMON=1
+export BEADS_DIR="$PWD/.beads"
+
+bd --no-daemon sync --import-only
+
+if just lint && just typecheck && just test; then
+  bd --no-daemon comment "$issue" "LGTM\n\nValidation:\n- just lint\n- just typecheck\n- just test"
+else
+  bd --no-daemon comment "$issue" "Changes requested: quality gates failing (see terminal output)."
+  exit 1
+fi
 '"""
 
 [run]

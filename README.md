@@ -11,10 +11,13 @@ just typecheck
 just test
 ```
 
+## Domain models
+
+Core Pydantic models live in `podcast_pipeline.domain` and are intended to back `episode.yaml` + `state.json`.
+
 Beads (issues):
 
 ```bash
 bd onboard
 just bead
 ```
-
