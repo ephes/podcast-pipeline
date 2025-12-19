@@ -1,194 +1,76 @@
 beads_dir = ".beads"
+beads_no_db = false
 interval_seconds = 30
 log_level = "info"
 implementer = "codex"
 reviewer = "claude"
 
 # This config is intended for running `beadsflow` against this repo.
-# Quality gates are run by the reviewer by default in `just beadsflow-local` (see `BEADSFLOW_RUN_GATES`).
+#
+# Key differences from the older approach:
+# - Use `comment_mode = "stdout"` so beadsflow posts comments itself (keeps scripts simple and avoids huge comments).
+# - Keep stdout comments short to prevent `.beads/issues.jsonl` lines from exceeding Beads' scanner limit.
+#
+# Note: `beads_no_db = true` is currently unreliable with our Beads CLI usage because `bd --no-db comment` writes to the
+# sqlite db but does not immediately update `.beads/issues.jsonl`, so beadsflow fails to observe marker transitions.
+#
+# Note: this repo has multiple `podcast-pipeline-*` prefixes (hash-suffixed), so `bd --no-db` needs
+# `BD_ISSUE_PREFIX=podcast-pipeline` in the environment (see `Justfile` helpers).
 
 [implementers.codex]
+comment_mode = "stdout"
+comment_prefix = "Ready for review:\n\n"
+comment_suffix = "\n\nValidation:\n- (run by reviewer)\n"
+require_git_changes = true
 command = """bash -lc 'set -euo pipefail
 export BEADS_NO_DAEMON=1
 export BEADS_DIR="$PWD/.beads"
+export BD_ISSUE_PREFIX="${BD_ISSUE_PREFIX:-podcast-pipeline}"
 issue="$BEADSFLOW_ISSUE_ID"
 epic="$BEADSFLOW_EPIC_ID"
-msgfile="$(mktemp -t beadsflow-codex-msg.XXXXXX)"
-gate_dir=""
-cleanup() {
-  rm -f "$msgfile"
-  if [ -n "$gate_dir" ]; then
-    rm -rf "$gate_dir"
-  fi
+
+export BEADSFLOW_MAX_COMMENT_BYTES="${BEADSFLOW_MAX_COMMENT_BYTES:-800}"
+export BEADSFLOW_MAX_COMMENT_LINES="${BEADSFLOW_MAX_COMMENT_LINES:-40}"
+
+cap_comment() {
+  # With `set -o pipefail`, truncation can cause SIGPIPE upstream; never fail the script.
+  sed -n "1,${BEADSFLOW_MAX_COMMENT_LINES}p" | head -c "${BEADSFLOW_MAX_COMMENT_BYTES}" || true
 }
+
+msgfile="$(mktemp -t beadsflow-codex-msg.XXXXXX)"
+cleanup() { rm -f "$msgfile"; }
 trap cleanup EXIT
 
-# Ensure we are not racing a background Beads daemon that may hold locks or mutate JSONL.
-daemon_pid_file="${BEADS_DIR}/daemon.pid"
-if [ -f "$daemon_pid_file" ]; then
-  daemon_pid="$(cat "$daemon_pid_file" 2>/dev/null || true)"
-  if [ -n "$daemon_pid" ] && kill -0 "$daemon_pid" 2>/dev/null; then
-    if command -v lsof >/dev/null 2>&1; then
-      if lsof -p "$daemon_pid" 2>/dev/null | grep -F "$PWD/.beads/beads.db" >/dev/null; then
-        echo "Stopping Beads daemon for this repo (pid=$daemon_pid) to run in direct mode..." >&2
-        kill "$daemon_pid" || true
-        for _ in $(seq 1 50); do
-          kill -0 "$daemon_pid" 2>/dev/null || break
-          sleep 0.1
-        done
-      fi
-    else
-      echo "Warning: lsof not available; Beads daemon may interfere with direct mode." >&2
-    fi
-  fi
-  rm -f "${BEADS_DIR}/daemon.pid" "${BEADS_DIR}/daemon.lock" "${BEADS_DIR}/bd.sock"
-fi
+set +e
+# Redirect codex stdout to stderr so beadsflow only posts the curated summary below.
+codex --ask-for-approval never exec --sandbox workspace-write --output-last-message "$msgfile" \
+  "Implement bead ${issue} under epic ${epic}. First, read the bead and its dependency chain: bd --no-daemon show ${issue}; bd --no-daemon dep tree ${issue}. Implement the acceptance criteria by editing files in this repo. Ensure there is a non-empty git diff when done. Do not post Beads comments yourself. Do not run tests, type checks, lint/format, or install commands; the reviewer handles validation. Keep your final summary concise (<= ~8 bullets)." 1>&2
+codex_rc=$?
+set -e
 
-bd --no-daemon sync --import-only
-hash_cmd="python3"
-if ! command -v "$hash_cmd" >/dev/null 2>&1; then
-  hash_cmd="python"
-fi
-if ! command -v "$hash_cmd" >/dev/null 2>&1; then
-  echo "Error: python3/python not found; cannot compute working-tree signature." >&2
-  exit 1
-fi
-sig() {
-  (git diff; git diff --staged; git ls-files --others --exclude-standard | LC_ALL=C sort) | "$hash_cmd" -c "import sys,hashlib; h=hashlib.sha256(); h.update(sys.stdin.buffer.read()); print(h.hexdigest())"
-}
-before_sig="$(sig)"
-
-codex_rc=0
-if [ "${BEADSFLOW_SKIP_CODEX:-0}" = "1" ]; then
-  echo "Skipping codex (BEADSFLOW_SKIP_CODEX=1); using existing working-tree changes." >&2
-  diff_stat="$(git diff --stat || true)"
-  printf "Skipped codex (BEADSFLOW_SKIP_CODEX=1); using existing working-tree changes.\n\nCurrent diff:\n%s\n" "$diff_stat" > "$msgfile"
+if [ -s "$msgfile" ]; then
+  cat "$msgfile" | cap_comment || true
 else
-  set +e
-  codex --ask-for-approval never exec --sandbox workspace-write --output-last-message "$msgfile" "Implement bead ${issue} under epic ${epic}. First, read the bead and its dependency chain: bd --no-daemon sync --import-only; bd --no-daemon show ${issue}; bd --no-daemon dep tree ${issue}. Implement the acceptance criteria by editing files in this repo. Ensure there is a non-empty git diff when done. Do not post Beads comments yourself. IMPORTANT: Do not run lint/tests or any install commands (no uv/just); leave validation to the caller script. Still ensure code is already formatted and import-sorted so ruff would pass. Only edit files and use read-only inspection commands (rg/cat/sed/ls) as needed."
-  codex_rc=$?
-  set -e
+  printf "%s\n" "(no summary captured from codex)" | cap_comment || true
 fi
 
-after_sig="$(sig)"
-if [ "$after_sig" = "$before_sig" ]; then
-  if git diff --quiet && git diff --staged --quiet && [ -z "$(git ls-files --others --exclude-standard)" ]; then
-    bd --no-daemon comment "$issue" "Implementer finished but produced no new working-tree changes; stopping."
-    exit 1
-  fi
-  echo "Warning: no new changes in this run; proceeding with existing working-tree changes." >&2
-fi
-
-validation_block="$(cat <<EOF
-Validation:
-- (skipped; run by reviewer)
-EOF
-)"
-if [ "${BEADSFLOW_RUN_GATES:-1}" = "1" ]; then
-  gate_dir="$(mktemp -d -t beadsflow-gates.XXXXXX)"
-  lint_log="$gate_dir/lint.log"
-  typecheck_log="$gate_dir/typecheck.log"
-  test_log="$gate_dir/test.log"
-
-  lint_rc=0
-  if just lint >"$lint_log" 2>&1; then :; else lint_rc=$?; fi
-  typecheck_rc=0
-  if just typecheck >"$typecheck_log" 2>&1; then :; else typecheck_rc=$?; fi
-  test_rc=0
-  if just test >"$test_log" 2>&1; then :; else test_rc=$?; fi
-
-  lint_status="PASS"
-  if [ "$lint_rc" != "0" ]; then lint_status="FAIL ($lint_rc)"; fi
-  typecheck_status="PASS"
-  if [ "$typecheck_rc" != "0" ]; then typecheck_status="FAIL ($typecheck_rc)"; fi
-  test_status="PASS"
-  if [ "$test_rc" != "0" ]; then test_status="FAIL ($test_rc)"; fi
-
-  validation_block="$(cat <<EOF
-Validation:
-- just lint: $lint_status
-- just typecheck: $typecheck_status
-- just test: $test_status
-EOF
-)"
-
-  if [ "$lint_rc" != "0" ]; then
-    lint_tail="$(tail -n 80 "$lint_log" 2>/dev/null || true)"
-    validation_block="$(cat <<EOF
-$validation_block
-
-just lint (tail):
-$lint_tail
-EOF
-)"
-  fi
-  if [ "$typecheck_rc" != "0" ]; then
-    typecheck_tail="$(tail -n 80 "$typecheck_log" 2>/dev/null || true)"
-    validation_block="$(cat <<EOF
-$validation_block
-
-just typecheck (tail):
-$typecheck_tail
-EOF
-)"
-  fi
-  if [ "$test_rc" != "0" ]; then
-    test_tail="$(tail -n 80 "$test_log" 2>/dev/null || true)"
-    validation_block="$(cat <<EOF
-$validation_block
-
-just test (tail):
-$test_tail
-EOF
-)"
-  fi
-fi
-
-body="$(cat "$msgfile")"
-codex_note=""
 if [ "${codex_rc}" != "0" ]; then
-  codex_note="$(printf "\n\nNote: codex exited with code %s but produced working-tree changes; continuing." "${codex_rc}")"
+  printf "\n\nNote: codex exited with code %s.\n" "${codex_rc}" | cap_comment || true
 fi
-
-comment_text="$(cat <<EOF
-Ready for review:
-
-$body
-
-$validation_block
-${codex_note}
-EOF
-)"
-bd --no-daemon comment "$issue" "$comment_text"
-bd --no-daemon sync --flush-only
 '"""
 
 [reviewers.claude]
+comment_mode = "stdout"
 command = """bash -lc 'set -euo pipefail
 issue="$BEADSFLOW_ISSUE_ID"
 epic="$BEADSFLOW_EPIC_ID"
 
-export BEADS_NO_DAEMON=1
-export BEADS_DIR="$PWD/.beads"
-daemon_pid_file="${BEADS_DIR}/daemon.pid"
-if [ -f "$daemon_pid_file" ]; then
-  daemon_pid="$(cat "$daemon_pid_file" 2>/dev/null || true)"
-  if [ -n "$daemon_pid" ] && kill -0 "$daemon_pid" 2>/dev/null; then
-    if command -v lsof >/dev/null 2>&1; then
-      if lsof -p "$daemon_pid" 2>/dev/null | grep -F "$PWD/.beads/beads.db" >/dev/null; then
-        echo "Stopping Beads daemon for this repo (pid=$daemon_pid) to run in direct mode..." >&2
-        kill "$daemon_pid" || true
-        for _ in $(seq 1 50); do
-          kill -0 "$daemon_pid" 2>/dev/null || break
-          sleep 0.1
-        done
-      fi
-    fi
-  fi
-  rm -f "${BEADS_DIR}/daemon.pid" "${BEADS_DIR}/daemon.lock" "${BEADS_DIR}/bd.sock"
-fi
+export BEADSFLOW_MAX_COMMENT_BYTES="${BEADSFLOW_MAX_REVIEW_BYTES:-2000}"
+export BEADSFLOW_MAX_COMMENT_LINES="${BEADSFLOW_MAX_REVIEW_LINES:-80}"
+cap_comment() {
+  sed -n "1,${BEADSFLOW_MAX_COMMENT_LINES}p" | head -c "${BEADSFLOW_MAX_COMMENT_BYTES}" || true
+}
 
-bd --no-daemon sync --import-only
 out="$(claude -p "Review bead ${issue} under epic ${epic}.
 
 Checklist:
@@ -197,10 +79,7 @@ Checklist:
 - Confirm the latest Ready for review comment includes a Validation section; if anything is missing/failed, request changes.
 
 Important:
-- Ignore older comments like “implementer command failed …” if there is a newer Ready for review comment.
 - Base your decision on the current code state plus the latest Ready for review comment only.
-
-You are not running any commands. Do not mention tool/permission constraints.
 
 Respond with a single Beads comment. The first non-empty line must be exactly LGTM or start with Changes requested:. Do not wrap that marker in markdown/backticks.")"
 
@@ -224,25 +103,26 @@ EOF
 )"
     ;;
 esac
-bd --no-daemon comment "$issue" "$out"
+
+printf "%s" "$out"
 '"""
 
 [reviewers.local]
+comment_mode = "stdout"
 command = """bash -lc 'set -euo pipefail
 issue="$BEADSFLOW_ISSUE_ID"
 epic="$BEADSFLOW_EPIC_ID"
 
-export BEADS_NO_DAEMON=1
-export BEADS_DIR="$PWD/.beads"
-
-bd --no-daemon sync --import-only
-
-gate_dir="$(mktemp -d -t beadsflow-review-gates.XXXXXX)"
-cleanup() {
-  rm -rf "$gate_dir"
+# Keep stdout small; write full gate output to files.
+export BEADSFLOW_MAX_COMMENT_BYTES="${BEADSFLOW_MAX_COMMENT_BYTES:-800}"
+export BEADSFLOW_MAX_COMMENT_LINES="${BEADSFLOW_MAX_COMMENT_LINES:-40}"
+cap_comment() {
+  sed -n "1,${BEADSFLOW_MAX_COMMENT_LINES}p" | head -c "${BEADSFLOW_MAX_COMMENT_BYTES}" || true
 }
-trap cleanup EXIT
 
+ts="$(date +%Y%m%d-%H%M%S)"
+gate_dir="$PWD/.beads/logs/beadsflow/gates/${issue}/${ts}"
+mkdir -p "$gate_dir"
 lint_log="$gate_dir/lint.log"
 typecheck_log="$gate_dir/typecheck.log"
 test_log="$gate_dir/test.log"
@@ -255,45 +135,35 @@ test_rc=0
 if just test >"$test_log" 2>&1; then :; else test_rc=$?; fi
 
 if [ "$lint_rc" = "0" ] && [ "$typecheck_rc" = "0" ] && [ "$test_rc" = "0" ]; then
-  bd --no-daemon comment "$issue" "LGTM\n\nValidation:\n- just lint\n- just typecheck\n- just test"
-  bd --no-daemon sync --flush-only
+  printf "%s\n" "LGTM"
+  printf "\n%s\n" "Validation:"
+  printf "%s\n" "- just lint"
+  printf "%s\n" "- just typecheck"
+  printf "%s\n" "- just test"
   exit 0
 fi
 
-infra_pattern="uv sync failed|Failed to (download|fetch|resolve)|Could not resolve host|timed out|timeout|TLS|SSL|Connection (reset|refused)|Temporary failure|Permission denied"
-infra=0
-if [ "$lint_rc" != "0" ] && tail -n +2 "$lint_log" 2>/dev/null | grep -Eqi "$infra_pattern"; then infra=1; fi
-if [ "$typecheck_rc" != "0" ] && tail -n +2 "$typecheck_log" 2>/dev/null | grep -Eqi "$infra_pattern"; then infra=1; fi
-if [ "$test_rc" != "0" ] && tail -n +2 "$test_log" 2>/dev/null | grep -Eqi "$infra_pattern"; then infra=1; fi
+printf "%s\n" "Changes requested: quality gates failing" | cap_comment || true
+printf "\n%s\n" "Validation:" | cap_comment || true
 
-lint_tail="$(tail -n 80 "$lint_log" 2>/dev/null || true)"
-typecheck_tail="$(tail -n 80 "$typecheck_log" 2>/dev/null || true)"
-test_tail="$(tail -n 80 "$test_log" 2>/dev/null || true)"
-
-header="Changes requested: quality gates failing"
-if [ "$infra" = "1" ]; then
-  header="Changes requested: quality gates failed due to infra/environment issue"
+if [ "$lint_rc" = "0" ]; then
+  printf "%s\n" "- just lint: PASS" | cap_comment || true
+else
+  printf "%s\n" "- just lint: FAIL (${lint_rc}) (log: ${lint_log})" | cap_comment || true
 fi
 
-bd --no-daemon comment "$issue" "$(cat <<EOF
-$header
+if [ "$typecheck_rc" = "0" ]; then
+  printf "%s\n" "- just typecheck: PASS" | cap_comment || true
+else
+  printf "%s\n" "- just typecheck: FAIL (${typecheck_rc}) (log: ${typecheck_log})" | cap_comment || true
+fi
 
-Validation:
-- just lint: $(if [ "$lint_rc" = "0" ]; then echo PASS; else echo "FAIL ($lint_rc)"; fi)
-- just typecheck: $(if [ "$typecheck_rc" = "0" ]; then echo PASS; else echo "FAIL ($typecheck_rc)"; fi)
-- just test: $(if [ "$test_rc" = "0" ]; then echo PASS; else echo "FAIL ($test_rc)"; fi)
+if [ "$test_rc" = "0" ]; then
+  printf "%s\n" "- just test: PASS" | cap_comment || true
+else
+  printf "%s\n" "- just test: FAIL (${test_rc}) (log: ${test_log})" | cap_comment || true
+fi
 
-just lint (tail):
-$lint_tail
-
-just typecheck (tail):
-$typecheck_tail
-
-just test (tail):
-$test_tail
-EOF
-)"
-bd --no-daemon sync --flush-only
 exit 0
 '"""
 
