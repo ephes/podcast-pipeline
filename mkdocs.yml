@@ -9,8 +9,12 @@ theme:
 nav:
   - Home: index.md
   - Tutorials: tutorials/index.md
-  - How-to: how-to/index.md
+  - How-to:
+      - Overview: how-to/index.md
+      - Run the text pipeline: how-to/text-pipeline.md
   - Reference: reference/index.md
-  - Explanation: explanation/index.md
+  - Explanation:
+      - Overview: explanation/index.md
+      - Text pipeline behavior: explanation/text-pipeline.md
   - Decisions:
       - Docs stack: decisions/docs-stack.md
