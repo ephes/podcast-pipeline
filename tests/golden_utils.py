@@ -24,7 +24,11 @@ def list_files(root: Path) -> dict[str, Path]:
 def assert_workspace_matches_golden(*, workspace: Path, golden: Path) -> None:
     workspace_files = list_files(workspace)
     golden_files = list_files(golden)
-    assert set(workspace_files) == set(golden_files)
+    workspace_keys = set(workspace_files)
+    golden_keys = set(golden_files)
+    missing = sorted(golden_keys - workspace_keys)
+    extra = sorted(workspace_keys - golden_keys)
+    assert not missing and not extra, f"Workspace files differ. Missing: {missing}. Extra: {extra}"
 
     for relpath in sorted(golden_files):
         workspace_path = workspace_files[relpath]

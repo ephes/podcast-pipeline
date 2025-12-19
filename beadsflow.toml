@@ -81,7 +81,8 @@ Checklist:
 Important:
 - Base your decision on the current code state plus the latest Ready for review comment only.
 
-Respond with a single Beads comment. The first non-empty line must be exactly LGTM or start with Changes requested:. Do not wrap that marker in markdown/backticks.")"
+Respond with a single Beads comment. The first non-empty line must be exactly LGTM or start with Changes requested:. Do not wrap that marker in markdown/backticks.
+Keep the comment concise; if you have more to say, summarize and ask for a follow-up issue instead of writing a long comment.")"
 
 # Defensive: some CLIs prepend meta text. Force a valid marker on the first non-empty line.
 first_non_empty="$(printf "%s" "$out" | awk "NF{print; exit}")"
@@ -104,67 +105,8 @@ EOF
     ;;
 esac
 
-printf "%s" "$out"
-'"""
-
-[reviewers.local]
-comment_mode = "stdout"
-command = """bash -lc 'set -euo pipefail
-issue="$BEADSFLOW_ISSUE_ID"
-epic="$BEADSFLOW_EPIC_ID"
-
-# Keep stdout small; write full gate output to files.
-export BEADSFLOW_MAX_COMMENT_BYTES="${BEADSFLOW_MAX_COMMENT_BYTES:-800}"
-export BEADSFLOW_MAX_COMMENT_LINES="${BEADSFLOW_MAX_COMMENT_LINES:-40}"
-cap_comment() {
-  sed -n "1,${BEADSFLOW_MAX_COMMENT_LINES}p" | head -c "${BEADSFLOW_MAX_COMMENT_BYTES}" || true
-}
-
-ts="$(date +%Y%m%d-%H%M%S)"
-gate_dir="$PWD/.beads/logs/beadsflow/gates/${issue}/${ts}"
-mkdir -p "$gate_dir"
-lint_log="$gate_dir/lint.log"
-typecheck_log="$gate_dir/typecheck.log"
-test_log="$gate_dir/test.log"
-
-lint_rc=0
-if just lint >"$lint_log" 2>&1; then :; else lint_rc=$?; fi
-typecheck_rc=0
-if just typecheck >"$typecheck_log" 2>&1; then :; else typecheck_rc=$?; fi
-test_rc=0
-if just test >"$test_log" 2>&1; then :; else test_rc=$?; fi
-
-if [ "$lint_rc" = "0" ] && [ "$typecheck_rc" = "0" ] && [ "$test_rc" = "0" ]; then
-  printf "%s\n" "LGTM"
-  printf "\n%s\n" "Validation:"
-  printf "%s\n" "- just lint"
-  printf "%s\n" "- just typecheck"
-  printf "%s\n" "- just test"
-  exit 0
-fi
-
-printf "%s\n" "Changes requested: quality gates failing" | cap_comment || true
-printf "\n%s\n" "Validation:" | cap_comment || true
-
-if [ "$lint_rc" = "0" ]; then
-  printf "%s\n" "- just lint: PASS" | cap_comment || true
-else
-  printf "%s\n" "- just lint: FAIL (${lint_rc}) (log: ${lint_log})" | cap_comment || true
-fi
-
-if [ "$typecheck_rc" = "0" ]; then
-  printf "%s\n" "- just typecheck: PASS" | cap_comment || true
-else
-  printf "%s\n" "- just typecheck: FAIL (${typecheck_rc}) (log: ${typecheck_log})" | cap_comment || true
-fi
-
-if [ "$test_rc" = "0" ]; then
-  printf "%s\n" "- just test: PASS" | cap_comment || true
-else
-  printf "%s\n" "- just test: FAIL (${test_rc}) (log: ${test_log})" | cap_comment || true
-fi
-
-exit 0
+# Avoid failures from SIGPIPE when truncating.
+printf "%s" "$out" | cap_comment || true
 '"""
 
 [run]

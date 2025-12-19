@@ -46,9 +46,3 @@ bead *args:
 beadsflow *args:
   @if [ ! -d "$PWD/../beadsflow" ]; then echo "Missing ../beadsflow checkout; clone it next to this repo to run beadsflow locally." >&2; exit 1; fi
   @BEADS_NO_DAEMON=1 BEADS_DIR="$PWD/.beads" BD_ISSUE_PREFIX=podcast-pipeline BEADSFLOW_CONFIG="$PWD/beadsflow.toml" uv run --project "$PWD/../beadsflow" beadsflow {{args}}
-
-# beadsflow helper with a deterministic local reviewer (runs quality gates and posts LGTM / Changes requested).
-# Usage: `just beadsflow-local <epic-id> --once --verbose`
-beadsflow-local epic_id *args:
-  @if [ ! -d "$PWD/../beadsflow" ]; then echo "Missing ../beadsflow checkout; clone it next to this repo to run beadsflow locally." >&2; exit 1; fi
-  @BEADS_NO_DAEMON=1 BEADS_DIR="$PWD/.beads" BD_ISSUE_PREFIX=podcast-pipeline BEADSFLOW_CONFIG="$PWD/beadsflow.toml" uv run --project "$PWD/../beadsflow" beadsflow run --reviewer local {{epic_id}} {{args}}
