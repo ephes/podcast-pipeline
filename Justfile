@@ -7,6 +7,18 @@ default:
 sync *ARGS="":
   uv sync {{ARGS}}
 
+# Docs
+docs:
+  uv sync
+  uv run mkdocs serve
+
+docs-build:
+  uv sync
+  uv run mkdocs build
+
+docs-clean:
+  rm -rf site
+
 # Quality gates
 lint *ARGS="":
   if uv sync; then uv run ruff check . && uv run ruff format --check .; elif [ -x .venv/bin/ruff ]; then .venv/bin/ruff check . && .venv/bin/ruff format --check .; else echo "uv sync failed and .venv/bin/ruff is missing" >&2; exit 1; fi

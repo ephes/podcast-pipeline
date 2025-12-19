@@ -21,6 +21,7 @@ podcast = "podcast_pipeline.entrypoints.cli:main"
 
 [dependency-groups]
 dev = [
+  "mkdocs>=1.6.0",
   "mypy>=1.16.0",
   "pre-commit>=4.0.0",
   "pytest>=8.0.0",
@@ -63,4 +64,3 @@ warn_unused_ignores = true
 warn_redundant_casts = true
 warn_unreachable = true
 strict_equality = true
-

@@ -1,0 +1,16 @@
+site_name: Podcast Pipeline
+site_description: Documentation for the podcast-pipeline project.
+
+docs_dir: docs
+
+theme:
+  name: mkdocs
+
+nav:
+  - Home: index.md
+  - Tutorials: tutorials/index.md
+  - How-to: how-to/index.md
+  - Reference: reference/index.md
+  - Explanation: explanation/index.md
+  - Decisions:
+      - Docs stack: decisions/docs-stack.md

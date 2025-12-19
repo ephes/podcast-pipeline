@@ -11,6 +11,14 @@ just typecheck
 just test
 ```
 
+## Docs
+
+We use MkDocs with a minimal `mkdocs.yml` at the repo root. Preview locally with:
+
+```bash
+just docs
+```
+
 ## Domain models
 
 Core Pydantic models live in `podcast_pipeline.domain` and are intended to back `episode.yaml` + `state.json`.
