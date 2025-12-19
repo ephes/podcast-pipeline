@@ -1,33 +1,16 @@
+from __future__ import annotations
+
+import json
 from pathlib import Path
 
 from typer.testing import CliRunner
 
-from podcast_pipeline import __version__
 from podcast_pipeline.entrypoints.cli import app
-from podcast_pipeline.workspace_store import EpisodeWorkspaceLayout
 
 from .golden_utils import assert_workspace_matches_golden
 
 
-def test_version_is_set() -> None:
-    assert __version__
-
-
-def test_workspace_layout_is_deterministic(tmp_path: Path) -> None:
-    layout = EpisodeWorkspaceLayout(root=tmp_path)
-    assert layout.episode_yaml == tmp_path / "episode.yaml"
-    assert layout.state_json == tmp_path / "state.json"
-    assert layout.copy_candidates_dir == tmp_path / "copy" / "candidates"
-    assert layout.copy_protocol_dir == tmp_path / "copy" / "protocol"
-
-
-def test_fixture_files_exist() -> None:
-    fixture_dir = Path(__file__).resolve().parent / "fixtures" / "pp_068"
-    assert (fixture_dir / "transcript.txt").exists()
-    assert (fixture_dir / "chapters.txt").exists()
-
-
-def test_cli_summarize_dry_run_matches_golden(tmp_path: Path) -> None:
+def test_cli_summarize_dry_run_writes_artifacts(tmp_path: Path) -> None:
     runner = CliRunner()
     workspace = tmp_path / "workspace"
     fixture_dir = Path(__file__).resolve().parent / "fixtures" / "pp_068"
@@ -48,6 +31,19 @@ def test_cli_summarize_dry_run_matches_golden(tmp_path: Path) -> None:
     )
 
     assert result.exit_code == 0, result.stdout
+    assert (workspace / "episode.yaml").exists()
+    assert (workspace / "state.json").exists()
+    assert (workspace / "transcript" / "transcript.txt").exists()
+
+    chunk_summary = workspace / "summaries" / "chunks" / "chunk_0001.summary.json"
+    assert chunk_summary.exists()
+    loaded = json.loads(chunk_summary.read_text(encoding="utf-8"))
+    assert loaded["chunk_id"] == 1
+    assert loaded["summary_markdown"].strip()
+
+    assert (workspace / "summaries" / "episode" / "episode_summary.json").exists()
+    assert (workspace / "summaries" / "episode" / "episode_summary.md").exists()
+    assert (workspace / "summaries" / "episode" / "episode_summary.html").exists()
 
     golden = Path(__file__).resolve().parent / "golden" / "summarize_pp_068_dry_run"
     assert_workspace_matches_golden(workspace=workspace, golden=golden)

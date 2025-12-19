@@ -1,0 +1,35 @@
+{
+  "created_at": null,
+  "key_points": [
+    "00:00:00 HOST: Welcome back to Podcast Pipeline. Today we're talking about making episode publishing boring\u2014in a good way.",
+    "00:00:08 CO-HOST: The goal is simple: fewer manual steps, fewer copy/paste mistakes, and a repeatable process.",
+    "00:00:20 HOST: Let's start with the raw inputs. We usually have multitrack audio, a rough transcript, and some notes.",
+    "00:00:30 CO-HOST: And those inputs are messy. Speaker labels can be inconsistent, timestamps drift, and the text has filler words.",
+    "00:00:45 HOST: So we treat the transcript as an artifact, not as truth. It's a source for summaries and chapters."
+  ],
+  "links": [],
+  "provenance": [
+    {
+      "created_at": null,
+      "kind": "stub_summarizer",
+      "metadata": {},
+      "ref": "episode_v1"
+    }
+  ],
+  "summary_markdown": "# Episode summary (stub)\n\n## Key points\n\n- 00:00:00 HOST: Welcome back to Podcast Pipeline. Today we're talking about making episode publishing boring\u2014in a good way.\n- 00:00:08 CO-HOST: The goal is simple: fewer manual steps, fewer copy/paste mistakes, and a repeatable process.\n- 00:00:20 HOST: Let's start with the raw inputs. We usually have multitrack audio, a rough transcript, and some notes.\n- 00:00:30 CO-HOST: And those inputs are messy. Speaker labels can be inconsistent, timestamps drift, and the text has filler words.\n- 00:00:45 HOST: So we treat the transcript as an artifact, not as truth. It's a source for summaries and chapters.\n\n## Chunk roll-up\n\n## Chunk 1\n\n00:00:00 HOST: Welcome back to Podcast Pipeline. Today we're talking about making episode publishing boring\u2014in a good way. 00:00:08 CO-HOST: The goal is simple: fewer manual steps, fewer copy/paste mistakes, and a repeatable process.\n",
+  "topics": [
+    "HOST",
+    "Welcome",
+    "Podcast",
+    "Pipeline",
+    "Today",
+    "CO-HOST",
+    "The",
+    "Let's",
+    "We",
+    "And",
+    "Speaker",
+    "So"
+  ],
+  "version": 1
+}

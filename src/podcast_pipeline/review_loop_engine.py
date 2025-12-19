@@ -134,12 +134,18 @@ def run_review_loop_engine(
                 iteration=iteration,
                 previous_candidate=prev_candidate,
                 previous_review=prev_review,
-            )
+            ),
         )
         if creator_out.candidate.asset_id != asset_id:
             raise ValueError("creator output candidate.asset_id must match asset_id")
 
-        review_out = reviewer(ReviewerInput(asset_id=asset_id, iteration=iteration, candidate=creator_out.candidate))
+        review_out = reviewer(
+            ReviewerInput(
+                asset_id=asset_id,
+                iteration=iteration,
+                candidate=creator_out.candidate,
+            ),
+        )
         review_out = _normalize_review_iteration(review_out, iteration)
 
         protocol_iteration = LoopProtocolIteration(
@@ -153,7 +159,7 @@ def run_review_loop_engine(
             ProtocolWrite(
                 path=layout.protocol_iteration_json_path(asset_id, iteration),
                 json_data=protocol_iteration.to_json_dict(),
-            )
+            ),
         )
 
         prev_candidate = creator_out.candidate

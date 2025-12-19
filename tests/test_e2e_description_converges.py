@@ -4,9 +4,16 @@ import json
 from pathlib import Path
 
 from podcast_pipeline.agent_runners import FakeCreatorRunner, FakeReviewerRunner
-from podcast_pipeline.domain.models import ReviewVerdict
-from podcast_pipeline.review_loop_engine import LoopOutcome, ProtocolWrite, run_review_loop_engine
-from podcast_pipeline.workspace_store import EpisodeWorkspaceLayout, EpisodeWorkspaceStore
+from podcast_pipeline.domain.models import ReviewVerdict, TextFormat
+from podcast_pipeline.review_loop_engine import (
+    LoopOutcome,
+    ProtocolWrite,
+    run_review_loop_engine,
+)
+from podcast_pipeline.workspace_store import (
+    EpisodeWorkspaceLayout,
+    EpisodeWorkspaceStore,
+)
 
 
 def _fixture_dir() -> Path:
@@ -55,7 +62,7 @@ def test_e2e_description_asset_converges_and_writes_artifacts(tmp_path: Path) ->
             "## Transcript excerpt",
             first_transcript_line,
             "",
-        ]
+        ],
     )
 
     creator = FakeCreatorRunner(
@@ -96,13 +103,21 @@ def test_e2e_description_asset_converges_and_writes_artifacts(tmp_path: Path) ->
 
     for it in protocol_state.iterations:
         assert layout.candidate_json_path("description", it.candidate.candidate_id).exists()
+        assert layout.candidate_text_path("description", it.candidate.candidate_id, it.candidate.format).exists()
+        if it.candidate.format == TextFormat.markdown:
+            assert layout.candidate_text_path("description", it.candidate.candidate_id, TextFormat.html).exists()
         assert layout.review_iteration_json_path("description", it.iteration, reviewer="reviewer_a").exists()
         assert layout.protocol_iteration_json_path("description", it.iteration).exists()
 
         payload = json.loads(
-            layout.protocol_iteration_json_path("description", it.iteration).read_text(encoding="utf-8")
+            layout.protocol_iteration_json_path(
+                "description",
+                it.iteration,
+            ).read_text(encoding="utf-8"),
         )
         assert payload["reviewer"]["verdict"] in {"changes_requested", "ok"}
 
     assert layout.protocol_state_json_path("description").exists()
     assert layout.selected_text_path("description", final_iteration.candidate.format).exists()
+    if final_iteration.candidate.format == TextFormat.markdown:
+        assert layout.selected_text_path("description", TextFormat.html).exists()

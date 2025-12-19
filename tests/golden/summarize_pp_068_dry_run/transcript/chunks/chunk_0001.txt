@@ -1,0 +1,23 @@
+00:00:00 HOST: Welcome back to Podcast Pipeline. Today we're talking about making episode publishing boring—in a good way.
+00:00:08 CO-HOST: The goal is simple: fewer manual steps, fewer copy/paste mistakes, and a repeatable process.
+
+00:00:20 HOST: Let's start with the raw inputs. We usually have multitrack audio, a rough transcript, and some notes.
+00:00:30 CO-HOST: And those inputs are messy. Speaker labels can be inconsistent, timestamps drift, and the text has filler words.
+
+00:00:45 HOST: So we treat the transcript as an artifact, not as truth. It's a source for summaries and chapters.
+00:00:56 CO-HOST: Exactly. We can chunk it, summarize each part, then roll it up into a stable episode summary.
+
+00:01:15 HOST: Next: chapters. Chapters are useful for shownotes and YouTube descriptions, but they have to be consistent.
+00:01:27 CO-HOST: If the chapter list changes on every run, downstream diffs become noisy and review becomes harder.
+
+00:01:40 HOST: A good heuristic is “few, meaningful sections”: intro, main topic blocks, a short Q&A, and an outro.
+00:01:52 CO-HOST: Plus a clear timestamp format. Humans should be able to skim it, machines should be able to parse it.
+
+00:02:10 HOST: Finally, we generate multiple candidates for each asset: description, shownotes, and social posts.
+00:02:20 CO-HOST: Then we run a creator/reviewer loop until both agree it's done—or we stop and ask a human.
+
+00:02:35 HOST: That's the episode. In the next milestone we'll wire this into a real transcription tool.
+00:02:43 CO-HOST: And once that works, we'll add deterministic HTML for Wagtail copy/paste.
+
+00:02:55 HOST: Thanks for listening.
+

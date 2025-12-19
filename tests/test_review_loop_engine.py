@@ -4,7 +4,12 @@ from datetime import UTC, datetime
 from pathlib import Path
 from uuid import UUID
 
-from podcast_pipeline.domain.models import Candidate, ReviewIteration, ReviewVerdict, TextFormat
+from podcast_pipeline.domain.models import (
+    Candidate,
+    ReviewIteration,
+    ReviewVerdict,
+    TextFormat,
+)
 from podcast_pipeline.review_loop_engine import (
     CreatorInput,
     CreatorOutput,

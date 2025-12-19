@@ -34,7 +34,7 @@ class ScriptedJsonReply:
         if mutate_raw is None:
             mutate_files: dict[str, str] = {}
         elif isinstance(mutate_raw, dict) and all(
-            isinstance(key, str) and isinstance(value, str) for key, value in mutate_raw.items()
+            isinstance(key, str) and isinstance(file_value, str) for key, file_value in mutate_raw.items()
         ):
             mutate_files = dict(mutate_raw)
         else:
@@ -58,7 +58,10 @@ def _write_mutations(*, root: Path, mutate_files: Mapping[str, str]) -> None:
             raise ValueError(f"mutate_files path escapes root: {rel}")
 
         full.parent.mkdir(parents=True, exist_ok=True)
-        full.write_text(content if content.endswith("\n") else content + "\n", encoding="utf-8")
+        full.write_text(
+            content if content.endswith("\n") else content + "\n",
+            encoding="utf-8",
+        )
 
 
 def _deterministic_uuid(*, prefix: str, parts: Sequence[str]) -> UUID:
@@ -102,7 +105,12 @@ class FakeCreatorRunner:
             raise ValueError("FakeCreatorRunner candidate must include content")
         candidate_data.setdefault(
             "candidate_id",
-            str(_deterministic_uuid(prefix="candidate", parts=[inp.asset_id, str(inp.iteration)])),
+            str(
+                _deterministic_uuid(
+                    prefix="candidate",
+                    parts=[inp.asset_id, str(inp.iteration)],
+                ),
+            ),
         )
         candidate_data.setdefault("created_at", self._default_created_at)
 
@@ -172,7 +180,7 @@ class FakeReviewerRunner:
                         _deterministic_uuid(
                             prefix="review_issue",
                             parts=[inp.asset_id, str(inp.iteration), str(idx)],
-                        )
+                        ),
                     ),
                 )
                 fixed_issues.append(issue_data)

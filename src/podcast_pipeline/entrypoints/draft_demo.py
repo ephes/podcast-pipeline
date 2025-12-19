@@ -7,7 +7,11 @@ import typer
 
 from podcast_pipeline.agent_runners import FakeCreatorRunner, FakeReviewerRunner
 from podcast_pipeline.domain.models import Asset, AssetKind, EpisodeWorkspace
-from podcast_pipeline.review_loop_engine import LoopOutcome, ProtocolWrite, run_review_loop_engine
+from podcast_pipeline.review_loop_engine import (
+    LoopOutcome,
+    ProtocolWrite,
+    run_review_loop_engine,
+)
 from podcast_pipeline.workspace_store import EpisodeWorkspaceStore
 
 _ASSET_ID_RE = re.compile(r"^[a-z][a-z0-9_]*$")
@@ -43,7 +47,7 @@ def _default_transcript() -> str:
             "Speaker 1: Welcome to the podcast pipeline demo.",
             "Speaker 2: Today we explore a tiny Creator/Reviewer loop.",
             "",
-        ]
+        ],
     )
 
 
@@ -53,7 +57,7 @@ def _default_chapters() -> str:
             "00:00 Intro",
             "05:00 Main topic",
             "",
-        ]
+        ],
     )
 
 
@@ -70,7 +74,7 @@ def _build_initial_description(*, transcript: str, chapters: str) -> str:
             "## Transcript excerpt",
             first_transcript_line or "(no transcript)",
             "",
-        ]
+        ],
     )
 
 
@@ -114,7 +118,7 @@ def run_draft_demo(
                 "transcript": str(transcript_path.relative_to(root)),
                 "chapters": str(chapters_path.relative_to(root)),
             },
-        }
+        },
     )
     store.write_state(EpisodeWorkspace(episode_id=episode_id, root_dir=str(root)))
 
@@ -175,9 +179,9 @@ def run_draft_demo(
                     candidates=[it.candidate for it in protocol_state.iterations],
                     reviews=[it.review for it in protocol_state.iterations],
                     selected_candidate_id=selected_candidate_id,
-                )
+                ),
             ],
-        )
+        ),
     )
 
     typer.echo(f"Workspace: {root}")

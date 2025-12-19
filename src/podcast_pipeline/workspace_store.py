@@ -13,7 +13,14 @@ from uuid import UUID
 
 import yaml
 
-from podcast_pipeline.domain.models import Candidate, EpisodeWorkspace, ProvenanceRef, ReviewIteration, TextFormat
+from podcast_pipeline.domain.models import (
+    Candidate,
+    EpisodeWorkspace,
+    ProvenanceRef,
+    ReviewIteration,
+    TextFormat,
+)
+from podcast_pipeline.markdown_html import markdown_to_deterministic_html
 
 
 class WorkspaceStoreError(RuntimeError):
@@ -21,6 +28,7 @@ class WorkspaceStoreError(RuntimeError):
 
 
 _PATH_SEGMENT_RE = re.compile(r"[^a-zA-Z0-9._-]+")
+_EPISODES_DIRNAME = "episodes"
 
 
 def _safe_path_segment(value: str) -> str:
@@ -30,6 +38,14 @@ def _safe_path_segment(value: str) -> str:
     if not cleaned:
         raise ValueError("path segment must not be empty after sanitization")
     return cleaned
+
+
+def episodes_dir(project_root: Path) -> Path:
+    return project_root / _EPISODES_DIRNAME
+
+
+def episode_workspace_dir(project_root: Path, episode_id: str) -> Path:
+    return episodes_dir(project_root) / _safe_path_segment(episode_id)
 
 
 def _fsync_dir(path: Path) -> None:
@@ -118,6 +134,26 @@ class EpisodeWorkspaceLayout:
         return self.root / "state.json"
 
     @property
+    def transcript_dir(self) -> Path:
+        return self.root / "transcript"
+
+    @property
+    def transcript_chunks_dir(self) -> Path:
+        return self.transcript_dir / "chunks"
+
+    @property
+    def summaries_dir(self) -> Path:
+        return self.root / "summaries"
+
+    @property
+    def chunk_summaries_dir(self) -> Path:
+        return self.summaries_dir / "chunks"
+
+    @property
+    def episode_summary_dir(self) -> Path:
+        return self.summaries_dir / "episode"
+
+    @property
     def copy_dir(self) -> Path:
         return self.root / "copy"
 
@@ -145,7 +181,23 @@ class EpisodeWorkspaceLayout:
         safe_asset = _safe_path_segment(asset_id)
         return self.copy_candidates_dir / safe_asset / f"candidate_{candidate_id}.json"
 
-    def review_iteration_json_path(self, asset_id: str, iteration: int, *, reviewer: str | None = None) -> Path:
+    def candidate_text_path(
+        self,
+        asset_id: str,
+        candidate_id: UUID,
+        fmt: TextFormat,
+    ) -> Path:
+        safe_asset = _safe_path_segment(asset_id)
+        ext = _format_to_extension(fmt)
+        return self.copy_candidates_dir / safe_asset / f"candidate_{candidate_id}.{ext}"
+
+    def review_iteration_json_path(
+        self,
+        asset_id: str,
+        iteration: int,
+        *,
+        reviewer: str | None = None,
+    ) -> Path:
         safe_asset = _safe_path_segment(asset_id)
         suffix = ""
         if reviewer is not None:
@@ -169,6 +221,30 @@ class EpisodeWorkspaceLayout:
         safe_kind = _safe_path_segment(kind)
         safe_ref = _safe_path_segment(ref)
         return self.copy_provenance_dir / safe_kind / f"{safe_ref}.json"
+
+    def transcript_chunk_text_path(self, chunk_id: int) -> Path:
+        if chunk_id < 1:
+            raise ValueError("chunk_id must be >= 1")
+        return self.transcript_chunks_dir / f"chunk_{chunk_id:04d}.txt"
+
+    def transcript_chunk_meta_json_path(self, chunk_id: int) -> Path:
+        if chunk_id < 1:
+            raise ValueError("chunk_id must be >= 1")
+        return self.transcript_chunks_dir / f"chunk_{chunk_id:04d}.json"
+
+    def chunk_summary_json_path(self, chunk_id: int) -> Path:
+        if chunk_id < 1:
+            raise ValueError("chunk_id must be >= 1")
+        return self.chunk_summaries_dir / f"chunk_{chunk_id:04d}.summary.json"
+
+    def episode_summary_json_path(self) -> Path:
+        return self.episode_summary_dir / "episode_summary.json"
+
+    def episode_summary_markdown_path(self) -> Path:
+        return self.episode_summary_dir / "episode_summary.md"
+
+    def episode_summary_html_path(self) -> Path:
+        return self.episode_summary_dir / "episode_summary.html"
 
 
 class EpisodeWorkspaceStore:
@@ -197,9 +273,20 @@ class EpisodeWorkspaceStore:
         _atomic_write_text(self.layout.state_json, dumped)
 
     def write_candidate(self, candidate: Candidate) -> Path:
-        path = self.layout.candidate_json_path(candidate.asset_id, candidate.candidate_id)
+        path = self.layout.candidate_json_path(
+            candidate.asset_id,
+            candidate.candidate_id,
+        )
         dumped = json.dumps(candidate.model_dump(mode="json"), indent=2, sort_keys=True) + "\n"
         _atomic_write_text(path, dumped)
+        text_path = self.layout.candidate_text_path(candidate.asset_id, candidate.candidate_id, candidate.format)
+        content = candidate.content
+        if not content.endswith("\n"):
+            content += "\n"
+        _atomic_write_text(text_path, content)
+        if candidate.format == TextFormat.markdown:
+            html_path = self.layout.candidate_text_path(candidate.asset_id, candidate.candidate_id, TextFormat.html)
+            _atomic_write_text(html_path, markdown_to_deterministic_html(content))
         return path
 
     def read_candidate(self, asset_id: str, candidate_id: UUID) -> Candidate:
@@ -208,25 +295,53 @@ class EpisodeWorkspaceStore:
         return Candidate.model_validate(raw)
 
     def write_review(self, asset_id: str, review: ReviewIteration) -> Path:
-        path = self.layout.review_iteration_json_path(asset_id, review.iteration, reviewer=review.reviewer)
+        path = self.layout.review_iteration_json_path(
+            asset_id,
+            review.iteration,
+            reviewer=review.reviewer,
+        )
         dumped = json.dumps(review.model_dump(mode="json"), indent=2, sort_keys=True) + "\n"
         _atomic_write_text(path, dumped)
         return path
 
-    def read_review(self, asset_id: str, iteration: int, *, reviewer: str | None = None) -> ReviewIteration:
-        path = self.layout.review_iteration_json_path(asset_id, iteration, reviewer=reviewer)
+    def read_review(
+        self,
+        asset_id: str,
+        iteration: int,
+        *,
+        reviewer: str | None = None,
+    ) -> ReviewIteration:
+        path = self.layout.review_iteration_json_path(
+            asset_id,
+            iteration,
+            reviewer=reviewer,
+        )
         raw = _read_json(path)
         return ReviewIteration.model_validate(raw)
 
-    def write_selected_text(self, asset_id: str, fmt: TextFormat, content: str) -> Path:
+    def write_selected_text(
+        self,
+        asset_id: str,
+        fmt: TextFormat,
+        content: str,
+    ) -> Path:
         path = self.layout.selected_text_path(asset_id, fmt)
-        _atomic_write_text(path, content if content.endswith("\n") else content + "\n")
+        if not content.endswith("\n"):
+            content += "\n"
+        _atomic_write_text(path, content)
+        if fmt == TextFormat.markdown:
+            html_path = self.layout.selected_text_path(asset_id, TextFormat.html)
+            _atomic_write_text(html_path, markdown_to_deterministic_html(content))
         return path
 
     def read_selected_text(self, asset_id: str, fmt: TextFormat) -> str:
         return _read_text(self.layout.selected_text_path(asset_id, fmt))
 
-    def write_provenance_json(self, provenance: ProvenanceRef, data: Mapping[str, Any]) -> Path:
+    def write_provenance_json(
+        self,
+        provenance: ProvenanceRef,
+        data: Mapping[str, Any],
+    ) -> Path:
         ref = provenance.ref
         if not ref:
             raise ValueError("provenance.ref must be non-empty")

@@ -1,5 +1,11 @@
 """Core domain models for podcast-pipeline."""
 
+from podcast_pipeline.domain.intermediate_formats import (
+    ChunkSummary,
+    EpisodeSummary,
+    LinkRef,
+    TranscriptChunkMeta,
+)
 from podcast_pipeline.domain.models import (
     Asset,
     AssetId,
@@ -22,12 +28,16 @@ __all__ = [
     "AssetKind",
     "Candidate",
     "Chapter",
+    "ChunkSummary",
     "EpisodeWorkspace",
+    "EpisodeSummary",
     "IssueSeverity",
+    "LinkRef",
     "ProvenanceRef",
     "ReviewIssue",
     "ReviewIteration",
     "ReviewVerdict",
     "TextFormat",
     "Track",
+    "TranscriptChunkMeta",
 ]
