@@ -17,6 +17,7 @@ from podcast_pipeline.domain.models import (
 from podcast_pipeline.workspace_store import (
     EpisodeWorkspaceLayout,
     EpisodeWorkspaceStore,
+    WorkspaceStoreError,
     episode_workspace_dir,
     episodes_dir,
 )
@@ -122,6 +123,16 @@ def test_store_reads_writes_copy_artifacts(tmp_path: Path) -> None:
     provenance = ProvenanceRef(kind="codex", ref="run_001", created_at=created_at)
     provenance_path = store.write_provenance_json(provenance, {"ok": True})
     assert provenance_path.exists()
+
+
+def test_store_rejects_invalid_review_json(tmp_path: Path) -> None:
+    store = EpisodeWorkspaceStore(tmp_path)
+    path = store.layout.review_iteration_json_path("description", 1)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text('{"iteration": 1, "verdict": "nope"}\n', encoding="utf-8")
+
+    with pytest.raises(WorkspaceStoreError):
+        store.read_review("description", 1)
 
 
 def test_layout_rejects_path_separators(tmp_path: Path) -> None:

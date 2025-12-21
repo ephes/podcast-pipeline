@@ -12,6 +12,7 @@ from typing import Any
 from uuid import UUID
 
 import yaml
+from pydantic import ValidationError
 
 from podcast_pipeline.domain.models import (
     Candidate,
@@ -292,7 +293,10 @@ class EpisodeWorkspaceStore:
     def read_candidate(self, asset_id: str, candidate_id: UUID) -> Candidate:
         path = self.layout.candidate_json_path(asset_id, candidate_id)
         raw = _read_json(path)
-        return Candidate.model_validate(raw)
+        try:
+            return Candidate.model_validate(raw)
+        except ValidationError as exc:
+            raise WorkspaceStoreError(f"Invalid candidate JSON at {path}: {exc}") from exc
 
     def write_review(self, asset_id: str, review: ReviewIteration) -> Path:
         path = self.layout.review_iteration_json_path(
@@ -317,7 +321,10 @@ class EpisodeWorkspaceStore:
             reviewer=reviewer,
         )
         raw = _read_json(path)
-        return ReviewIteration.model_validate(raw)
+        try:
+            return ReviewIteration.model_validate(raw)
+        except ValidationError as exc:
+            raise WorkspaceStoreError(f"Invalid review JSON at {path}: {exc}") from exc
 
     def write_selected_text(
         self,
