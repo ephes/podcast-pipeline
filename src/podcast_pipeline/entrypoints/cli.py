@@ -124,5 +124,23 @@ def summarize(
     )
 
 
+@app.command()
+def status(
+    *,
+    workspace: Annotated[
+        Path,
+        typer.Option(
+            exists=True,
+            file_okay=False,
+            help="Episode workspace directory (default: current directory).",
+        ),
+    ] = Path("."),
+) -> None:
+    """Show review loop progress for each asset."""
+    from podcast_pipeline.entrypoints.status import run_status
+
+    run_status(workspace=workspace)
+
+
 def main() -> None:
     app()

@@ -6,12 +6,8 @@ from pathlib import Path
 import typer
 
 from podcast_pipeline.agent_runners import FakeCreatorRunner, FakeReviewerRunner
-from podcast_pipeline.domain.models import Asset, AssetKind, EpisodeWorkspace
-from podcast_pipeline.review_loop_engine import (
-    LoopOutcome,
-    ProtocolWrite,
-    run_review_loop_engine,
-)
+from podcast_pipeline.domain.models import EpisodeWorkspace
+from podcast_pipeline.review_loop_orchestrator import run_review_loop_orchestrator
 from podcast_pipeline.workspace_store import EpisodeWorkspaceStore
 
 _ASSET_ID_RE = re.compile(r"^[a-z][a-z0-9_]*$")
@@ -23,12 +19,6 @@ def _first_non_empty_line(raw: str) -> str:
         if stripped:
             return stripped
     return ""
-
-
-def _write_protocol_files(writes: tuple[ProtocolWrite, ...]) -> None:
-    for write in writes:
-        write.path.parent.mkdir(parents=True, exist_ok=True)
-        write.path.write_text(write.dumps(), encoding="utf-8")
 
 
 def _pick_demo_workspace_dir(base: Path) -> Path:
@@ -143,46 +133,14 @@ def run_draft_demo(
         ],
     )
 
-    protocol_state, protocol_writes = run_review_loop_engine(
-        layout=store.layout,
+    protocol_state = run_review_loop_orchestrator(
+        workspace=store.layout.root,
         asset_id=asset_id,
         max_iterations=max_iterations,
         creator=creator,
         reviewer=reviewer,
     )
-    _write_protocol_files(protocol_writes)
-
-    for it in protocol_state.iterations:
-        store.write_candidate(it.candidate)
-        store.write_review(asset_id, it.review)
-
-    final_iteration = protocol_state.iterations[-1]
-    store.write_selected_text(asset_id, final_iteration.candidate.format, final_iteration.candidate.content)
-
-    try:
-        kind: AssetKind | None = AssetKind(asset_id)
-    except ValueError:
-        kind = None
-
-    selected_candidate_id = None
-    if protocol_state.decision is not None and protocol_state.decision.outcome == LoopOutcome.converged:
-        selected_candidate_id = final_iteration.candidate.candidate_id
-
-    store.write_state(
-        EpisodeWorkspace(
-            episode_id=episode_id,
-            root_dir=str(root),
-            assets=[
-                Asset(
-                    asset_id=asset_id,
-                    kind=kind,
-                    candidates=[it.candidate for it in protocol_state.iterations],
-                    reviews=[it.review for it in protocol_state.iterations],
-                    selected_candidate_id=selected_candidate_id,
-                ),
-            ],
-        ),
-    )
-
     typer.echo(f"Workspace: {root}")
-    typer.echo(f"Selected: {store.layout.selected_text_path(asset_id, final_iteration.candidate.format)}")
+    if protocol_state.iterations:
+        final_iteration = protocol_state.iterations[-1]
+        typer.echo(f"Selected: {store.layout.selected_text_path(asset_id, final_iteration.candidate.format)}")
