@@ -206,8 +206,6 @@ def _decide_outcome(
     iteration: int,
     max_iterations: int,
 ) -> LoopDecision | None:
-    if review.verdict == ReviewVerdict.needs_human:
-        return _terminal_decision(outcome=LoopOutcome.needs_human, iteration=iteration, reason="reviewer_needs_human")
     if review.verdict == ReviewVerdict.ok and creator_done:
         return _terminal_decision(
             outcome=LoopOutcome.converged,

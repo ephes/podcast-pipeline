@@ -95,6 +95,36 @@ def test_engine_stops_on_iteration_limit_with_needs_human(tmp_path: Path) -> Non
     assert len(writes) == 3
 
 
+def test_engine_does_not_stop_on_reviewer_needs_human(tmp_path: Path) -> None:
+    layout = EpisodeWorkspaceLayout(root=tmp_path)
+
+    def creator(inp: CreatorInput) -> CreatorOutput:
+        return CreatorOutput(candidate=_candidate("description", inp.iteration), done=False)
+
+    def reviewer(inp: ReviewerInput) -> ReviewIteration:
+        return ReviewIteration(
+            iteration=inp.iteration,
+            verdict=ReviewVerdict.needs_human,
+            reviewer="reviewer_a",
+            created_at=_fixed_dt(),
+        )
+
+    state, _ = run_review_loop_engine(
+        layout=layout,
+        asset_id="description",
+        max_iterations=3,
+        creator=creator,
+        reviewer=reviewer,
+    )
+
+    assert state.decision is not None
+    assert state.decision.outcome == LoopOutcome.needs_human
+    assert state.decision.final_iteration == 3
+    assert state.decision.reason == "iteration_limit"
+    assert len(state.iterations) == 3
+    assert all(it.review.verdict == ReviewVerdict.needs_human for it in state.iterations)
+
+
 def test_engine_respects_locked_outcome_and_does_not_rerun(tmp_path: Path) -> None:
     layout = EpisodeWorkspaceLayout(root=tmp_path)
     existing = LoopProtocolState(

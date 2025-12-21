@@ -82,9 +82,9 @@ The loop is driven by `run_review_loop_engine` and follows a strict Creator/Revi
 
 Convergence is determined by the following rules:
 
-- `ReviewVerdict.needs_human` immediately terminates with outcome `needs_human` and reason `reviewer_needs_human`.
 - `ReviewVerdict.ok` + creator `done=True` terminates with outcome `converged`.
 - If `iteration == max_iterations` without convergence, the loop ends with `needs_human` and reason `iteration_limit`.
+- `ReviewVerdict.needs_human` is recorded on the iteration but does not terminate the loop on its own.
 
 ## Fake runner usage
 
