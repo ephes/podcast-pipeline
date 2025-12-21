@@ -46,3 +46,9 @@ bead *args:
 beadsflow *args:
   @if [ ! -d "$PWD/../beadsflow" ]; then echo "Missing ../beadsflow checkout; clone it next to this repo to run beadsflow locally." >&2; exit 1; fi
   @BEADS_NO_DAEMON=1 BEADS_DIR="$PWD/.beads" BD_ISSUE_PREFIX=podcast-pipeline BEADSFLOW_CONFIG="$PWD/beadsflow.toml" uvx --from "$PWD/../beadsflow" beadsflow {{args}}
+
+# Loop helper: run beadsflow for an epic (defaults to --once --verbose).
+# Usage: `just loop <epic-id> [--dry-run|--once|--verbose]`
+loop epic *args="":
+  @if [ -z "{{epic}}" ]; then echo "Usage: just loop <epic-id> [--dry-run|--once|--verbose]" >&2; exit 1; fi
+  @if [ -z "{{args}}" ]; then just beadsflow run {{epic}} --once --verbose; else just beadsflow run {{epic}} {{args}}; fi
