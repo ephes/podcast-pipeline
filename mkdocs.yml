@@ -12,9 +12,14 @@ nav:
   - How-to:
       - Overview: how-to/index.md
       - Run the text pipeline: how-to/text-pipeline.md
-  - Reference: reference/index.md
+      - Run the review loop and read status: how-to/review-loop.md
+  - Reference:
+      - Overview: reference/index.md
+      - Review protocol schemas: reference/review-protocol-schemas.md
   - Explanation:
       - Overview: explanation/index.md
       - Text pipeline behavior: explanation/text-pipeline.md
+      - MVP-0 domain model and review loop: explanation/mvp0-review-loop.md
+      - MVP-1 creator/reviewer loop: explanation/mvp1-review-loop.md
   - Decisions:
       - Docs stack: decisions/docs-stack.md

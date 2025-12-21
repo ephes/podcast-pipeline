@@ -13,6 +13,7 @@ Use this checklist when shipping an epic or a significant feature:
 ## Common tasks
 
 - [Run the text pipeline](text-pipeline.md)
+- [Run the review loop and read status](review-loop.md)
 - Placeholder: Generate episode summaries (TBD)
 - Placeholder: Draft show notes (TBD)
 - Placeholder: Export outputs for editors (TBD)
