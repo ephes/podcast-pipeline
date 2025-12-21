@@ -21,7 +21,7 @@ reviewer = "claude"
 comment_mode = "stdout"
 comment_prefix = "Ready for review:\n\n"
 comment_suffix = "\n\nValidation:\n- (run by reviewer)\n"
-require_git_changes = true
+require_git_changes = false
 command = """bash -lc 'set -euo pipefail
 export BEADS_NO_DAEMON=1
 export BEADS_DIR="$PWD/.beads"
@@ -61,53 +61,7 @@ fi
 
 [reviewers.claude]
 comment_mode = "stdout"
-command = """bash -lc 'set -euo pipefail
-issue="$BEADSFLOW_ISSUE_ID"
-epic="$BEADSFLOW_EPIC_ID"
-
-export BEADSFLOW_MAX_COMMENT_BYTES="${BEADSFLOW_MAX_REVIEW_BYTES:-2000}"
-export BEADSFLOW_MAX_COMMENT_LINES="${BEADSFLOW_MAX_REVIEW_LINES:-80}"
-cap_comment() {
-  sed -n "1,${BEADSFLOW_MAX_COMMENT_LINES}p" | head -c "${BEADSFLOW_MAX_COMMENT_BYTES}" || true
-}
-
-out="$(claude -p "Review bead ${issue} under epic ${epic}.
-
-Checklist:
-- Read the bead and confirm the acceptance criteria are met.
-- Review the actual code changes (git diff) for correctness, edge cases, and maintainability.
-- Confirm the latest Ready for review comment includes a Validation section; if anything is missing/failed, request changes.
-
-Important:
-- Base your decision on the current code state plus the latest Ready for review comment only.
-
-Respond with a single Beads comment. The first non-empty line must be exactly LGTM or start with Changes requested:. Do not wrap that marker in markdown/backticks.
-Keep the comment concise; if you have more to say, summarize and ask for a follow-up issue instead of writing a long comment.")"
-
-# Defensive: some CLIs prepend meta text. Force a valid marker on the first non-empty line.
-first_non_empty="$(printf "%s" "$out" | awk "NF{print; exit}")"
-case "$first_non_empty" in
-  LGTM|"Changes requested:"*) ;;
-  *)
-    marker="$(printf "%s" "$out" | awk "
-      /^[[:space:]]*LGTM[[:space:]]*$/ {print \\\"LGTM\\\"; exit}
-      /^[[:space:]]*Changes requested:/ {sub(/^[[:space:]]*/, \\\"\\\"); print; exit}
-    ")"
-    if [ -z "$marker" ]; then
-      marker="Changes requested:"
-    fi
-    out="$(cat <<EOF
-$marker
-
-$out
-EOF
-)"
-    ;;
-esac
-
-# Avoid failures from SIGPIPE when truncating.
-printf "%s" "$out" | cap_comment || true
-'"""
+command = "beadsflow review --cli claude"
 
 [run]
 max_iterations = 500
