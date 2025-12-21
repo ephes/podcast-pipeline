@@ -41,8 +41,8 @@ pre-commit:
 bead *args:
   @if [ -z "{{args}}" ]; then BEADS_NO_DAEMON=1 BEADS_DIR="$PWD/.beads" bd --no-daemon ready; else BEADS_NO_DAEMON=1 BEADS_DIR="$PWD/.beads" bd --no-daemon {{args}}; fi
 
-# beadsflow helper: run beadsflow from sibling repo checkout (preferred for hacking on beadsflow).
+# beadsflow helper: run beadsflow from sibling repo checkout.
 # Usage: `just beadsflow run <epic-id> --dry-run --verbose`
 beadsflow *args:
   @if [ ! -d "$PWD/../beadsflow" ]; then echo "Missing ../beadsflow checkout; clone it next to this repo to run beadsflow locally." >&2; exit 1; fi
-  @BEADS_NO_DAEMON=1 BEADS_DIR="$PWD/.beads" BD_ISSUE_PREFIX=podcast-pipeline BEADSFLOW_CONFIG="$PWD/beadsflow.toml" uv run --project "$PWD/../beadsflow" beadsflow {{args}}
+  @BEADS_NO_DAEMON=1 BEADS_DIR="$PWD/.beads" BD_ISSUE_PREFIX=podcast-pipeline BEADSFLOW_CONFIG="$PWD/beadsflow.toml" uvx --from "$PWD/../beadsflow" beadsflow {{args}}
