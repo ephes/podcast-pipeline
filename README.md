@@ -4,6 +4,8 @@
 
 ## Development
 
+Quality gates must pass before declaring work done:
+
 ```bash
 uv sync
 just lint
