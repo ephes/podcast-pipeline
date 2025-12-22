@@ -6,6 +6,7 @@ from pathlib import Path
 
 import typer
 
+from podcast_pipeline.agent_cli_config import collect_agent_cli_issues
 from podcast_pipeline.domain.models import IssueSeverity, ReviewIssue, ReviewIteration
 from podcast_pipeline.review_loop_engine import LoopOutcome
 from podcast_pipeline.workspace_store import EpisodeWorkspaceLayout
@@ -45,6 +46,10 @@ class _AssetStatus:
 
 
 def run_status(*, workspace: Path) -> None:
+    issues = collect_agent_cli_issues(workspace=workspace)
+    for issue in issues:
+        typer.echo(issue, err=True)
+
     layout = EpisodeWorkspaceLayout(root=workspace)
     protocol_states = _find_protocol_states(layout)
     if not protocol_states:
