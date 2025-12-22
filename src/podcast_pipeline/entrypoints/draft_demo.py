@@ -1,12 +1,20 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from pathlib import Path
 
 import typer
 
-from podcast_pipeline.agent_runners import FakeCreatorRunner, FakeReviewerRunner
+from podcast_pipeline.agent_cli_config import collect_agent_cli_issues, load_agent_cli_bundle
+from podcast_pipeline.agent_runners import (
+    FakeCreatorRunner,
+    FakeReviewerRunner,
+    build_local_cli_runners,
+)
 from podcast_pipeline.domain.models import EpisodeWorkspace
+from podcast_pipeline.domain.models import ReviewIteration
+from podcast_pipeline.review_loop_engine import CreatorInput, CreatorOutput, ReviewerInput
 from podcast_pipeline.review_loop_orchestrator import run_review_loop_orchestrator
 from podcast_pipeline.workspace_store import EpisodeWorkspaceStore
 
@@ -77,8 +85,11 @@ def run_draft_demo(
     max_iterations: int,
 ) -> None:
     if not fake_runner:
-        typer.echo("Only `podcast draft --fake-runner` is implemented right now.", err=True)
-        raise typer.Exit(code=2)
+        issues = collect_agent_cli_issues(workspace=workspace)
+        for issue in issues:
+            typer.echo(issue, err=True)
+        if issues:
+            raise typer.Exit(code=2)
 
     if not _ASSET_ID_RE.fullmatch(asset_id):
         raise typer.BadParameter("asset_id must match ^[a-z][a-z0-9_]*$")
@@ -112,26 +123,32 @@ def run_draft_demo(
     )
     store.write_state(EpisodeWorkspace(episode_id=episode_id, root_dir=str(root)))
 
-    initial_description = _build_initial_description(
-        transcript=transcript_path.read_text(encoding="utf-8"),
-        chapters=chapters_path.read_text(encoding="utf-8"),
-    )
+    creator: Callable[[CreatorInput], CreatorOutput]
+    reviewer: Callable[[ReviewerInput], ReviewIteration]
+    if fake_runner:
+        initial_description = _build_initial_description(
+            transcript=transcript_path.read_text(encoding="utf-8"),
+            chapters=chapters_path.read_text(encoding="utf-8"),
+        )
 
-    creator = FakeCreatorRunner(
-        layout=store.layout,
-        replies=[
-            {"done": False, "candidate": {"content": initial_description}},
-            {"done": True, "candidate": {"content": initial_description + "\nRevision 2\n"}},
-        ],
-    )
-    reviewer = FakeReviewerRunner(
-        layout=store.layout,
-        reviewer="reviewer_a",
-        replies=[
-            {"verdict": "changes_requested", "issues": [{"message": "add more detail"}]},
-            {"verdict": "ok"},
-        ],
-    )
+        creator = FakeCreatorRunner(
+            layout=store.layout,
+            replies=[
+                {"done": False, "candidate": {"content": initial_description}},
+                {"done": True, "candidate": {"content": initial_description + "\nRevision 2\n"}},
+            ],
+        )
+        reviewer = FakeReviewerRunner(
+            layout=store.layout,
+            reviewer="reviewer_a",
+            replies=[
+                {"verdict": "changes_requested", "issues": [{"message": "add more detail"}]},
+                {"verdict": "ok"},
+            ],
+        )
+    else:
+        bundle = load_agent_cli_bundle(workspace=store.layout.root)
+        creator, reviewer = build_local_cli_runners(layout=store.layout, bundle=bundle)
 
     protocol_state = run_review_loop_orchestrator(
         workspace=store.layout.root,

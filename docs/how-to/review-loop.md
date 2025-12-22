@@ -2,9 +2,20 @@
 
 This guide shows how to run the MVP-1 creator/reviewer loop with the fake runner and how to interpret the `podcast status` output.
 
-## 1. Run a demo loop (fake runner)
+## 1. Run the loop
 
-Only the fake runner is wired up today. The command creates a new workspace and writes protocol state under `copy/protocol/<asset_id>/`.
+By default, `podcast draft` uses the local Codex/Claude CLIs configured in `episode.yaml` or
+`~/.config/podcast-pipeline/config.yaml` and writes protocol state under `copy/protocol/<asset_id>/`.
+
+```bash
+podcast draft \
+  --workspace ./workspaces/ep_001 \
+  --episode-id ep_001 \
+  --asset-id description \
+  --max-iterations 3
+```
+
+If you do not have the CLIs installed, use the fake runner instead:
 
 ```bash
 podcast draft \
@@ -19,7 +30,10 @@ Notes:
 
 - `--workspace` must not exist; the command creates it.
 - `--asset-id` must match `^[a-z][a-z0-9_]*$`.
+- Agent CLI configuration is documented in `reference/configuration.md`.
 - On convergence, the command prints the selected asset path.
+- Review iterations are written under `copy/reviews/<asset_id>/iteration_XX.<reviewer>.json` when the reviewer label is set.
+- The loop stops only when the reviewer returns `ok` and the creator reports `done`, or when `max_iterations` is reached.
 
 ## 2. Inspect loop status
 
