@@ -55,6 +55,9 @@ def test_layout_copy_paths_are_deterministic(tmp_path: Path) -> None:
     assert layout.review_iteration_json_path("description", 3, reviewer="reviewer_a") == (
         tmp_path / "copy" / "reviews" / "description" / "iteration_03.reviewer_a.json"
     )
+    assert layout.creator_iteration_json_path("description", 4) == (
+        tmp_path / "copy" / "protocol" / "description" / "iteration_04.creator.json"
+    )
 
     assert layout.selected_text_path("description", TextFormat.markdown) == (
         tmp_path / "copy" / "selected" / "description.md"

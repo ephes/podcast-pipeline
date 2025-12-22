@@ -213,6 +213,10 @@ class EpisodeWorkspaceLayout:
         safe_asset = _safe_path_segment(asset_id)
         return self.copy_protocol_dir / safe_asset / f"iteration_{iteration:02d}.json"
 
+    def creator_iteration_json_path(self, asset_id: str, iteration: int) -> Path:
+        safe_asset = _safe_path_segment(asset_id)
+        return self.copy_protocol_dir / safe_asset / f"iteration_{iteration:02d}.creator.json"
+
     def selected_text_path(self, asset_id: str, fmt: TextFormat) -> Path:
         safe_asset = _safe_path_segment(asset_id)
         ext = _format_to_extension(fmt)

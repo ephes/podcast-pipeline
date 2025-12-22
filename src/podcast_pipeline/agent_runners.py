@@ -1,18 +1,37 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping, Sequence
+import subprocess
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid5
 
-from podcast_pipeline.domain.models import Candidate, ReviewIteration
+from podcast_pipeline.agent_cli_config import AgentCliBundle, AgentCliConfig
+from podcast_pipeline.domain.models import Candidate, ProvenanceRef, ReviewIteration
+from podcast_pipeline.prompting import (
+    FewShotExample,
+    GlossaryEntry,
+    PromptRenderer,
+    PromptRenderResult,
+    PromptStore,
+    default_prompt_registry,
+    render_creator_prompt,
+    render_reviewer_prompt,
+)
 from podcast_pipeline.review_loop_engine import CreatorInput, CreatorOutput, ReviewerInput
-from podcast_pipeline.workspace_store import EpisodeWorkspaceLayout
+from podcast_pipeline.workspace_store import EpisodeWorkspaceLayout, EpisodeWorkspaceStore
 
 _FAKE_UUID_NAMESPACE = UUID("00000000-0000-0000-0000-000000000000")
 _DEFAULT_CREATED_AT = "2000-01-01T00:00:00+00:00"
+
+GlossaryInput = Mapping[str, str] | Sequence[GlossaryEntry | Mapping[str, Any] | Sequence[str]] | None
+FewShotInput = Sequence[FewShotExample | Mapping[str, Any]] | None
+
+
+class AgentRunnerError(RuntimeError):
+    pass
 
 
 @dataclass(frozen=True)
@@ -67,6 +86,108 @@ def _write_mutations(*, root: Path, mutate_files: Mapping[str, str]) -> None:
 def _deterministic_uuid(*, prefix: str, parts: Sequence[str]) -> UUID:
     name = ":".join([prefix, *parts])
     return uuid5(_FAKE_UUID_NAMESPACE, name)
+
+
+def _append_provenance(items: Sequence[ProvenanceRef], extra: ProvenanceRef) -> list[ProvenanceRef]:
+    for item in items:
+        if item.kind == extra.kind and item.ref == extra.ref:
+            return list(items)
+    return [*items, extra]
+
+
+def _extract_json_payload(raw: str, *, label: str) -> dict[str, Any]:
+    stripped = raw.strip()
+    if not stripped:
+        raise AgentRunnerError(f"{label} CLI output was empty")
+    try:
+        parsed = json.loads(stripped)
+    except json.JSONDecodeError as exc:
+        start = stripped.find("{")
+        end = stripped.rfind("}")
+        if start < 0 or end <= start:
+            raise AgentRunnerError(f"{label} CLI output did not contain a JSON object") from exc
+        try:
+            parsed = json.loads(stripped[start : end + 1])
+        except json.JSONDecodeError as exc:
+            raise AgentRunnerError(f"{label} CLI returned invalid JSON: {exc}") from exc
+    if not isinstance(parsed, dict):
+        raise AgentRunnerError(f"{label} CLI JSON must be an object")
+    return parsed
+
+
+def _load_prompt_text(*, prompt_path: Path | None, prompt_text: str | None) -> str:
+    if prompt_text is not None:
+        return prompt_text
+    if prompt_path is None:
+        raise ValueError("prompt_path or prompt_text is required")
+    return prompt_path.read_text(encoding="utf-8")
+
+
+def _extract_review_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
+    if "review" in payload:
+        review_raw = payload["review"]
+        if not isinstance(review_raw, Mapping):
+            raise AgentRunnerError("Reviewer JSON 'review' field must be an object")
+        return dict(review_raw)
+    return dict(payload)
+
+
+def _extract_creator_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
+    if "creator" in payload:
+        creator_raw = payload["creator"]
+        if not isinstance(creator_raw, Mapping):
+            raise AgentRunnerError("Creator JSON 'creator' field must be an object")
+        return dict(creator_raw)
+    return dict(payload)
+
+
+def _require_bool(payload: Mapping[str, Any], *, key: str, label: str) -> bool:
+    if key not in payload:
+        raise AgentRunnerError(f"{label} JSON '{key}' field is required")
+    value = payload[key]
+    if not isinstance(value, bool):
+        raise AgentRunnerError(f"{label} JSON '{key}' field must be a boolean")
+    return value
+
+
+def _parse_creator_candidate(payload: Mapping[str, Any], *, asset_id: str) -> Candidate:
+    if "candidate" in payload:
+        candidate_raw = payload["candidate"]
+        if not isinstance(candidate_raw, Mapping):
+            raise AgentRunnerError("Creator JSON 'candidate' field must be an object")
+        candidate_data: dict[str, Any] = dict(candidate_raw)
+    else:
+        candidate_data = {k: v for k, v in payload.items() if k not in {"applied", "done"}}
+
+    candidate_data.setdefault("asset_id", asset_id)
+    if "content" not in candidate_data:
+        raise AgentRunnerError("Creator JSON candidate must include content")
+    if candidate_data.get("asset_id") != asset_id:
+        raise AgentRunnerError("Creator candidate asset_id must match requested asset_id")
+    return Candidate.model_validate(candidate_data)
+
+
+def _write_creator_iteration(
+    *,
+    layout: EpisodeWorkspaceLayout,
+    asset_id: str,
+    iteration: int,
+    applied: bool,
+    done: bool,
+    candidate: Candidate,
+) -> Path:
+    path = layout.creator_iteration_json_path(asset_id, iteration)
+    payload = {
+        "version": 1,
+        "iteration": iteration,
+        "asset_id": asset_id,
+        "applied": applied,
+        "done": done,
+        "candidate_id": str(candidate.candidate_id),
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return path
 
 
 class FakeCreatorRunner:
@@ -205,3 +326,216 @@ class FakeReviewerRunner:
         reply = self._replies[self._pos]
         self._pos += 1
         return reply
+
+
+class CodexCliCreatorRunner:
+    def __init__(
+        self,
+        *,
+        layout: EpisodeWorkspaceLayout,
+        config: AgentCliConfig,
+        timeout_seconds: float | None = None,
+    ) -> None:
+        self._layout = layout
+        self._config = config
+        self._timeout_seconds = timeout_seconds
+
+    def run_prompt(
+        self,
+        *,
+        prompt_path: Path | None = None,
+        prompt_text: str | None = None,
+        prompt_provenance: ProvenanceRef | None = None,
+        asset_id: str,
+        iteration: int,
+    ) -> CreatorOutput:
+        prompt_text = _load_prompt_text(prompt_path=prompt_path, prompt_text=prompt_text)
+        raw = self._run_cli(prompt_text)
+        payload = _extract_json_payload(raw, label="Creator")
+        creator_data = _extract_creator_payload(payload)
+        applied = _require_bool(creator_data, key="applied", label="Creator")
+        done = _require_bool(creator_data, key="done", label="Creator")
+        candidate = _parse_creator_candidate(creator_data, asset_id=asset_id)
+        if prompt_provenance is not None:
+            candidate = candidate.model_copy(
+                update={"provenance": _append_provenance(candidate.provenance, prompt_provenance)},
+            )
+        store = EpisodeWorkspaceStore(self._layout.root)
+        store.write_candidate(candidate)
+        _write_creator_iteration(
+            layout=self._layout,
+            asset_id=asset_id,
+            iteration=iteration,
+            applied=applied,
+            done=done,
+            candidate=candidate,
+        )
+        return CreatorOutput(candidate=candidate, done=done)
+
+    def run_with_prompt(
+        self,
+        *,
+        prompt: PromptRenderResult,
+        asset_id: str,
+        iteration: int,
+    ) -> CreatorOutput:
+        store = EpisodeWorkspaceStore(self._layout.root)
+        prompt_provenance = PromptStore(store).write(prompt)
+        return self.run_prompt(
+            prompt_text=prompt.text,
+            prompt_provenance=prompt_provenance,
+            asset_id=asset_id,
+            iteration=iteration,
+        )
+
+    def _run_cli(self, prompt_text: str) -> str:
+        command = [self._config.command, *self._config.args]
+        result = subprocess.run(
+            command,
+            input=prompt_text,
+            text=True,
+            capture_output=True,
+            check=False,
+            cwd=str(self._layout.root),
+            timeout=self._timeout_seconds,
+        )
+        if result.returncode != 0:
+            detail = (result.stderr or "").strip()
+            if detail:
+                detail = f" {detail}"
+            raise AgentRunnerError(f"Creator CLI failed with exit code {result.returncode}.{detail}")
+        if not (result.stdout or "").strip():
+            raise AgentRunnerError("Creator CLI returned empty output")
+        return result.stdout or ""
+
+
+class ClaudeCodeReviewerRunner:
+    def __init__(
+        self,
+        *,
+        layout: EpisodeWorkspaceLayout,
+        config: AgentCliConfig,
+        reviewer: str | None = None,
+        timeout_seconds: float | None = None,
+    ) -> None:
+        self._layout = layout
+        self._config = config
+        self._reviewer = reviewer or config.role
+        self._timeout_seconds = timeout_seconds
+
+    def run_prompt(
+        self,
+        *,
+        prompt_path: Path | None = None,
+        prompt_text: str | None = None,
+        prompt_provenance: ProvenanceRef | None = None,
+        asset_id: str,
+        iteration: int,
+    ) -> ReviewIteration:
+        prompt_text = _load_prompt_text(prompt_path=prompt_path, prompt_text=prompt_text)
+        raw = self._run_cli(prompt_text)
+        payload = _extract_json_payload(raw, label="Reviewer")
+        review_data = _extract_review_payload(payload)
+        review_data.setdefault("iteration", iteration)
+        review_data.setdefault("reviewer", self._reviewer)
+        review = ReviewIteration.model_validate(review_data)
+        if review.iteration != iteration:
+            review = review.model_copy(update={"iteration": iteration})
+        if review.reviewer is None:
+            review = review.model_copy(update={"reviewer": self._reviewer})
+        if prompt_provenance is not None:
+            review = review.model_copy(
+                update={"provenance": _append_provenance(review.provenance, prompt_provenance)},
+            )
+        store = EpisodeWorkspaceStore(self._layout.root)
+        store.write_review(asset_id, review)
+        return review
+
+    def run_with_prompt(
+        self,
+        *,
+        prompt: PromptRenderResult,
+        asset_id: str,
+        iteration: int,
+    ) -> ReviewIteration:
+        store = EpisodeWorkspaceStore(self._layout.root)
+        prompt_provenance = PromptStore(store).write(prompt)
+        return self.run_prompt(
+            prompt_text=prompt.text,
+            prompt_provenance=prompt_provenance,
+            asset_id=asset_id,
+            iteration=iteration,
+        )
+
+    def _run_cli(self, prompt_text: str) -> str:
+        command = [self._config.command, *self._config.args]
+        result = subprocess.run(
+            command,
+            input=prompt_text,
+            text=True,
+            capture_output=True,
+            check=False,
+            cwd=str(self._layout.root),
+            timeout=self._timeout_seconds,
+        )
+        if result.returncode != 0:
+            detail = (result.stderr or "").strip()
+            if detail:
+                detail = f" {detail}"
+            raise AgentRunnerError(f"Reviewer CLI failed with exit code {result.returncode}.{detail}")
+        if not (result.stdout or "").strip():
+            raise AgentRunnerError("Reviewer CLI returned empty output")
+        return result.stdout or ""
+
+
+def build_local_cli_runners(
+    *,
+    layout: EpisodeWorkspaceLayout,
+    bundle: AgentCliBundle,
+    renderer: PromptRenderer | None = None,
+    glossary: GlossaryInput = None,
+    few_shots: FewShotInput = None,
+    timeout_seconds: float | None = None,
+) -> tuple[Callable[[CreatorInput], CreatorOutput], Callable[[ReviewerInput], ReviewIteration]]:
+    if renderer is None:
+        renderer = PromptRenderer(default_prompt_registry())
+
+    creator_runner = CodexCliCreatorRunner(
+        layout=layout,
+        config=bundle.creator,
+        timeout_seconds=timeout_seconds,
+    )
+    reviewer_runner = ClaudeCodeReviewerRunner(
+        layout=layout,
+        config=bundle.reviewer,
+        reviewer=bundle.reviewer.role,
+        timeout_seconds=timeout_seconds,
+    )
+
+    def creator(inp: CreatorInput) -> CreatorOutput:
+        prompt = render_creator_prompt(
+            renderer=renderer,
+            inp=inp,
+            glossary=glossary,
+            few_shots=few_shots,
+        )
+        return creator_runner.run_with_prompt(
+            prompt=prompt,
+            asset_id=inp.asset_id,
+            iteration=inp.iteration,
+        )
+
+    def reviewer(inp: ReviewerInput) -> ReviewIteration:
+        prompt = render_reviewer_prompt(
+            renderer=renderer,
+            inp=inp,
+            glossary=glossary,
+            few_shots=few_shots,
+        )
+        return reviewer_runner.run_with_prompt(
+            prompt=prompt,
+            asset_id=inp.asset_id,
+            iteration=inp.iteration,
+        )
+
+    return creator, reviewer
