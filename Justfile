@@ -10,14 +10,14 @@ sync *ARGS="":
 # Docs
 docs:
   uv sync
-  uv run mkdocs serve
+  uv run sphinx-autobuild docs docs/_build/html
 
 docs-build:
   uv sync
-  uv run mkdocs build
+  uv run sphinx-build -b html docs docs/_build/html
 
 docs-clean:
-  rm -rf site
+  rm -rf docs/_build
 
 # Quality gates
 lint *ARGS="":

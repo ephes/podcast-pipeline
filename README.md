@@ -15,11 +15,19 @@ just test
 
 ## Docs
 
-We use MkDocs with a minimal `mkdocs.yml` at the repo root. Preview locally with:
+We use Sphinx with MyST Markdown. Preview locally with:
 
 ```bash
 just docs
 ```
+
+For a static build:
+
+```bash
+just docs-build
+```
+
+The preview runs at http://127.0.0.1:8000 and static output lands in `docs/_build/html/`.
 
 ## Domain models
 
