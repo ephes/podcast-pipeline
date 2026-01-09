@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
-from typing import Annotated, Any, Generic, TypeVar
+from typing import Annotated, Any, ClassVar, Generic, Self, TypeVar
 from uuid import UUID, uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
@@ -19,6 +19,19 @@ def _utc_now() -> datetime:
 
 class DomainModel(BaseModel):
     model_config = ConfigDict(extra="forbid", validate_assignment=True)
+
+
+class SchemaVersioned(DomainModel):
+    schema_version: Annotated[int, Field(ge=1)] = 1
+    _schema_version: ClassVar[int] = 1
+
+    @model_validator(mode="after")
+    def _validate_schema_version(self) -> Self:
+        if self.schema_version != self._schema_version:
+            raise ValueError(
+                f"Unsupported schema_version {self.schema_version}; expected {self._schema_version}",
+            )
+        return self
 
 
 class TextFormat(StrEnum):
@@ -149,7 +162,7 @@ class Track(DomainModel):
     provenance: list[ProvenanceRef] = Field(default_factory=list)
 
 
-class EpisodeWorkspace(DomainModel):
+class EpisodeWorkspace(SchemaVersioned):
     episode_id: Annotated[str, Field(min_length=1)]
     root_dir: Annotated[str, Field(min_length=1)]
     assets: list[Asset] = Field(default_factory=list)

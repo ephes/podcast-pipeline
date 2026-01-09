@@ -33,3 +33,8 @@ Notes:
 - `command` must be a single executable (no whitespace). Put extra flags in `args`.
 - `episode.yaml` overrides the global config when both are present.
 - This configuration is for local CLI runners only; do not store secrets here.
+
+## episode.yaml metadata
+
+`episode.yaml` also stores per-episode inputs, sources, and track metadata. See `reference/episode-yaml.md` for the full
+schema and details on `podcast ingest`.

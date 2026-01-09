@@ -12,10 +12,12 @@ nav:
   - How-to:
       - Overview: how-to/index.md
       - Run the text pipeline: how-to/text-pipeline.md
+      - Ingest Reaper media into a workspace: how-to/reaper-ingest.md
       - Run the review loop and read status: how-to/review-loop.md
   - Reference:
       - Overview: reference/index.md
       - Configuration options: reference/configuration.md
+      - episode.yaml schema: reference/episode-yaml.md
       - Review protocol schemas: reference/review-protocol-schemas.md
   - Explanation:
       - Overview: explanation/index.md

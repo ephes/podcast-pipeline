@@ -10,6 +10,8 @@ from podcast_pipeline.workspace_store import EpisodeWorkspaceStore, WorkspaceSto
 
 _TRACK_ID_RE = re.compile(r"^[a-z][a-z0-9_]*$")
 _TRACK_ID_CLEAN_RE = re.compile(r"[^a-z0-9]+")
+_TRACK_PERSON_NUMBER_RE = re.compile(r"^(?P<name>.+?)[\s._-]*[\[(]?(?P<number>\d{1,3})[\])]?$")
+_TRACK_LABEL_CLEAN_RE = re.compile(r"[\s._-]+")
 
 
 def run_ingest(
@@ -156,7 +158,13 @@ def _choose_track_id(
         if isinstance(raw, str) and raw.strip():
             candidate = _sanitize_track_id(raw)
     if candidate is None:
-        candidate = _sanitize_track_id(path.stem)
+        parsed = _parse_person_number(path.stem)
+        if parsed is not None:
+            name, number = parsed
+            base = _sanitize_track_id(name)
+            candidate = f"{base}_{number:02d}"
+        else:
+            candidate = _sanitize_track_id(path.stem)
     candidate = _ensure_track_prefix(candidate)
     return _unique_track_id(candidate, used_ids)
 
@@ -166,7 +174,13 @@ def _choose_label(existing: dict[str, Any] | None, path: Path) -> str | None:
         raw = existing.get("label")
         if isinstance(raw, str) and raw.strip():
             return raw
-    label = path.stem.strip()
+    parsed = _parse_person_number(path.stem)
+    if parsed is not None:
+        name, number = parsed
+        base = _normalize_label(name)
+        if base:
+            return f"{base} {number}"
+    label = _normalize_label(path.stem)
     return label or None
 
 
@@ -208,3 +222,21 @@ def _unique_track_id(candidate: str, used_ids: set[str]) -> str:
 
 def _path_key(value: str) -> str:
     return value.replace("\\", "/")
+
+
+def _parse_person_number(stem: str) -> tuple[str, int] | None:
+    candidate = stem.strip()
+    if not candidate:
+        return None
+    match = _TRACK_PERSON_NUMBER_RE.match(candidate)
+    if not match:
+        return None
+    name = match.group("name").strip(" _-")
+    if not name or not re.search(r"[A-Za-z]", name):
+        return None
+    number = int(match.group("number"))
+    return name, number
+
+
+def _normalize_label(value: str) -> str:
+    return _TRACK_LABEL_CLEAN_RE.sub(" ", value).strip()

@@ -14,6 +14,7 @@ from uuid import UUID
 import yaml
 from pydantic import ValidationError
 
+from podcast_pipeline.domain.episode_yaml import EpisodeYaml, try_load_episode_yaml
 from podcast_pipeline.domain.models import (
     Candidate,
     EpisodeWorkspace,
@@ -269,10 +270,17 @@ class EpisodeWorkspaceStore:
         self.layout = EpisodeWorkspaceLayout(root=root)
 
     def read_episode_yaml(self) -> dict[str, Any]:
-        return _read_yaml_mapping(self.layout.episode_yaml)
+        raw = _read_yaml_mapping(self.layout.episode_yaml)
+        result = try_load_episode_yaml(raw)
+        if result.error is not None:
+            raise WorkspaceStoreError(f"Invalid episode.yaml at {self.layout.episode_yaml}: {result.error}")
+        episode = result.value
+        assert episode is not None
+        return episode.to_mapping(exclude_unset=True)
 
-    def write_episode_yaml(self, data: Mapping[str, Any]) -> None:
-        dumped = yaml.safe_dump(dict(data), sort_keys=True)
+    def write_episode_yaml(self, data: Mapping[str, Any] | EpisodeYaml) -> None:
+        episode = data if isinstance(data, EpisodeYaml) else EpisodeYaml.model_validate(dict(data))
+        dumped = yaml.safe_dump(episode.to_mapping(exclude_unset=True), sort_keys=True)
         if not dumped.endswith("\n"):
             dumped += "\n"
         _atomic_write_text(self.layout.episode_yaml, dumped)
