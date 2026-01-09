@@ -7,14 +7,19 @@ Task-focused guides for specific outcomes live here.
 Use this checklist when shipping an epic or a significant feature:
 
 - Place new content in the right Diataxis section (tutorials/how-to/reference/explanation).
-- Add or update pages under `docs/` and keep the navigation in `mkdocs.yml` current.
-- Preview locally with `just docs` and fix any broken links.
+- Add or update pages under `docs/` and keep the section toctree current.
+- Preview locally with `just docs`, or build static HTML with `just docs-build`, and fix any broken links.
 
 ## Common tasks
 
-- [Run the text pipeline](text-pipeline.md)
-- [Ingest Reaper media into a workspace](reaper-ingest.md)
-- [Run the review loop and read status](review-loop.md)
+```{toctree}
+:maxdepth: 1
+
+text-pipeline
+reaper-ingest
+review-loop
+```
+
 - Placeholder: Generate episode summaries (TBD)
 - Placeholder: Draft show notes (TBD)
 - Placeholder: Export outputs for editors (TBD)

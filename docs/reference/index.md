@@ -4,7 +4,12 @@ Technical reference material and API documentation live here.
 
 ## API references
 
-- Review protocol schemas: review-protocol-schemas.md
-- Configuration options: configuration.md
-- episode.yaml schema: episode-yaml.md
+```{toctree}
+:maxdepth: 1
+
+configuration
+episode-yaml
+review-protocol-schemas
+```
+
 - Placeholder: CLI commands (TBD)
