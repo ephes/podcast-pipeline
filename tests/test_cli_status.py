@@ -14,7 +14,7 @@ def test_cli_status_reports_latest_review(tmp_path: Path) -> None:
     result = runner.invoke(
         app,
         [
-            "draft",
+            "review",
             "--fake-runner",
             "--workspace",
             str(workspace),

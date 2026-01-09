@@ -178,6 +178,18 @@ class EpisodeWorkspaceLayout:
     def copy_protocol_dir(self) -> Path:
         return self.copy_dir / "protocol"
 
+    @property
+    def auphonic_dir(self) -> Path:
+        return self.root / "auphonic"
+
+    @property
+    def auphonic_downloads_dir(self) -> Path:
+        return self.auphonic_dir / "downloads"
+
+    @property
+    def auphonic_outputs_dir(self) -> Path:
+        return self.auphonic_dir / "outputs"
+
     def candidate_json_path(self, asset_id: str, candidate_id: UUID) -> Path:
         safe_asset = _safe_path_segment(asset_id)
         return self.copy_candidates_dir / safe_asset / f"candidate_{candidate_id}.json"

@@ -1,5 +1,6 @@
 from pathlib import Path
 from typing import Annotated
+from uuid import UUID
 
 import typer
 
@@ -15,7 +16,116 @@ def version() -> None:
 
 
 @app.command()
+def init(
+    *,
+    episode_id: Annotated[
+        str,
+        typer.Option(help="Episode id to create a workspace for."),
+    ],
+    workspace: Annotated[
+        Path | None,
+        typer.Option(
+            help="Episode workspace directory (default: ./episodes/<episode_id>).",
+        ),
+    ] = None,
+) -> None:
+    """Create a new episode workspace with the default layout."""
+    from podcast_pipeline.entrypoints.init import run_init
+
+    run_init(workspace=workspace, episode_id=episode_id, project_root=Path.cwd())
+
+
+@app.command()
+def ingest(
+    *,
+    workspace: Annotated[
+        Path,
+        typer.Option(
+            exists=True,
+            file_okay=False,
+            help="Episode workspace directory (must exist).",
+        ),
+    ],
+    reaper_media_dir: Annotated[
+        Path,
+        typer.Option(
+            exists=True,
+            file_okay=False,
+            help="Reaper media directory containing source tracks.",
+        ),
+    ],
+    tracks_glob: Annotated[
+        str,
+        typer.Option(help="Glob for selecting track files (default: *.flac)."),
+    ] = "*.flac",
+) -> None:
+    """Scan a Reaper media dir and update episode.yaml sources + tracks."""
+    from podcast_pipeline.entrypoints.ingest import run_ingest
+
+    run_ingest(
+        workspace=workspace,
+        reaper_media_dir=reaper_media_dir,
+        tracks_glob=tracks_glob,
+    )
+
+
+@app.command()
 def draft(
+    *,
+    workspace: Annotated[
+        Path,
+        typer.Option(
+            help="Episode workspace directory (must not exist).",
+        ),
+    ],
+    transcript: Annotated[
+        Path,
+        typer.Option(
+            exists=True,
+            dir_okay=False,
+            help="Transcript .txt file to ingest.",
+        ),
+    ],
+    chapters: Annotated[
+        Path | None,
+        typer.Option(
+            exists=True,
+            dir_okay=False,
+            help="Optional chapters .txt file.",
+        ),
+    ] = None,
+    candidates_per_asset: Annotated[
+        int,
+        typer.Option("--candidates", "-n", min=1, help="Candidates per asset."),
+    ] = 3,
+    dry_run: Annotated[
+        bool,
+        typer.Option(help="Run draft without any external LLM calls (stub backend)."),
+    ] = False,
+    episode_id: Annotated[
+        str,
+        typer.Option(help="Episode id to write into the workspace."),
+    ] = "demo_ep_001",
+) -> None:
+    """Create draft candidates by running the text pipeline."""
+    from podcast_pipeline.entrypoints.draft_pipeline import run_draft_pipeline
+    from podcast_pipeline.summarization_stub import StubSummarizerConfig
+    from podcast_pipeline.transcript_chunker import ChunkerConfig
+
+    run_draft_pipeline(
+        dry_run=dry_run,
+        workspace=workspace,
+        episode_id=episode_id,
+        transcript=transcript,
+        chapters=chapters,
+        candidates_per_asset=candidates_per_asset,
+        chunker_config=ChunkerConfig(),
+        summarizer_config=StubSummarizerConfig(),
+    )
+
+
+@app.command()
+def review(
     *,
     fake_runner: Annotated[
         bool,
@@ -39,7 +149,7 @@ def draft(
     ] = "description",
     max_iterations: Annotated[int, typer.Option(min=1, help="Maximum loop iterations.")] = 3,
 ) -> None:
-    """Create a draft asset by running the Creator/Reviewer loop."""
+    """Run the Creator/Reviewer loop for one asset."""
     from podcast_pipeline.entrypoints.draft_demo import run_draft_demo
 
     run_draft_demo(
@@ -83,6 +193,32 @@ def draft_candidates(
         chapters=chapters,
         candidates_per_asset=candidates_per_asset,
     )
+
+
+@app.command()
+def pick(
+    *,
+    workspace: Annotated[
+        Path,
+        typer.Option(
+            exists=True,
+            file_okay=False,
+            help="Episode workspace directory (must exist).",
+        ),
+    ],
+    asset_id: Annotated[
+        str | None,
+        typer.Option(help="Asset id to pick (default: all assets with candidates)."),
+    ] = None,
+    candidate_id: Annotated[
+        UUID | None,
+        typer.Option(help="Candidate id to select (requires --asset-id)."),
+    ] = None,
+) -> None:
+    """Select a candidate per asset and write copy/selected outputs."""
+    from podcast_pipeline.entrypoints.pick import run_pick
+
+    run_pick(workspace=workspace, asset_id=asset_id, candidate_id=candidate_id)
 
 
 @app.command()

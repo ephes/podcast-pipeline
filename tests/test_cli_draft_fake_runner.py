@@ -7,14 +7,14 @@ from typer.testing import CliRunner
 from podcast_pipeline.entrypoints.cli import app
 
 
-def test_cli_draft_fake_runner_creates_workspace(tmp_path: Path) -> None:
+def test_cli_review_fake_runner_creates_workspace(tmp_path: Path) -> None:
     runner = CliRunner()
     workspace = tmp_path / "workspace"
 
     result = runner.invoke(
         app,
         [
-            "draft",
+            "review",
             "--fake-runner",
             "--workspace",
             str(workspace),
