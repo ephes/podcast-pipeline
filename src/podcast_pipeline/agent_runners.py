@@ -28,6 +28,8 @@ _DEFAULT_CREATED_AT = "2000-01-01T00:00:00+00:00"
 
 GlossaryInput = Mapping[str, str] | Sequence[GlossaryEntry | Mapping[str, Any] | Sequence[str]] | None
 FewShotInput = Sequence[FewShotExample | Mapping[str, Any]] | None
+ScriptedReplyValue = Mapping[str, Any] | str
+ScriptedReplyInput = Sequence[ScriptedReplyValue] | Mapping[str, Sequence[ScriptedReplyValue]]
 
 
 class AgentRunnerError(RuntimeError):
@@ -81,6 +83,24 @@ def _write_mutations(*, root: Path, mutate_files: Mapping[str, str]) -> None:
             content if content.endswith("\n") else content + "\n",
             encoding="utf-8",
         )
+
+
+def _parse_scripted_replies(
+    replies: ScriptedReplyInput,
+    *,
+    label: str,
+) -> tuple[list[ScriptedJsonReply] | None, dict[str, list[ScriptedJsonReply]] | None]:
+    if isinstance(replies, Mapping):
+        reply_map: dict[str, list[ScriptedJsonReply]] = {}
+        for asset_id, asset_replies in replies.items():
+            if isinstance(asset_replies, str) or not isinstance(asset_replies, Sequence):
+                raise TypeError(f"{label} replies for asset '{asset_id}' must be a sequence")
+            reply_map[asset_id] = [ScriptedJsonReply.from_value(v) for v in asset_replies]
+        return None, reply_map
+
+    if isinstance(replies, str) or not isinstance(replies, Sequence):
+        raise TypeError(f"{label} replies must be a sequence of reply objects")
+    return [ScriptedJsonReply.from_value(v) for v in replies], None
 
 
 def _deterministic_uuid(*, prefix: str, parts: Sequence[str]) -> UUID:
@@ -195,33 +215,37 @@ class FakeCreatorRunner:
         self,
         *,
         layout: EpisodeWorkspaceLayout,
-        replies: Sequence[Mapping[str, Any] | str],
+        replies: ScriptedReplyInput,
         default_created_at: str = _DEFAULT_CREATED_AT,
     ) -> None:
         self._layout = layout
-        self._replies = [ScriptedJsonReply.from_value(v) for v in replies]
+        self._replies, self._replies_by_asset = _parse_scripted_replies(replies, label="FakeCreatorRunner")
         self._default_created_at = default_created_at
         self.calls: list[CreatorInput] = []
         self._pos = 0
+        self._pos_by_asset = {asset_id: 0 for asset_id in self._replies_by_asset or {}}
 
     def run_json(self, inp: CreatorInput) -> dict[str, Any]:
         return self._consume(inp)
 
     def __call__(self, inp: CreatorInput) -> CreatorOutput:
         data = self._consume(inp)
-        if "done" not in data:
+        creator_data = _extract_creator_payload(data)
+        if "done" not in creator_data:
             raise ValueError("FakeCreatorRunner reply must include done")
-        done = bool(data["done"])
+        done = bool(creator_data["done"])
 
-        if "candidate" in data:
-            candidate_raw = data["candidate"]
+        if "candidate" in creator_data:
+            candidate_raw = creator_data["candidate"]
             if not isinstance(candidate_raw, dict):
                 raise TypeError("FakeCreatorRunner reply candidate must be an object")
             candidate_data: dict[str, Any] = dict(candidate_raw)
         else:
-            candidate_data = {k: v for k, v in data.items() if k != "done"}
+            candidate_data = {k: v for k, v in creator_data.items() if k not in {"done", "applied"}}
 
         candidate_data.setdefault("asset_id", inp.asset_id)
+        if candidate_data.get("asset_id") != inp.asset_id:
+            raise ValueError("FakeCreatorRunner candidate asset_id must match requested asset_id")
         if "content" not in candidate_data:
             raise ValueError("FakeCreatorRunner candidate must include content")
         candidate_data.setdefault(
@@ -240,15 +264,29 @@ class FakeCreatorRunner:
 
     def _consume(self, inp: CreatorInput) -> dict[str, Any]:
         self.calls.append(inp)
-        reply = self._next_reply()
+        reply = self._next_reply(inp.asset_id)
         _write_mutations(root=self._layout.root, mutate_files=reply.mutate_files)
         return dict(reply.json_data)
 
-    def _next_reply(self) -> ScriptedJsonReply:
-        if self._pos >= len(self._replies):
-            raise IndexError(f"FakeCreatorRunner exhausted: called {self._pos + 1} times, only {len(self._replies)}")
-        reply = self._replies[self._pos]
-        self._pos += 1
+    def _next_reply(self, asset_id: str) -> ScriptedJsonReply:
+        if self._replies_by_asset is None:
+            if self._replies is None or self._pos >= len(self._replies):
+                total = 0 if self._replies is None else len(self._replies)
+                raise IndexError(f"FakeCreatorRunner exhausted: called {self._pos + 1} times, only {total}")
+            reply = self._replies[self._pos]
+            self._pos += 1
+            return reply
+
+        if asset_id not in self._replies_by_asset:
+            raise KeyError(f"FakeCreatorRunner has no scripted replies for asset_id '{asset_id}'")
+        replies = self._replies_by_asset[asset_id]
+        pos = self._pos_by_asset.get(asset_id, 0)
+        if pos >= len(replies):
+            raise IndexError(
+                f"FakeCreatorRunner exhausted for asset '{asset_id}': called {pos + 1} times, only {len(replies)}",
+            )
+        reply = replies[pos]
+        self._pos_by_asset[asset_id] = pos + 1
         return reply
 
 
@@ -257,16 +295,17 @@ class FakeReviewerRunner:
         self,
         *,
         layout: EpisodeWorkspaceLayout,
-        replies: Sequence[Mapping[str, Any] | str],
+        replies: ScriptedReplyInput,
         reviewer: str = "fake_reviewer",
         default_created_at: str = _DEFAULT_CREATED_AT,
     ) -> None:
         self._layout = layout
-        self._replies = [ScriptedJsonReply.from_value(v) for v in replies]
+        self._replies, self._replies_by_asset = _parse_scripted_replies(replies, label="FakeReviewerRunner")
         self._reviewer = reviewer
         self._default_created_at = default_created_at
         self.calls: list[ReviewerInput] = []
         self._pos = 0
+        self._pos_by_asset = {asset_id: 0 for asset_id in self._replies_by_asset or {}}
 
     def run_json(self, inp: ReviewerInput) -> dict[str, Any]:
         return self._consume(inp)
@@ -316,15 +355,29 @@ class FakeReviewerRunner:
 
     def _consume(self, inp: ReviewerInput) -> dict[str, Any]:
         self.calls.append(inp)
-        reply = self._next_reply()
+        reply = self._next_reply(inp.asset_id)
         _write_mutations(root=self._layout.root, mutate_files=reply.mutate_files)
         return dict(reply.json_data)
 
-    def _next_reply(self) -> ScriptedJsonReply:
-        if self._pos >= len(self._replies):
-            raise IndexError(f"FakeReviewerRunner exhausted: called {self._pos + 1} times, only {len(self._replies)}")
-        reply = self._replies[self._pos]
-        self._pos += 1
+    def _next_reply(self, asset_id: str) -> ScriptedJsonReply:
+        if self._replies_by_asset is None:
+            if self._replies is None or self._pos >= len(self._replies):
+                total = 0 if self._replies is None else len(self._replies)
+                raise IndexError(f"FakeReviewerRunner exhausted: called {self._pos + 1} times, only {total}")
+            reply = self._replies[self._pos]
+            self._pos += 1
+            return reply
+
+        if asset_id not in self._replies_by_asset:
+            raise KeyError(f"FakeReviewerRunner has no scripted replies for asset_id '{asset_id}'")
+        replies = self._replies_by_asset[asset_id]
+        pos = self._pos_by_asset.get(asset_id, 0)
+        if pos >= len(replies):
+            raise IndexError(
+                f"FakeReviewerRunner exhausted for asset '{asset_id}': called {pos + 1} times, only {len(replies)}",
+            )
+        reply = replies[pos]
+        self._pos_by_asset[asset_id] = pos + 1
         return reply
 
 
