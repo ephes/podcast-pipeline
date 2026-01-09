@@ -149,3 +149,20 @@ def test_write_transcript_chunks_preserves_overlap_in_written_files(tmp_path: Pa
     chunk1 = layout.transcript_chunk_text_path(1).read_text(encoding="utf-8")
     chunk2 = layout.transcript_chunk_text_path(2).read_text(encoding="utf-8")
     assert _tokens(chunk1)[-3:] == _tokens(chunk2)[:3]
+
+
+def test_chunker_overlap_tracks_boundary_end_token() -> None:
+    transcript = " ".join(f"w{i}" for i in range(1, 7)) + "\n\n" + " ".join(f"w{i}" for i in range(7, 13))
+    config = ChunkerConfig(
+        max_tokens=8,
+        overlap_tokens=2,
+        boundary_lookback_tokens=4,
+        min_tokens=4,
+    )
+
+    chunks = chunk_transcript_text(transcript, config=config)
+
+    assert len(chunks) == 2
+    assert chunks[0].end_token == 6
+    assert chunks[1].start_token == chunks[0].end_token - config.overlap_tokens
+    assert _tokens(chunks[0].text)[-2:] == _tokens(chunks[1].text)[:2]

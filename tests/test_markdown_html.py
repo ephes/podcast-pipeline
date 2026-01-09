@@ -31,3 +31,40 @@ def test_markdown_to_deterministic_html_is_stable() -> None:
     rendered = markdown_to_deterministic_html(markdown)
     assert rendered == expected
     assert rendered == markdown_to_deterministic_html(markdown)
+
+
+def test_markdown_to_deterministic_html_renders_lists_and_paragraphs() -> None:
+    markdown = "\n".join(
+        [
+            "Intro with <tags> & stuff.",
+            "",
+            "1. First",
+            "2. Second with *em* and **strong**",
+            "",
+            "- Bullet `code`",
+            "- Another",
+            "",
+            "Plain line one",
+            "Plain line two",
+            "",
+        ],
+    )
+
+    expected = "\n".join(
+        [
+            "<p>Intro with &lt;tags&gt; &amp; stuff.</p>",
+            "<ol>",
+            "<li>First</li>",
+            "<li>Second with <em>em</em> and <strong>strong</strong></li>",
+            "</ol>",
+            "<ul>",
+            "<li>Bullet <code>code</code></li>",
+            "<li>Another</li>",
+            "</ul>",
+            "<p>Plain line one Plain line two</p>",
+            "",
+        ],
+    )
+
+    rendered = markdown_to_deterministic_html(markdown)
+    assert rendered == expected
