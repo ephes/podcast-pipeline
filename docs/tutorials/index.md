@@ -2,6 +2,12 @@
 
 Step-by-step lessons for getting started live here.
 
+```{toctree}
+:maxdepth: 1
+
+episode-workflow
+```
+
 ## Getting started
 
 - Placeholder: First pipeline run (TBD)
