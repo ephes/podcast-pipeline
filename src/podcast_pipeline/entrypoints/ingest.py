@@ -96,14 +96,14 @@ def _track_path_keys(raw_path: str, media_dir: Path) -> set[str]:
 def _safe_relative_path(path: Path, base: Path) -> Path | None:
     try:
         return path.resolve().relative_to(base)
-    except Exception:
+    except (OSError, RuntimeError, ValueError):
         return None
 
 
 def _safe_resolve_path(path: Path) -> Path | None:
     try:
         return path.resolve()
-    except Exception:
+    except (OSError, RuntimeError, ValueError):
         return None
 
 
