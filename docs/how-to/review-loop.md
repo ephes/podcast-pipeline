@@ -4,11 +4,11 @@ This guide shows how to run the MVP-1 creator/reviewer loop with the fake runner
 
 ## 1. Run the loop
 
-By default, `podcast draft` uses the local Codex/Claude CLIs configured in `episode.yaml` or
+By default, `podcast review` uses the local Codex/Claude CLIs configured in `episode.yaml` or
 `~/.config/podcast-pipeline/config.yaml` and writes protocol state under `copy/protocol/<asset_id>/`.
 
 ```bash
-podcast draft \
+podcast review \
   --workspace ./workspaces/ep_001 \
   --episode-id ep_001 \
   --asset-id description \
@@ -18,7 +18,7 @@ podcast draft \
 If you do not have the CLIs installed, use the fake runner instead:
 
 ```bash
-podcast draft \
+podcast review \
   --fake-runner \
   --workspace ./workspaces/ep_001 \
   --episode-id ep_001 \

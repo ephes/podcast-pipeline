@@ -8,7 +8,7 @@ This page documents the current text pipeline implementation. The summarize and 
 2. Summarize each chunk and roll up an episode summary (stub summarizer).
 3. Generate draft candidate assets from the episode summary (stub generator).
 
-The `podcast summarize` command only supports `--dry-run`. It creates `episode.yaml` and `state.json` at the workspace root. The `podcast draft-candidates` command reads the workspace produced by the summarize step.
+The `podcast summarize` command only supports `--dry-run`. It creates `episode.yaml` and `state.json` at the workspace root. The `podcast draft-candidates` command reads the workspace produced by the summarize step, while `podcast draft --dry-run` runs the summarize + draft-candidates flow end-to-end.
 
 ## Chunking behavior
 

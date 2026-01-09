@@ -9,6 +9,21 @@ This guide walks through the current text pipeline in this repo: chunk a transcr
 
 ## 2. Run chunking + summaries
 
+If you want to run the full text pipeline (summaries + candidates) in one step, use:
+
+```bash
+podcast draft \
+  --dry-run \
+  --workspace ./workspaces/ep_001 \
+  --transcript /path/to/transcript.txt \
+  --chapters /path/to/chapters.txt \
+  --episode-id ep_001
+```
+
+Notes:
+
+- `--workspace` must not exist; the command creates it.
+
 ```bash
 podcast summarize \
   --dry-run \

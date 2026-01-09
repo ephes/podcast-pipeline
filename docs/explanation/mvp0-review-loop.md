@@ -40,6 +40,9 @@ review loop mostly writes under `copy/`, while the workspace state lives at the 
     chunks/
       chunk_0001.txt
       chunk_0001.json
+  auphonic/
+    downloads/
+    outputs/
   summaries/
     chunks/chunk_0001.summary.json
     episode/episode_summary.json
@@ -65,6 +68,7 @@ Key persisted artifacts:
 - `copy/selected/...`: selected final draft when converged.
 - `summaries/...`: chunk and episode summaries written by the stub summarizer.
 - `transcript/chunks/...`: transcript chunk text and metadata.
+- `auphonic/...`: reserved for Auphonic downloads/outputs.
 
 ## Review loop flow and convergence rules
 
@@ -88,7 +92,7 @@ Convergence is determined by the following rules:
 
 ## Fake runner usage
 
-The CLI `podcast draft` command exposes a `--fake-runner` flag for the MVP-0 loop. When enabled, it uses the
+The CLI `podcast review` command exposes a `--fake-runner` flag for the MVP-0 loop. When enabled, it uses the
 `FakeCreatorRunner` and `FakeReviewerRunner` to emit scripted replies (including deterministic IDs and timestamps).
 The fake runners can also mutate files via a `mutate_files` map in their JSON replies, which is useful for tests and
 demo workspaces.
@@ -96,7 +100,7 @@ demo workspaces.
 Example invocation:
 
 ```bash
-podcast draft --fake-runner --asset-id description --max-iterations 2
+podcast review --fake-runner --asset-id description --max-iterations 2
 ```
 
 ## References

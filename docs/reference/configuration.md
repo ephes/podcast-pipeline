@@ -2,7 +2,7 @@
 
 ## Agent CLI configuration (local only)
 
-`podcast status` and `podcast draft` resolve local CLI settings from either:
+`podcast status` and `podcast review` resolve local CLI settings from either:
 
 1. `episode.yaml` in the workspace root (per-episode overrides)
 2. A global config at `~/.config/podcast-pipeline/config.yaml`
