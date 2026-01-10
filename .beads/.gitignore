@@ -14,6 +14,13 @@ bd.sock
 # Local version tracking (prevents upgrade notification spam after git ops)
 .local_version
 
+# Sync/runtime artifacts
+.sync.lock
+last-touched
+locks/
+logs/
+sync_base.jsonl
+
 # Legacy database files
 db.sqlite
 bd.db
