@@ -168,6 +168,7 @@ class EpisodeWorkspace(SchemaVersioned):
     assets: list[Asset] = Field(default_factory=list)
     chapters: list[Chapter] = Field(default_factory=list)
     tracks: list[Track] = Field(default_factory=list)
+    auphonic_production_uuid: Annotated[str | None, Field(default=None, min_length=1)] = None
     created_at: AwareDatetime = Field(default_factory=_utc_now)
     provenance: list[ProvenanceRef] = Field(default_factory=list)
 

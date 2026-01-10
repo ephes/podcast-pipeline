@@ -31,6 +31,19 @@ agents:
       - --format
       - json
     kind: codex
+auphonic:
+  preset: podcast_pipeline
+  input_file: /path/to/final_mix.wav
+  metadata:
+    title: "Automation & Podcasting"
+    subtitle: "Shipping faster episode pipelines"
+    summary: "A short summary for feeds and players."
+    description: |
+      Longer episode description text for Auphonic.
+    tags:
+      - automation
+      - podcasting
+    itunes_keywords: "podcast, automation"
 ```
 
 ## Top-level fields
@@ -41,6 +54,7 @@ agents:
 - `sources` (object, optional)
 - `tracks` (list of objects, optional)
 - `agents` (object, optional)
+- `auphonic` (object, optional)
 
 ## inputs
 
@@ -73,3 +87,20 @@ Each track is an object with:
 
 Agent configuration mirrors the local CLI config in `reference/configuration.md`. `episode.yaml` overrides the global
 config when both are present.
+
+## auphonic
+
+Optional settings used by `podcast produce --dry-run` to build an Auphonic payload:
+
+- `preset` (string): Auphonic preset id or a key in `auphonic.presets` from the global config.
+- `preset_id` (string): Explicit preset id override (skips preset mapping).
+- `input_file` (string or null): Path to the final mix audio file (relative to the workspace is ok).
+- `input_files` (list or null): Multiple input paths (preview only).
+- `metadata` (object, optional): Metadata merged into the payload.
+- `title`, `subtitle`, `summary`, `description` (string or null): Convenience overrides merged into metadata.
+- `tags` (string or list): Tags merged into metadata.
+- `itunes_keywords` (string or list): Keywords merged into metadata.
+- `chapters` (list): Chapter objects with `title` and optional `start`/`end` (seconds).
+
+If metadata fields are missing, the payload builder falls back to selected copy in `copy/selected/` (for example
+`title_detail`, `subtitle_auphonic`, `summary_short`, `description`, `audio_tags`, and `itunes_keywords`).

@@ -298,6 +298,8 @@ class EpisodeWorkspaceStore:
 
     def write_state(self, workspace: EpisodeWorkspace) -> None:
         payload = workspace.model_dump(mode="json")
+        if payload.get("auphonic_production_uuid") is None:
+            payload.pop("auphonic_production_uuid", None)
         dumped = json.dumps(payload, indent=2, sort_keys=True) + "\n"
         _atomic_write_text(self.layout.state_json, dumped)
 

@@ -265,6 +265,28 @@ def pick(
 
 
 @app.command()
+def produce(
+    *,
+    workspace: Annotated[
+        Path,
+        typer.Option(
+            exists=True,
+            file_okay=False,
+            help="Episode workspace directory (default: current directory).",
+        ),
+    ] = Path("."),
+    dry_run: Annotated[
+        bool,
+        typer.Option(help="Print the Auphonic payload JSON without calling the API."),
+    ] = False,
+) -> None:
+    """Build the Auphonic payload for an episode workspace."""
+    from podcast_pipeline.entrypoints.produce import run_produce
+
+    run_produce(workspace=workspace, dry_run=dry_run)
+
+
+@app.command()
 def summarize(
     *,
     workspace: Annotated[
