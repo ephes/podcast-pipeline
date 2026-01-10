@@ -15,6 +15,7 @@ Use this checklist when shipping an epic or a significant feature:
 ```{toctree}
 :maxdepth: 1
 
+few-shot-datasets
 text-pipeline
 reaper-ingest
 review-loop

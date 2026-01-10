@@ -8,6 +8,7 @@ Technical reference material and API documentation live here.
 :maxdepth: 1
 
 configuration
+few-shot-dataset-jsonl
 episode-yaml
 review-protocol-schemas
 ```
