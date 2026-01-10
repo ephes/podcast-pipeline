@@ -28,6 +28,17 @@ Notes:
 - Ingest updates `episode.yaml` with `sources` and `tracks`; the audio stays in place.
 - Skip this step if you only need text assets from a transcript.
 
+## 2.5. Transcribe audio (transcribe)
+
+```bash
+podcast transcribe --workspace ./workspaces/ep_001 --mode draft
+```
+
+Notes:
+
+- Requires `podcast-transcript` on your PATH (or pass `--command`/`--arg`).
+- Outputs land under `transcript/draft/` or `transcript/final/` and update `episode.yaml` inputs.
+
 ## 3. Draft text assets (draft)
 
 `podcast draft` runs the transcript chunking + summary + candidate generation pipeline. It creates a new workspace, so

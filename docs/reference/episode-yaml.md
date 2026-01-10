@@ -45,7 +45,11 @@ agents:
 ## inputs
 
 - `transcript` (string or null): path to a transcript text file.
+- `transcript_draft` (string or null): path to the draft transcript text file (if available).
+- `transcript_final` (string or null): path to the final transcript text file (if available).
 - `chapters` (string or null): path to a chapters text file.
+- `chapters_draft` (string or null): path to draft chapters text file (if available).
+- `chapters_final` (string or null): path to final chapters text file (if available).
 - Extra keys are allowed and preserved.
 
 ## sources

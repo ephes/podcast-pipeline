@@ -70,6 +70,49 @@ def ingest(
 
 
 @app.command()
+def transcribe(
+    *,
+    workspace: Annotated[
+        Path,
+        typer.Option(
+            exists=True,
+            file_okay=False,
+            help="Episode workspace directory (must exist).",
+        ),
+    ],
+    mode: Annotated[
+        str,
+        typer.Option(help="Transcript mode to generate (draft or final)."),
+    ] = "draft",
+    command: Annotated[
+        str,
+        typer.Option(help="Transcription CLI command (default: podcast-transcript)."),
+    ] = "podcast-transcript",
+    arg: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--arg",
+            help="Extra args for the transcription CLI (supports {mode}, {output_dir}, {workspace}).",
+        ),
+    ] = None,
+) -> None:
+    """Run podcast-transcript to generate transcript artifacts."""
+    from podcast_pipeline.entrypoints.transcribe import TranscribeConfig, TranscriptionMode, run_transcribe
+
+    try:
+        resolved_mode = TranscriptionMode(mode.strip().lower())
+    except ValueError as exc:
+        raise typer.BadParameter("mode must be 'draft' or 'final'") from exc
+
+    config = TranscribeConfig(command=command, args=tuple(arg) if arg else None)
+    run_transcribe(
+        workspace=workspace,
+        mode=resolved_mode,
+        config=config,
+    )
+
+
+@app.command()
 def draft(
     *,
     workspace: Annotated[

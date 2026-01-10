@@ -89,6 +89,10 @@ def _atomic_write_text(path: Path, text: str) -> None:
     _atomic_write_bytes(path, text.encode("utf-8"))
 
 
+def atomic_write_text(path: Path, text: str) -> None:
+    _atomic_write_text(path, text)
+
+
 def _read_text(path: Path) -> str:
     return path.read_text(encoding="utf-8")
 
