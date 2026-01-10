@@ -357,6 +357,82 @@ def rss_examples(
 
 
 @app.command()
+def cms_examples(
+    *,
+    api_url: Annotated[
+        str,
+        typer.Option(help="Wagtail/CMS API URL (episodes endpoint)."),
+    ],
+    output: Annotated[
+        Path,
+        typer.Option(help="Output JSONL path (few-shot dataset)."),
+    ] = Path("datasets/cms_examples.jsonl"),
+    limit: Annotated[
+        int,
+        typer.Option(min=1, help="Number of recent episodes to fetch."),
+    ] = 25,
+    timeout_seconds: Annotated[
+        float,
+        typer.Option(help="HTTP timeout in seconds."),
+    ] = 20.0,
+    title_field: Annotated[
+        str,
+        typer.Option(help="Field name for the episode title."),
+    ] = "title",
+    summary_field: Annotated[
+        str,
+        typer.Option(help="Field name for the episode summary."),
+    ] = "summary",
+    description_field: Annotated[
+        str,
+        typer.Option(help="Field name for the episode description RichText."),
+    ] = "description",
+    shownotes_field: Annotated[
+        str,
+        typer.Option(help="Field name for the episode shownotes RichText."),
+    ] = "shownotes",
+    tags_field: Annotated[
+        str,
+        typer.Option(help="Field name for the CMS tags list."),
+    ] = "tags",
+    link_field: Annotated[
+        str,
+        typer.Option(help="Field name for the public URL."),
+    ] = "url",
+    slug_field: Annotated[
+        str,
+        typer.Option(help="Field name for the page slug."),
+    ] = "slug",
+    published_field: Annotated[
+        str,
+        typer.Option(help="Field name for the publish timestamp."),
+    ] = "first_published_at",
+    page_id_field: Annotated[
+        str,
+        typer.Option(help="Field name for the CMS page id."),
+    ] = "id",
+) -> None:
+    """Fetch recent CMS episodes and write a JSONL few-shot dataset."""
+    from podcast_pipeline.entrypoints.cms_examples import run_cms_examples
+
+    run_cms_examples(
+        api_url=api_url,
+        output=output,
+        limit=limit,
+        timeout_seconds=timeout_seconds,
+        title_field=title_field,
+        summary_field=summary_field,
+        description_field=description_field,
+        shownotes_field=shownotes_field,
+        tags_field=tags_field,
+        link_field=link_field,
+        slug_field=slug_field,
+        published_field=published_field,
+        page_id_field=page_id_field,
+    )
+
+
+@app.command()
 def status(
     *,
     workspace: Annotated[
