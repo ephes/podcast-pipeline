@@ -326,6 +326,37 @@ def summarize(
 
 
 @app.command()
+def rss_examples(
+    *,
+    feed_url: Annotated[
+        str,
+        typer.Option(help="RSS 2.0 feed URL to fetch."),
+    ],
+    output: Annotated[
+        Path,
+        typer.Option(help="Output JSONL path (few-shot dataset)."),
+    ] = Path("datasets/rss_examples.jsonl"),
+    limit: Annotated[
+        int,
+        typer.Option(min=1, help="Number of recent episodes to fetch."),
+    ] = 25,
+    timeout_seconds: Annotated[
+        float,
+        typer.Option(help="HTTP timeout in seconds."),
+    ] = 20.0,
+) -> None:
+    """Fetch recent RSS episodes and write a JSONL few-shot dataset."""
+    from podcast_pipeline.entrypoints.rss_examples import run_rss_examples
+
+    run_rss_examples(
+        feed_url=feed_url,
+        output=output,
+        limit=limit,
+        timeout_seconds=timeout_seconds,
+    )
+
+
+@app.command()
 def status(
     *,
     workspace: Annotated[
