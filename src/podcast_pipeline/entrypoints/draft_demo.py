@@ -11,9 +11,10 @@ from podcast_pipeline.agent_runners import (
     FakeCreatorRunner,
     FakeReviewerRunner,
     build_local_cli_runners,
+    load_episode_context_from_workspace,
 )
 from podcast_pipeline.domain.models import EpisodeWorkspace, ReviewIteration
-from podcast_pipeline.review_loop_engine import CreatorInput, CreatorOutput, ReviewerInput
+from podcast_pipeline.review_loop_engine import CreatorInput, CreatorOutput, LoopOutcome, ReviewerInput
 from podcast_pipeline.review_loop_orchestrator import run_review_loop_orchestrator
 from podcast_pipeline.workspace_store import EpisodeWorkspaceStore
 
@@ -75,31 +76,16 @@ def _build_initial_description(*, transcript: str, chapters: str) -> str:
     )
 
 
-def run_draft_demo(
-    *,
-    fake_runner: bool,
-    workspace: Path | None,
-    episode_id: str,
-    asset_id: str,
-    max_iterations: int,
-) -> None:
-    if not fake_runner:
-        issues = collect_agent_cli_issues(workspace=workspace)
-        for issue in issues:
-            typer.echo(issue, err=True)
-        if issues:
-            raise typer.Exit(code=2)
+def _open_existing_workspace(root: Path) -> EpisodeWorkspaceStore:
+    """Open an existing workspace directory, validating that episode.yaml exists."""
+    store = EpisodeWorkspaceStore(root)
+    if not store.layout.episode_yaml.exists():
+        raise typer.BadParameter(f"workspace exists but has no episode.yaml: {root}")
+    return store
 
-    if not _ASSET_ID_RE.fullmatch(asset_id):
-        raise typer.BadParameter("asset_id must match ^[a-z][a-z0-9_]*$")
 
-    if workspace is None:
-        root = _pick_demo_workspace_dir(Path.cwd() / "demo_workspace")
-    else:
-        root = workspace
-        if root.exists():
-            raise typer.BadParameter(f"workspace already exists: {root}")
-
+def _create_demo_workspace(root: Path, episode_id: str) -> EpisodeWorkspaceStore:
+    """Create a new demo workspace with stub transcript and chapters."""
     root.mkdir(parents=True, exist_ok=False)
 
     store = EpisodeWorkspaceStore(root)
@@ -121,14 +107,59 @@ def run_draft_demo(
         },
     )
     store.write_state(EpisodeWorkspace(episode_id=episode_id, root_dir=str(root)))
+    return store
+
+
+def _read_input_text(store: EpisodeWorkspaceStore, key: str) -> str:
+    """Read a text file referenced by key in episode.yaml inputs."""
+    episode_data = store.read_episode_yaml()
+    inputs = episode_data.get("inputs", {})
+    rel = inputs.get(key)
+    if isinstance(rel, str):
+        path = store.layout.root / rel
+        if path.exists():
+            return path.read_text(encoding="utf-8")
+    return ""
+
+
+def run_draft_demo(
+    *,
+    fake_runner: bool,
+    workspace: Path | None,
+    episode_id: str,
+    asset_id: str,
+    max_iterations: int,
+) -> None:
+    if not fake_runner:
+        issues = collect_agent_cli_issues(workspace=workspace)
+        for issue in issues:
+            typer.echo(issue, err=True)
+        if issues:
+            raise typer.Exit(code=2)
+
+    if not _ASSET_ID_RE.fullmatch(asset_id):
+        raise typer.BadParameter("asset_id must match ^[a-z][a-z0-9_]*$")
+
+    existing_workspace = workspace is not None and workspace.exists()
+
+    if existing_workspace:
+        assert workspace is not None
+        root = workspace
+        store = _open_existing_workspace(root)
+    else:
+        root = workspace if workspace is not None else _pick_demo_workspace_dir(Path.cwd() / "demo_workspace")
+        store = _create_demo_workspace(root, episode_id)
 
     creator: Callable[[CreatorInput], CreatorOutput]
     reviewer: Callable[[ReviewerInput], ReviewIteration]
     if fake_runner:
-        initial_description = _build_initial_description(
-            transcript=transcript_path.read_text(encoding="utf-8"),
-            chapters=chapters_path.read_text(encoding="utf-8"),
-        )
+        if existing_workspace:
+            transcript_text = _read_input_text(store, "transcript")
+            chapters_text = _read_input_text(store, "chapters")
+        else:
+            transcript_text = _default_transcript()
+            chapters_text = _default_chapters()
+        initial_description = _build_initial_description(transcript=transcript_text, chapters=chapters_text)
 
         creator = FakeCreatorRunner(
             layout=store.layout,
@@ -146,8 +177,13 @@ def run_draft_demo(
             ],
         )
     else:
+        episode_context = load_episode_context_from_workspace(store.layout)
         bundle = load_agent_cli_bundle(workspace=store.layout.root)
-        creator, reviewer = build_local_cli_runners(layout=store.layout, bundle=bundle)
+        creator, reviewer = build_local_cli_runners(
+            layout=store.layout,
+            bundle=bundle,
+            episode_context=episode_context,
+        )
 
     protocol_state = run_review_loop_orchestrator(
         workspace=store.layout.root,
@@ -157,6 +193,10 @@ def run_draft_demo(
         reviewer=reviewer,
     )
     typer.echo(f"Workspace: {root}")
-    if protocol_state.iterations:
+    decision = protocol_state.decision
+    if decision is not None and decision.outcome == LoopOutcome.converged and protocol_state.iterations:
         final_iteration = protocol_state.iterations[-1]
         typer.echo(f"Selected: {store.layout.selected_text_path(asset_id, final_iteration.candidate.format)}")
+    elif decision is not None:
+        typer.echo(f"Outcome: {decision.outcome.value} ({decision.reason})")
+        typer.echo("Run `podcast pick` to manually select a candidate.")

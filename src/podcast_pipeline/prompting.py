@@ -150,16 +150,18 @@ _CREATOR_TEMPLATE = """You are the Creator agent for podcast copy.
 
 Asset id: {asset_id}
 Iteration: {iteration}
-
+{episode_context}
 Previous candidate (JSON):
 {previous_candidate_json}
 
 Previous review (JSON):
 {previous_review_json}
 
-Return JSON with fields:
-- applied (bool)
-- done (bool)
+Return a JSON object (no markdown fencing) with fields:
+- applied (bool): true if you incorporated feedback from the previous review
+- done (bool): true if the candidate is ready for publication
+  (set true when no remaining issues exist, or on first iteration
+  if the draft is already strong)
 - candidate (Candidate schema below)
 
 Candidate schema:
@@ -171,11 +173,11 @@ _REVIEWER_TEMPLATE = """You are the Reviewer agent for podcast copy.
 
 Asset id: {asset_id}
 Iteration: {iteration}
-
+{episode_context}
 Candidate (JSON):
 {candidate_json}
 
-Return JSON matching the ReviewIteration schema below.
+Return a JSON object (no markdown fencing) matching the ReviewIteration schema below.
 
 Review schema:
 {review_schema}
@@ -206,10 +208,12 @@ def render_creator_prompt(
     inp: CreatorInput,
     glossary: Mapping[str, str] | Sequence[GlossaryEntry | Mapping[str, Any] | Sequence[str]] | None = None,
     few_shots: Sequence[FewShotExample | Mapping[str, Any]] | None = None,
+    episode_context: str | None = None,
 ) -> PromptRenderResult:
     context = {
         "asset_id": inp.asset_id,
         "iteration": str(inp.iteration),
+        "episode_context": episode_context or "",
         "previous_candidate_json": _json_block(_candidate_json(inp.previous_candidate)),
         "previous_review_json": _json_block(_review_json(inp.previous_review)),
         "candidate_schema": _json_block(candidate_json_schema()),
@@ -228,10 +232,12 @@ def render_reviewer_prompt(
     inp: ReviewerInput,
     glossary: Mapping[str, str] | Sequence[GlossaryEntry | Mapping[str, Any] | Sequence[str]] | None = None,
     few_shots: Sequence[FewShotExample | Mapping[str, Any]] | None = None,
+    episode_context: str | None = None,
 ) -> PromptRenderResult:
     context = {
         "asset_id": inp.asset_id,
         "iteration": str(inp.iteration),
+        "episode_context": episode_context or "",
         "candidate_json": _json_block(inp.candidate.model_dump(mode="json")),
         "review_schema": _json_block(review_iteration_json_schema()),
     }
@@ -241,6 +247,42 @@ def render_reviewer_prompt(
         glossary=glossary,
         few_shots=few_shots,
     )
+
+
+_MAX_TRANSCRIPT_EXCERPT_CHARS = 4000
+
+
+def render_episode_context(
+    *,
+    summary: str | None = None,
+    key_points: Sequence[str] | None = None,
+    chapters: str | None = None,
+    transcript_excerpt: str | None = None,
+    max_transcript_chars: int = _MAX_TRANSCRIPT_EXCERPT_CHARS,
+) -> str:
+    """Render episode context (summary, chapters, transcript) into a text block for prompts."""
+    sections: list[str] = []
+
+    if summary:
+        sections.append(f"Episode summary:\n{summary.strip()}")
+
+    if key_points:
+        bullet_lines = "\n".join(f"- {point}" for point in key_points)
+        sections.append(f"Key points:\n{bullet_lines}")
+
+    if chapters:
+        sections.append(f"Chapters:\n{chapters.strip()}")
+
+    if transcript_excerpt:
+        excerpt = transcript_excerpt.strip()
+        if len(excerpt) > max_transcript_chars:
+            excerpt = excerpt[:max_transcript_chars] + "\n[...truncated]"
+        sections.append(f"Transcript excerpt:\n{excerpt}")
+
+    if not sections:
+        return ""
+
+    return "\n\n".join(sections)
 
 
 _SAFE_REF_RE = re.compile(r"[^a-zA-Z0-9._-]+")

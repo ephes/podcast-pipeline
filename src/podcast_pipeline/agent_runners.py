@@ -18,6 +18,7 @@ from podcast_pipeline.prompting import (
     PromptStore,
     default_prompt_registry,
     render_creator_prompt,
+    render_episode_context,
     render_reviewer_prompt,
 )
 from podcast_pipeline.review_loop_engine import CreatorInput, CreatorOutput, ReviewerInput
@@ -541,6 +542,75 @@ class ClaudeCodeReviewerRunner:
         return result.stdout or ""
 
 
+def _read_episode_summary(layout: EpisodeWorkspaceLayout) -> tuple[str | None, list[str] | None]:
+    """Read summary_markdown and key_points from the episode summary JSON."""
+    summary_path = layout.episode_summary_json_path()
+    if not summary_path.exists():
+        return None, None
+    try:
+        raw = json.loads(summary_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError, UnicodeDecodeError):
+        return None, None
+    if not isinstance(raw, dict):
+        return None, None
+    summary = raw.get("summary_markdown")
+    if not isinstance(summary, str):
+        summary = None
+    kp = raw.get("key_points")
+    key_points = [str(p) for p in kp] if isinstance(kp, list) else None
+    return summary, key_points
+
+
+def _read_input_file(root: Path, inputs: dict[str, Any], key: str) -> str | None:
+    """Read a text file referenced in episode.yaml inputs by key."""
+    rel = inputs.get(key)
+    if not isinstance(rel, str):
+        return None
+    path = root / rel
+    if not path.exists():
+        return None
+    try:
+        return path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
+
+
+def _read_episode_inputs(layout: EpisodeWorkspaceLayout) -> dict[str, Any]:
+    """Read the inputs section from episode.yaml."""
+    import yaml
+
+    if not layout.episode_yaml.exists():
+        return {}
+    try:
+        data = yaml.safe_load(layout.episode_yaml.read_text(encoding="utf-8"))
+        if isinstance(data, dict):
+            inputs = data.get("inputs", {})
+            return dict(inputs) if isinstance(inputs, dict) else {}
+    except (OSError, UnicodeDecodeError, yaml.YAMLError):
+        pass
+    return {}
+
+
+def load_episode_context_from_workspace(layout: EpisodeWorkspaceLayout) -> str | None:
+    """Load episode context (summary, chapters, transcript) from workspace files.
+
+    Returns a rendered context string, or None if no context files are found.
+    """
+    summary, key_points = _read_episode_summary(layout)
+
+    inputs = _read_episode_inputs(layout)
+    chapters = _read_input_file(layout.root, inputs, "chapters")
+    transcript_excerpt = _read_input_file(layout.root, inputs, "transcript")
+
+    context = render_episode_context(
+        summary=summary,
+        key_points=key_points,
+        chapters=chapters,
+        transcript_excerpt=transcript_excerpt,
+    )
+    return context if context else None
+
+
 def build_local_cli_runners(
     *,
     layout: EpisodeWorkspaceLayout,
@@ -548,6 +618,7 @@ def build_local_cli_runners(
     renderer: PromptRenderer | None = None,
     glossary: GlossaryInput = None,
     few_shots: FewShotInput = None,
+    episode_context: str | None = None,
     timeout_seconds: float | None = None,
 ) -> tuple[Callable[[CreatorInput], CreatorOutput], Callable[[ReviewerInput], ReviewIteration]]:
     if renderer is None:
@@ -571,6 +642,7 @@ def build_local_cli_runners(
             inp=inp,
             glossary=glossary,
             few_shots=few_shots,
+            episode_context=episode_context,
         )
         return creator_runner.run_with_prompt(
             prompt=prompt,
@@ -584,6 +656,7 @@ def build_local_cli_runners(
             inp=inp,
             glossary=glossary,
             few_shots=few_shots,
+            episode_context=episode_context,
         )
         return reviewer_runner.run_with_prompt(
             prompt=prompt,
