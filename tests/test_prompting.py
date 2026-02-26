@@ -15,6 +15,7 @@ from podcast_pipeline.prompting import (
     PromptStore,
     PromptTemplate,
     default_prompt_registry,
+    render_asset_candidates_prompt,
     render_creator_prompt,
     render_episode_context,
     render_reviewer_prompt,
@@ -281,3 +282,31 @@ def test_load_episode_context_non_utf8_transcript(tmp_path: Path) -> None:
     ctx = load_episode_context_from_workspace(layout)
     # Transcript can't be read, so context is None (no other sources)
     assert ctx is None
+
+
+def test_render_asset_candidates_prompt_includes_envelope_schema() -> None:
+    renderer = PromptRenderer(default_prompt_registry())
+
+    result = render_asset_candidates_prompt(
+        renderer=renderer,
+        asset_id="description",
+        asset_guidance="Write a description.",
+        episode_summary_markdown="# Summary\n",
+        key_points=["point A"],
+        topics=["topic X"],
+        chapters=["00:00 Intro"],
+        num_candidates=3,
+    )
+
+    # Verify via parsed schema structure (not literal text) to avoid formatting brittleness
+    parsed_schema = json.loads(result.context["response_schema"])
+    assert parsed_schema["type"] == "object"
+    assert parsed_schema["required"] == ["candidates"]
+    assert parsed_schema["additionalProperties"] is False
+
+    candidates_prop = parsed_schema["properties"]["candidates"]
+    assert candidates_prop["type"] == "array"
+    assert "items" in candidates_prop
+    # Count constraints should be embedded
+    assert candidates_prop["minItems"] == 3
+    assert candidates_prop["maxItems"] == 3

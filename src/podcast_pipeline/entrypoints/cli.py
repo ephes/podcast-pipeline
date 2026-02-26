@@ -118,17 +118,17 @@ def draft(
     workspace: Annotated[
         Path,
         typer.Option(
-            help="Episode workspace directory (must not exist).",
+            help="Episode workspace directory (created if needed, reused if exists).",
         ),
     ],
     transcript: Annotated[
-        Path,
+        Path | None,
         typer.Option(
             exists=True,
             dir_okay=False,
-            help="Transcript .txt file to ingest.",
+            help="Transcript .txt file to ingest (optional if workspace already has chunks).",
         ),
-    ],
+    ] = None,
     chapters: Annotated[
         Path | None,
         typer.Option(
@@ -149,6 +149,10 @@ def draft(
         str,
         typer.Option(help="Episode id to write into the workspace."),
     ] = "demo_ep_001",
+    timeout: Annotated[
+        float | None,
+        typer.Option(min=0, help="Timeout in seconds for each LLM CLI call."),
+    ] = None,
 ) -> None:
     """Create draft candidates by running the text pipeline."""
     from podcast_pipeline.entrypoints.draft_pipeline import run_draft_pipeline
@@ -164,6 +168,7 @@ def draft(
         candidates_per_asset=candidates_per_asset,
         chunker_config=ChunkerConfig(),
         summarizer_config=StubSummarizerConfig(),
+        timeout_seconds=timeout,
     )
 
 

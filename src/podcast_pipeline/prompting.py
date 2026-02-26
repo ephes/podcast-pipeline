@@ -8,7 +8,13 @@ from hashlib import sha256
 from typing import Any
 
 from podcast_pipeline.domain.models import Candidate, ProvenanceRef, ReviewIteration
-from podcast_pipeline.protocol_schemas import candidate_json_schema, review_iteration_json_schema
+from podcast_pipeline.protocol_schemas import (
+    asset_candidates_response_json_schema,
+    candidate_json_schema,
+    chunk_summary_json_schema,
+    episode_summary_json_schema,
+    review_iteration_json_schema,
+)
 from podcast_pipeline.review_loop_engine import CreatorInput, ReviewerInput
 from podcast_pipeline.workspace_store import EpisodeWorkspaceStore
 
@@ -184,6 +190,68 @@ Review schema:
 """
 
 
+_CHUNK_SUMMARY_TEMPLATE = """You are a summarization assistant for a German-language podcast.
+
+Summarize the following transcript chunk. The podcast is in German;
+keep all output in German.
+
+Chunk id: {chunk_id}
+
+Transcript chunk:
+{chunk_text}
+
+Return a JSON object (no markdown fencing) matching the schema below.
+
+ChunkSummary schema:
+{chunk_summary_schema}
+"""
+
+
+_EPISODE_SUMMARY_TEMPLATE = """You are a summarization assistant for a German-language podcast.
+
+You are given summaries for every chunk of one episode transcript.
+Synthesize them into a single episode-level summary. The podcast is
+in German; keep all output in German.
+
+Chunk summaries (JSON array):
+{chunk_summaries_json}
+
+Return a JSON object (no markdown fencing) matching the schema below.
+
+EpisodeSummary schema:
+{episode_summary_schema}
+"""
+
+
+_ASSET_CANDIDATES_TEMPLATE = """You are a copywriting assistant for a German-language podcast.
+
+Generate {num_candidates} candidate texts for the asset type described below.
+The podcast is in German; keep all output in German unless the asset type
+explicitly requires a different language (e.g. slugs or keywords may be in English).
+
+Asset type: {asset_id}
+{asset_guidance}
+
+Episode summary:
+{episode_summary_markdown}
+
+Key points:
+{key_points}
+
+Topics:
+{topics}
+
+Chapters:
+{chapters}
+
+Return a JSON object (no markdown fencing) matching the response schema below.
+The "candidates" array must contain exactly {num_candidates} objects.
+
+Response schema:
+{response_schema}
+"""
+
+
 _DEFAULT_TEMPLATES = (
     PromptTemplate(
         name="creator_default",
@@ -194,6 +262,21 @@ _DEFAULT_TEMPLATES = (
         name="reviewer_default",
         template=_REVIEWER_TEMPLATE,
         description="Default Reviewer prompt for local CLI runners.",
+    ),
+    PromptTemplate(
+        name="chunk_summary",
+        template=_CHUNK_SUMMARY_TEMPLATE,
+        description="Summarize one transcript chunk via LLM.",
+    ),
+    PromptTemplate(
+        name="episode_summary",
+        template=_EPISODE_SUMMARY_TEMPLATE,
+        description="Reduce chunk summaries into an episode-level summary.",
+    ),
+    PromptTemplate(
+        name="asset_candidates",
+        template=_ASSET_CANDIDATES_TEMPLATE,
+        description="Generate N candidates for one asset type.",
     ),
 )
 
@@ -357,3 +440,53 @@ def _review_json(review: ReviewIteration | None) -> Any:
     if review is None:
         return None
     return review.model_dump(mode="json")
+
+
+def render_chunk_summary_prompt(
+    *,
+    renderer: PromptRenderer,
+    chunk_id: int,
+    chunk_text: str,
+) -> PromptRenderResult:
+    context = {
+        "chunk_id": str(chunk_id),
+        "chunk_text": chunk_text,
+        "chunk_summary_schema": _json_block(chunk_summary_json_schema()),
+    }
+    return renderer.render(name="chunk_summary", context=context)
+
+
+def render_episode_summary_prompt(
+    *,
+    renderer: PromptRenderer,
+    chunk_summaries_json: str,
+) -> PromptRenderResult:
+    context = {
+        "chunk_summaries_json": chunk_summaries_json,
+        "episode_summary_schema": _json_block(episode_summary_json_schema()),
+    }
+    return renderer.render(name="episode_summary", context=context)
+
+
+def render_asset_candidates_prompt(
+    *,
+    renderer: PromptRenderer,
+    asset_id: str,
+    asset_guidance: str,
+    episode_summary_markdown: str,
+    key_points: Sequence[str],
+    topics: Sequence[str],
+    chapters: Sequence[str],
+    num_candidates: int,
+) -> PromptRenderResult:
+    context = {
+        "asset_id": asset_id,
+        "asset_guidance": asset_guidance,
+        "episode_summary_markdown": episode_summary_markdown,
+        "key_points": "\n".join(f"- {p}" for p in key_points) if key_points else "(none)",
+        "topics": "\n".join(f"- {t}" for t in topics) if topics else "(none)",
+        "chapters": "\n".join(f"- {c}" for c in chapters) if chapters else "(none)",
+        "num_candidates": str(num_candidates),
+        "response_schema": _json_block(asset_candidates_response_json_schema(num_candidates=num_candidates)),
+    }
+    return renderer.render(name="asset_candidates", context=context)

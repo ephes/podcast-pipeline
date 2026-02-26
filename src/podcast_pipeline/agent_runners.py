@@ -116,6 +116,11 @@ def _append_provenance(items: Sequence[ProvenanceRef], extra: ProvenanceRef) -> 
     return [*items, extra]
 
 
+def extract_json_payload(raw: str, *, label: str) -> dict[str, Any]:
+    """Extract a JSON object from CLI output, tolerating surrounding text."""
+    return _extract_json_payload(raw, label=label)
+
+
 def _extract_json_payload(raw: str, *, label: str) -> dict[str, Any]:
     stripped = raw.strip()
     if not stripped:

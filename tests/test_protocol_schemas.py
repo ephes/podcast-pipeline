@@ -8,6 +8,7 @@ from pydantic import ValidationError
 
 from podcast_pipeline.domain.models import IssueSeverity, ReviewVerdict, TextFormat
 from podcast_pipeline.protocol_schemas import (
+    asset_candidates_response_json_schema,
     candidate_json_schema,
     parse_candidate_json,
     parse_review_iteration_json,
@@ -84,3 +85,31 @@ def test_review_schema_exposes_verdict_enum() -> None:
 def test_review_schema_exposes_issue_severity_enum() -> None:
     schema = review_iteration_json_schema()
     assert set(_find_schema_enum(schema, "IssueSeverity")) == {member.value for member in IssueSeverity}
+
+
+def test_asset_candidates_response_schema_without_count() -> None:
+    schema = asset_candidates_response_json_schema()
+    assert schema["type"] == "object"
+    assert schema["required"] == ["candidates"]
+    assert schema["additionalProperties"] is False
+
+    candidates_prop = schema["properties"]["candidates"]
+    assert candidates_prop["type"] == "array"
+    assert "items" in candidates_prop
+    assert "minItems" not in candidates_prop
+    assert "maxItems" not in candidates_prop
+
+
+def test_asset_candidates_response_schema_with_count() -> None:
+    schema = asset_candidates_response_json_schema(num_candidates=5)
+
+    candidates_prop = schema["properties"]["candidates"]
+    assert candidates_prop["type"] == "array"
+    assert candidates_prop["minItems"] == 5
+    assert candidates_prop["maxItems"] == 5
+
+
+@pytest.mark.parametrize("bad_value", [0, -1, -10])
+def test_asset_candidates_response_schema_rejects_invalid_count(bad_value: int) -> None:
+    with pytest.raises(ValueError, match="num_candidates must be >= 1"):
+        asset_candidates_response_json_schema(num_candidates=bad_value)

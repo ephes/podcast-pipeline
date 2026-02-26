@@ -29,6 +29,7 @@ class AgentCliConfig:
 class AgentCliBundle:
     creator: AgentCliConfig
     reviewer: AgentCliConfig
+    drafter: AgentCliConfig
 
 
 @dataclass(frozen=True)
@@ -45,6 +46,7 @@ _DEFAULT_HINTS: dict[str, tuple[str, str]] = {
 
 _DEFAULT_CREATOR = AgentCliConfig(role="creator", command="codex", kind="codex")
 _DEFAULT_REVIEWER = AgentCliConfig(role="reviewer", command="claude", kind="claude")
+_DEFAULT_DRAFTER = AgentCliConfig(role="drafter", command="claude", kind="claude")
 
 
 def global_config_path() -> Path:
@@ -87,6 +89,13 @@ def load_agent_cli_bundle(*, workspace: Path | None) -> AgentCliBundle:
         global_source=str(global_path),
         episode_source=str(episode_path) if episode_path is not None else "episode.yaml",
     )
+    drafter_raw, drafter_source = _merge_agent_role(
+        role="drafter",
+        global_role=global_agents.get("drafter"),
+        episode_role=episode_agents.get("drafter"),
+        global_source=str(global_path),
+        episode_source=str(episode_path) if episode_path is not None else "episode.yaml",
+    )
 
     creator = _parse_agent_cli_config(
         role="creator",
@@ -100,15 +109,25 @@ def load_agent_cli_bundle(*, workspace: Path | None) -> AgentCliBundle:
         fallback=_DEFAULT_REVIEWER,
         source=reviewer_source,
     )
-    return AgentCliBundle(creator=creator, reviewer=reviewer)
+    drafter = _parse_agent_cli_config(
+        role="drafter",
+        raw=drafter_raw,
+        fallback=_DEFAULT_DRAFTER,
+        source=drafter_source,
+    )
+    return AgentCliBundle(creator=creator, reviewer=reviewer, drafter=drafter)
 
 
-def collect_agent_cli_issues(*, workspace: Path | None) -> tuple[str, ...]:
+def collect_agent_cli_issues(
+    *,
+    workspace: Path | None,
+    roles: tuple[str, ...] | None = None,
+) -> tuple[str, ...]:
     try:
         bundle = load_agent_cli_bundle(workspace=workspace)
     except AgentCliConfigError as exc:
         return (str(exc),)
-    issues = _find_missing_cli_issues(bundle)
+    issues = _find_missing_cli_issues(bundle, roles=roles)
     return tuple(issue.message for issue in issues)
 
 
@@ -234,9 +253,16 @@ def _parse_args(
     raise AgentCliConfigError(f"agents.{role}.args must be a list of strings in {source}")
 
 
-def _find_missing_cli_issues(bundle: AgentCliBundle) -> tuple[AgentCliIssue, ...]:
+def _find_missing_cli_issues(
+    bundle: AgentCliBundle,
+    *,
+    roles: tuple[str, ...] | None = None,
+) -> tuple[AgentCliIssue, ...]:
+    all_configs = (bundle.creator, bundle.reviewer, bundle.drafter)
     issues: list[AgentCliIssue] = []
-    for config in (bundle.creator, bundle.reviewer):
+    for config in all_configs:
+        if roles is not None and config.role not in roles:
+            continue
         if _resolve_executable(config.command) is None:
             issues.append(
                 AgentCliIssue(

@@ -131,7 +131,7 @@ def run_draft_demo(
     max_iterations: int,
 ) -> None:
     if not fake_runner:
-        issues = collect_agent_cli_issues(workspace=workspace)
+        issues = collect_agent_cli_issues(workspace=workspace, roles=("creator", "reviewer"))
         for issue in issues:
             typer.echo(issue, err=True)
         if issues:
