@@ -30,6 +30,9 @@ Notes:
 
 ## 2.5. Transcribe audio (transcribe)
 
+**Prerequisites:** Export a mixed-down MP3 (or WAV) from Ultraschall/Reaper first. The per-track FLAC files from the
+Reaper media folder are not suitable for transcription — most transcription tools expect a single mixed audio file.
+
 ```bash
 podcast transcribe --workspace ./workspaces/ep_001 --mode draft
 ```
@@ -38,6 +41,8 @@ Notes:
 
 - Requires `podcast-transcript` on your PATH (or pass `--command`/`--arg`).
 - Outputs land under `transcript/draft/` or `transcript/final/` and update `episode.yaml` inputs.
+- If you run your transcription tool manually, you can skip this step and pass the resulting transcript file directly
+  to `podcast draft --transcript /path/to/transcript.txt`.
 
 ## 3. Draft text assets (draft)
 

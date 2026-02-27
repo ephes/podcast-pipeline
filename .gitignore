@@ -5,5 +5,8 @@ __pycache__/
 .ruff_cache/
 dist/
 build/
+workspaces/
+ep_test/
+specs/
 docs/_build/
 .DS_Store
