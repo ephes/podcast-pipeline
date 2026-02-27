@@ -47,6 +47,7 @@ class EpisodeYaml(SchemaVersioned):
     model_config = ConfigDict(extra="allow", validate_assignment=True)
 
     episode_id: str = Field(min_length=1)
+    hosts: list[str] | None = None
     inputs: EpisodeInputs = Field(default_factory=EpisodeInputs)
     sources: EpisodeSources | None = None
     tracks: list[EpisodeTrack] = Field(default_factory=list)

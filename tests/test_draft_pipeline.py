@@ -100,9 +100,11 @@ class _FakeRunner:
 
     def __init__(self) -> None:
         self.call_count = 0
+        self.prompts: list[str] = []
 
     def run(self, prompt_text: str) -> dict[str, Any]:
         self.call_count += 1
+        self.prompts.append(prompt_text)
         # Chunk summary prompt
         if "Transcript chunk:" in prompt_text:
             return {
@@ -314,3 +316,116 @@ def test_run_draft_pipeline_transcript_override_invalidates_cache(
 
     # Runner was called for chunks + episode summary + assets
     assert fake_runner.call_count > len(AssetKind)
+
+
+def test_run_draft_pipeline_hosts_persisted_and_reused(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Hosts from --host are persisted to episode.yaml and reused on subsequent runs."""
+    workspace = tmp_path / "ws"
+    transcript = _write_transcript_file(tmp_path)
+    fake_runner = _FakeRunner()
+
+    import podcast_pipeline.drafter_runner as dr_mod
+
+    class _PatchedCliRunner:
+        def __init__(self, **_kwargs: Any) -> None:
+            pass
+
+        def run(self, prompt_text: str) -> dict[str, Any]:
+            return fake_runner.run(prompt_text)
+
+    monkeypatch.setattr(dr_mod, "DrafterCliRunner", _PatchedCliRunner)
+
+    # First run with --host flags
+    run_draft_pipeline(
+        dry_run=False,
+        workspace=workspace,
+        episode_id="test_ep",
+        transcript=transcript,
+        chapters=None,
+        candidates_per_asset=1,
+        chunker_config=ChunkerConfig(),
+        summarizer_config=StubSummarizerConfig(),
+        timeout_seconds=None,
+        hosts=["Jochen", "Dominik"],
+    )
+
+    # Verify hosts persisted in episode.yaml
+    store = EpisodeWorkspaceStore(workspace)
+    episode_yaml = store.read_episode_yaml()
+    assert episode_yaml["hosts"] == ["Jochen", "Dominik"]
+
+    # Verify hosts appeared in summarization prompts
+    chunk_prompts = [p for p in fake_runner.prompts if "Transcript chunk:" in p]
+    assert len(chunk_prompts) > 0
+    for prompt in chunk_prompts:
+        assert "Jochen, Dominik" in prompt
+
+    episode_prompts = [p for p in fake_runner.prompts if "Chunk summaries" in p]
+    assert len(episode_prompts) > 0
+    for prompt in episode_prompts:
+        assert "Jochen, Dominik" in prompt
+
+    # Verify hosts appeared in candidate prompts
+    asset_prompts = [p for p in fake_runner.prompts if "Asset type:" in p]
+    assert len(asset_prompts) > 0
+    for prompt in asset_prompts:
+        assert "Jochen, Dominik" in prompt
+
+    # Second run WITHOUT --host flags (should fall back to episode.yaml)
+    fake_runner2 = _FakeRunner()
+
+    class _PatchedCliRunner2:
+        def __init__(self, **_kwargs: Any) -> None:
+            pass
+
+        def run(self, prompt_text: str) -> dict[str, Any]:
+            return fake_runner2.run(prompt_text)
+
+    monkeypatch.setattr(dr_mod, "DrafterCliRunner", _PatchedCliRunner2)
+
+    run_draft_pipeline(
+        dry_run=False,
+        workspace=workspace,
+        episode_id="test_ep",
+        transcript=None,
+        chapters=None,
+        candidates_per_asset=1,
+        chunker_config=ChunkerConfig(),
+        summarizer_config=StubSummarizerConfig(),
+        timeout_seconds=None,
+        hosts=None,  # not provided this time
+    )
+
+    # Hosts should still appear in prompts from episode.yaml fallback
+    asset_prompts2 = [p for p in fake_runner2.prompts if "Asset type:" in p]
+    assert len(asset_prompts2) > 0
+    for prompt in asset_prompts2:
+        assert "Jochen, Dominik" in prompt
+
+
+def test_run_draft_pipeline_dry_run_persists_hosts(
+    tmp_path: Path,
+) -> None:
+    """In dry-run mode, --host flags are still persisted to episode.yaml."""
+    workspace = tmp_path / "ws"
+    transcript = _write_transcript_file(tmp_path)
+
+    run_draft_pipeline(
+        dry_run=True,
+        workspace=workspace,
+        episode_id="test_ep",
+        transcript=transcript,
+        chapters=None,
+        candidates_per_asset=1,
+        chunker_config=ChunkerConfig(),
+        summarizer_config=StubSummarizerConfig(),
+        timeout_seconds=None,
+        hosts=["Jochen", "Dominik"],
+    )
+
+    store = EpisodeWorkspaceStore(workspace)
+    episode_yaml = store.read_episode_yaml()
+    assert episode_yaml["hosts"] == ["Jochen", "Dominik"]

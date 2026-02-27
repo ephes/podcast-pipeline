@@ -14,50 +14,40 @@ Notes:
 - `--workspace` must not exist; the command creates it.
 - If you omit `--workspace`, the default is `./episodes/<episode_id>`.
 
-## 2. Ingest Reaper media (ingest)
+## 2. Export and transcribe audio
+
+**Export a master mix** from Ultraschall/Reaper to MP3 first. The per-track FLAC files in the Reaper media folder are
+not suitable for transcription — transcription tools expect a single mixed audio file.
 
 ```bash
-podcast ingest \
-  --workspace ./workspaces/ep_001 \
-  --reaper-media-dir /path/to/ReaperMedia \
-  --tracks-glob "*.flac"
+# Transcribe using podcast-transcript (MLX backend, runs locally on Apple Silicon)
+time uvx --from 'podcast-transcript[mlx]' transcribe \
+  --backend mlx \
+  /Users/jochen/Documents/REAPER\ Media/pp_068/pp_068.mp3
 ```
 
 Notes:
 
-- Ingest updates `episode.yaml` with `sources` and `tracks`; the audio stays in place.
-- Skip this step if you only need text assets from a transcript.
-
-## 2.5. Transcribe audio (transcribe)
-
-**Prerequisites:** Export a mixed-down MP3 (or WAV) from Ultraschall/Reaper first. The per-track FLAC files from the
-Reaper media folder are not suitable for transcription — most transcription tools expect a single mixed audio file.
-
-```bash
-podcast transcribe --workspace ./workspaces/ep_001 --mode draft
-```
-
-Notes:
-
-- Requires `podcast-transcript` on your PATH (or pass `--command`/`--arg`).
-- Outputs land under `transcript/draft/` or `transcript/final/` and update `episode.yaml` inputs.
-- If you run your transcription tool manually, you can skip this step and pass the resulting transcript file directly
-  to `podcast draft --transcript /path/to/transcript.txt`.
+- The transcript file (`.txt`) is what you pass to `podcast draft` in the next step.
+- Transcripts are stored outside the workspace — by convention under `~/.podcast-transcripts/transcripts/pp_<NNN>/`.
 
 ## 3. Draft text assets (draft)
 
-`podcast draft` runs the transcript chunking + summary + candidate generation pipeline. It creates a new workspace, so
-use a fresh path if one already exists.
+`podcast draft` runs the transcript chunking + summary + candidate generation pipeline. It reuses an existing workspace
+if one is present (clearing stale chunks/summaries on re-run).
 
 ```bash
 podcast draft \
-  --dry-run \
-  --workspace ./workspaces/ep_001_text \
-  --transcript /path/to/transcript.txt \
-  --chapters /path/to/chapters.txt \
-  --episode-id ep_001 \
+  --workspace ./workspaces/ep_068 \
+  --transcript ~/.podcast-transcripts/transcripts/pp_68/pp_68.txt \
+  --episode-id ep_068 \
+  --host Jochen --host Dominik \
   --candidates 3
 ```
+
+The `--host` flag is repeatable and persists host names to `episode.yaml`. On subsequent runs without `--host`, the
+stored names are reused automatically. Host names are injected into all LLM prompts (summarization and candidate
+generation) to prevent hallucinated speaker names.
 
 Outputs:
 
@@ -69,7 +59,7 @@ Outputs:
 
 ```bash
 podcast review \
-  --workspace ./workspaces/ep_001_text \
+  --workspace ./workspaces/ep_001 \
   --episode-id ep_001 \
   --asset-id description \
   --max-iterations 3
@@ -84,13 +74,19 @@ Notes:
 ## 5. Pick final copy (pick)
 
 ```bash
-podcast pick --workspace ./workspaces/ep_001_text
+# Web UI (recommended) — opens a browser for full-text side-by-side comparison
+podcast pick --workspace ./workspaces/ep_001 --web
+
+# CLI — interactive prompt with truncated previews
+podcast pick --workspace ./workspaces/ep_001
 ```
 
 Notes:
 
-- `podcast pick` prompts when multiple candidates exist and writes the selection to `copy/selected/`.
-- Use `--asset-id` and `--candidate-id` to pick a specific candidate non-interactively.
+- `--web` opens a local web UI for full-text comparison of all candidates per asset. Select candidates by clicking, then
+  press "Done" to shut down the server.
+- Without `--web`, the CLI prompts when multiple candidates exist and writes the selection to `copy/selected/`.
+- Use `--asset-id` and `--candidate-id` to pick a specific candidate non-interactively (CLI only).
 
 ## Episode workspace layout
 

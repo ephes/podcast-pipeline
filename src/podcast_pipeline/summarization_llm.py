@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
 
 import typer
 
@@ -22,6 +23,7 @@ def summarize_transcript_chunks_llm(
     chunk_ids: list[int],
     runner: DrafterRunner,
     renderer: PromptRenderer,
+    hosts: Sequence[str] | None = None,
 ) -> list[ChunkSummary]:
     """Summarize each transcript chunk via an LLM call."""
     summaries: list[ChunkSummary] = []
@@ -34,6 +36,7 @@ def summarize_transcript_chunks_llm(
             renderer=renderer,
             chunk_id=chunk_id,
             chunk_text=chunk_text,
+            hosts=hosts,
         )
         typer.echo(f"  Summarizing chunk {chunk_id}...", err=True)
         payload = runner.run(prompt.text)
@@ -62,6 +65,7 @@ def reduce_chunk_summaries_to_episode_summary_llm(
     chunk_summaries: list[ChunkSummary],
     runner: DrafterRunner,
     renderer: PromptRenderer,
+    hosts: Sequence[str] | None = None,
 ) -> EpisodeSummary:
     """Reduce all chunk summaries into a single episode summary via LLM."""
     summaries_data = [s.model_dump(mode="json") for s in chunk_summaries]
@@ -70,6 +74,7 @@ def reduce_chunk_summaries_to_episode_summary_llm(
     prompt = render_episode_summary_prompt(
         renderer=renderer,
         chunk_summaries_json=summaries_json,
+        hosts=hosts,
     )
     typer.echo("  Generating episode summary...", err=True)
     payload = runner.run(prompt.text)
@@ -89,6 +94,7 @@ def run_llm_summarization(
     chunk_ids: list[int],
     runner: DrafterRunner,
     renderer: PromptRenderer,
+    hosts: Sequence[str] | None = None,
 ) -> EpisodeSummary:
     """Run the full LLM summarization pipeline: chunk summaries → episode summary.
 
@@ -99,12 +105,14 @@ def run_llm_summarization(
         chunk_ids=chunk_ids,
         runner=runner,
         renderer=renderer,
+        hosts=hosts,
     )
 
     episode_summary = reduce_chunk_summaries_to_episode_summary_llm(
         chunk_summaries=chunk_summaries,
         runner=runner,
         renderer=renderer,
+        hosts=hosts,
     )
 
     write_episode_summary_artifacts(layout=layout, episode_summary=episode_summary)

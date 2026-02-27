@@ -194,7 +194,7 @@ _CHUNK_SUMMARY_TEMPLATE = """You are a summarization assistant for a German-lang
 
 Summarize the following transcript chunk. The podcast is in German;
 keep all output in German.
-
+{hosts}
 Chunk id: {chunk_id}
 
 Transcript chunk:
@@ -212,7 +212,7 @@ _EPISODE_SUMMARY_TEMPLATE = """You are a summarization assistant for a German-la
 You are given summaries for every chunk of one episode transcript.
 Synthesize them into a single episode-level summary. The podcast is
 in German; keep all output in German.
-
+{hosts}
 Chunk summaries (JSON array):
 {chunk_summaries_json}
 
@@ -228,7 +228,7 @@ _ASSET_CANDIDATES_TEMPLATE = """You are a copywriting assistant for a German-lan
 Generate {num_candidates} candidate texts for the asset type described below.
 The podcast is in German; keep all output in German unless the asset type
 explicitly requires a different language (e.g. slugs or keywords may be in English).
-
+{hosts}
 Asset type: {asset_id}
 {asset_guidance}
 
@@ -335,6 +335,17 @@ def render_reviewer_prompt(
 _MAX_TRANSCRIPT_EXCERPT_CHARS = 4000
 
 
+def _render_hosts(hosts: Sequence[str] | None) -> str:
+    """Return a speaker constraint line for prompts, or empty string if no hosts."""
+    if not hosts:
+        return ""
+    names = ", ".join(hosts)
+    return (
+        f"The podcast hosts are: {names}. "
+        "Use only these names when referring to speakers; do not invent or guess speaker names."
+    )
+
+
 def render_episode_context(
     *,
     summary: str | None = None,
@@ -342,9 +353,14 @@ def render_episode_context(
     chapters: str | None = None,
     transcript_excerpt: str | None = None,
     max_transcript_chars: int = _MAX_TRANSCRIPT_EXCERPT_CHARS,
+    hosts: Sequence[str] | None = None,
 ) -> str:
     """Render episode context (summary, chapters, transcript) into a text block for prompts."""
     sections: list[str] = []
+
+    hosts_text = _render_hosts(hosts)
+    if hosts_text:
+        sections.append(hosts_text)
 
     if summary:
         sections.append(f"Episode summary:\n{summary.strip()}")
@@ -447,11 +463,14 @@ def render_chunk_summary_prompt(
     renderer: PromptRenderer,
     chunk_id: int,
     chunk_text: str,
+    hosts: Sequence[str] | None = None,
 ) -> PromptRenderResult:
+    hosts_text = _render_hosts(hosts)
     context = {
         "chunk_id": str(chunk_id),
         "chunk_text": chunk_text,
         "chunk_summary_schema": _json_block(chunk_summary_json_schema()),
+        "hosts": f"\n{hosts_text}" if hosts_text else "",
     }
     return renderer.render(name="chunk_summary", context=context)
 
@@ -460,10 +479,13 @@ def render_episode_summary_prompt(
     *,
     renderer: PromptRenderer,
     chunk_summaries_json: str,
+    hosts: Sequence[str] | None = None,
 ) -> PromptRenderResult:
+    hosts_text = _render_hosts(hosts)
     context = {
         "chunk_summaries_json": chunk_summaries_json,
         "episode_summary_schema": _json_block(episode_summary_json_schema()),
+        "hosts": f"\n{hosts_text}" if hosts_text else "",
     }
     return renderer.render(name="episode_summary", context=context)
 
@@ -478,7 +500,9 @@ def render_asset_candidates_prompt(
     topics: Sequence[str],
     chapters: Sequence[str],
     num_candidates: int,
+    hosts: Sequence[str] | None = None,
 ) -> PromptRenderResult:
+    hosts_text = _render_hosts(hosts)
     context = {
         "asset_id": asset_id,
         "asset_guidance": asset_guidance,
@@ -487,6 +511,7 @@ def render_asset_candidates_prompt(
         "topics": "\n".join(f"- {t}" for t in topics) if topics else "(none)",
         "chapters": "\n".join(f"- {c}" for c in chapters) if chapters else "(none)",
         "num_candidates": str(num_candidates),
+        "hosts": f"\n{hosts_text}\n" if hosts_text else "",
         "response_schema": _json_block(asset_candidates_response_json_schema(num_candidates=num_candidates)),
     }
     return renderer.render(name="asset_candidates", context=context)

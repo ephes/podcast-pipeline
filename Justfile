@@ -8,9 +8,9 @@ sync *ARGS="":
   uv sync {{ARGS}}
 
 # Docs
-docs:
+docs port="8000":
   uv sync
-  uv run sphinx-autobuild docs docs/_build/html
+  uv run sphinx-autobuild docs docs/_build/html --port {{port}}
 
 docs-build:
   uv sync

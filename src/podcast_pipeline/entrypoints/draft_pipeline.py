@@ -128,12 +128,22 @@ def _ingest_transcript(*, store: EpisodeWorkspaceStore, transcript: Path) -> Non
     store.write_episode_yaml(episode_yaml)
 
 
+def _read_hosts_from_yaml(store: EpisodeWorkspaceStore) -> list[str] | None:
+    """Read hosts list from episode.yaml."""
+    episode_yaml = store.read_episode_yaml()
+    raw = episode_yaml.get("hosts")
+    if isinstance(raw, list) and all(isinstance(h, str) for h in raw) and raw:
+        return raw
+    return None
+
+
 def _run_llm_pipeline(
     *,
     store: EpisodeWorkspaceStore,
     candidates_per_asset: int,
     chunker_config: ChunkerConfig,
     timeout_seconds: float | None,
+    hosts: list[str] | None = None,
 ) -> None:
     """Run the real LLM-backed draft pipeline."""
     from podcast_pipeline.agent_cli_config import load_agent_cli_bundle
@@ -142,6 +152,10 @@ def _run_llm_pipeline(
     from podcast_pipeline.prompting import PromptRenderer, default_prompt_registry
     from podcast_pipeline.summarization_llm import run_llm_summarization
     from podcast_pipeline.transcript_chunker import write_transcript_chunks
+
+    # Fall back to episode.yaml hosts if CLI didn't provide them
+    if hosts is None:
+        hosts = _read_hosts_from_yaml(store)
 
     workspace = store.layout.root
 
@@ -186,6 +200,7 @@ def _run_llm_pipeline(
             chunk_ids=chunk_ids,
             runner=runner,
             renderer=renderer,
+            hosts=hosts,
         )
 
     # Generate candidates
@@ -197,6 +212,7 @@ def _run_llm_pipeline(
         candidates_per_asset=candidates_per_asset,
         runner=runner,
         renderer=renderer,
+        hosts=hosts,
     )
 
     written = 0
@@ -221,6 +237,7 @@ def run_draft_pipeline(
     chunker_config: ChunkerConfig,
     summarizer_config: StubSummarizerConfig,
     timeout_seconds: float | None = None,
+    hosts: list[str] | None = None,
 ) -> None:
     if dry_run:
         if transcript is None:
@@ -234,6 +251,12 @@ def run_draft_pipeline(
             chunker_config=chunker_config,
             summarizer_config=summarizer_config,
         )
+
+        if hosts:
+            dry_store = EpisodeWorkspaceStore(workspace)
+            episode_yaml = dry_store.read_episode_yaml()
+            episode_yaml["hosts"] = hosts
+            dry_store.write_episode_yaml(episode_yaml)
 
         if chapters is not None:
             _copy_chapters_into_workspace(workspace=workspace, chapters=chapters)
@@ -252,6 +275,11 @@ def run_draft_pipeline(
         transcript=transcript,
     )
 
+    if hosts:
+        episode_yaml = store.read_episode_yaml()
+        episode_yaml["hosts"] = hosts
+        store.write_episode_yaml(episode_yaml)
+
     if transcript is not None:
         _ingest_transcript(store=store, transcript=transcript)
 
@@ -263,4 +291,5 @@ def run_draft_pipeline(
         candidates_per_asset=candidates_per_asset,
         chunker_config=chunker_config,
         timeout_seconds=timeout_seconds,
+        hosts=hosts,
     )

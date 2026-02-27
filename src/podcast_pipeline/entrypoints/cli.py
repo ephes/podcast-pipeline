@@ -153,6 +153,13 @@ def draft(
         float | None,
         typer.Option(min=0, help="Timeout in seconds for each LLM CLI call."),
     ] = None,
+    host: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--host",
+            help="Host/speaker name (repeatable, e.g. --host Jochen --host Dominik).",
+        ),
+    ] = None,
 ) -> None:
     """Create draft candidates by running the text pipeline."""
     from podcast_pipeline.entrypoints.draft_pipeline import run_draft_pipeline
@@ -169,6 +176,7 @@ def draft(
         chunker_config=ChunkerConfig(),
         summarizer_config=StubSummarizerConfig(),
         timeout_seconds=timeout,
+        hosts=host if host else None,
     )
 
 
@@ -262,11 +270,22 @@ def pick(
         UUID | None,
         typer.Option(help="Candidate id to select (requires --asset-id)."),
     ] = None,
+    web: Annotated[
+        bool,
+        typer.Option(help="Open a local web UI for full-text candidate comparison."),
+    ] = False,
 ) -> None:
     """Select a candidate per asset and write copy/selected outputs."""
-    from podcast_pipeline.entrypoints.pick import run_pick
+    if web:
+        if candidate_id is not None:
+            raise typer.BadParameter("--candidate-id is not supported with --web")
+        from podcast_pipeline.entrypoints.pick_web import run_pick_web
 
-    run_pick(workspace=workspace, asset_id=asset_id, candidate_id=candidate_id)
+        run_pick_web(workspace=workspace, asset_id=asset_id)
+    else:
+        from podcast_pipeline.entrypoints.pick import run_pick
+
+        run_pick(workspace=workspace, asset_id=asset_id, candidate_id=candidate_id)
 
 
 @app.command()

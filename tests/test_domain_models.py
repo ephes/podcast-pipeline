@@ -79,6 +79,26 @@ def test_verdict_ok_cannot_include_error_issues() -> None:
         )
 
 
+def test_episode_yaml_roundtrip_with_hosts() -> None:
+    from podcast_pipeline.domain.episode_yaml import EpisodeYaml
+
+    yaml_data = EpisodeYaml(episode_id="ep_001", hosts=["Jochen", "Dominik"])
+    dumped = yaml_data.to_mapping()
+    restored = EpisodeYaml.model_validate(dumped)
+    assert restored.hosts == ["Jochen", "Dominik"]
+    assert restored.episode_id == "ep_001"
+
+
+def test_episode_yaml_roundtrip_without_hosts() -> None:
+    from podcast_pipeline.domain.episode_yaml import EpisodeYaml
+
+    yaml_data = EpisodeYaml(episode_id="ep_001")
+    dumped = yaml_data.to_mapping()
+    restored = EpisodeYaml.model_validate(dumped)
+    assert restored.hosts is None
+    assert restored.episode_id == "ep_001"
+
+
 def test_chapters_must_be_increasing() -> None:
     with pytest.raises(ValidationError):
         EpisodeWorkspace(

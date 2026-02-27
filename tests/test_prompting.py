@@ -16,8 +16,10 @@ from podcast_pipeline.prompting import (
     PromptTemplate,
     default_prompt_registry,
     render_asset_candidates_prompt,
+    render_chunk_summary_prompt,
     render_creator_prompt,
     render_episode_context,
+    render_episode_summary_prompt,
     render_reviewer_prompt,
 )
 from podcast_pipeline.review_loop_engine import CreatorInput, ReviewerInput
@@ -126,6 +128,21 @@ def test_render_episode_context_with_all_fields() -> None:
     assert "Speaker 1: Hello world." in ctx
 
 
+def test_render_episode_context_with_hosts() -> None:
+    ctx = render_episode_context(
+        summary="A test episode.",
+        hosts=["Jochen", "Dominik"],
+    )
+    assert "Jochen, Dominik" in ctx
+    assert "do not invent" in ctx
+    assert "Episode summary:" in ctx
+
+
+def test_render_episode_context_without_hosts() -> None:
+    ctx = render_episode_context(summary="A test episode.")
+    assert "hosts" not in ctx.lower() or "do not invent" not in ctx
+
+
 def test_render_episode_context_empty_returns_empty_string() -> None:
     assert render_episode_context() == ""
     assert render_episode_context(summary=None, chapters=None) == ""
@@ -214,6 +231,33 @@ def test_load_episode_context_from_workspace_with_files(tmp_path: Path) -> None:
     assert "Speaker 1: Hello." in ctx
 
 
+def test_load_episode_context_from_workspace_with_hosts(tmp_path: Path) -> None:
+    import yaml
+
+    layout = EpisodeWorkspaceLayout(root=tmp_path)
+
+    episode_data = {
+        "episode_id": "test_ep",
+        "hosts": ["Jochen", "Dominik"],
+    }
+    (tmp_path / "episode.yaml").write_text(yaml.safe_dump(episode_data), encoding="utf-8")
+
+    # Create a summary so context is not None
+    summary_dir = layout.episode_summary_dir
+    summary_dir.mkdir(parents=True)
+    summary_data = {
+        "version": 1,
+        "summary_markdown": "A test episode.",
+        "key_points": ["key"],
+    }
+    layout.episode_summary_json_path().write_text(json.dumps(summary_data), encoding="utf-8")
+
+    ctx = load_episode_context_from_workspace(layout)
+    assert ctx is not None
+    assert "Jochen, Dominik" in ctx
+    assert "do not invent" in ctx
+
+
 def test_load_episode_context_from_workspace_empty(tmp_path: Path) -> None:
     layout = EpisodeWorkspaceLayout(root=tmp_path)
     ctx = load_episode_context_from_workspace(layout)
@@ -282,6 +326,92 @@ def test_load_episode_context_non_utf8_transcript(tmp_path: Path) -> None:
     ctx = load_episode_context_from_workspace(layout)
     # Transcript can't be read, so context is None (no other sources)
     assert ctx is None
+
+
+def test_render_asset_candidates_prompt_with_hosts() -> None:
+    renderer = PromptRenderer(default_prompt_registry())
+
+    result = render_asset_candidates_prompt(
+        renderer=renderer,
+        asset_id="description",
+        asset_guidance="Write a description.",
+        episode_summary_markdown="# Summary\n",
+        key_points=["point A"],
+        topics=["topic X"],
+        chapters=["00:00 Intro"],
+        num_candidates=3,
+        hosts=["Jochen", "Dominik"],
+    )
+
+    assert "Jochen, Dominik" in result.text
+    assert "do not invent" in result.text
+
+
+def test_render_asset_candidates_prompt_without_hosts() -> None:
+    renderer = PromptRenderer(default_prompt_registry())
+
+    result = render_asset_candidates_prompt(
+        renderer=renderer,
+        asset_id="description",
+        asset_guidance="Write a description.",
+        episode_summary_markdown="# Summary\n",
+        key_points=["point A"],
+        topics=["topic X"],
+        chapters=["00:00 Intro"],
+        num_candidates=3,
+    )
+
+    assert "do not invent" not in result.text
+
+
+def test_render_chunk_summary_prompt_with_hosts() -> None:
+    renderer = PromptRenderer(default_prompt_registry())
+
+    result = render_chunk_summary_prompt(
+        renderer=renderer,
+        chunk_id=1,
+        chunk_text="Speaker: Hallo und willkommen.",
+        hosts=["Jochen", "Dominik"],
+    )
+
+    assert "Jochen, Dominik" in result.text
+    assert "do not invent" in result.text
+
+
+def test_render_chunk_summary_prompt_without_hosts() -> None:
+    renderer = PromptRenderer(default_prompt_registry())
+
+    result = render_chunk_summary_prompt(
+        renderer=renderer,
+        chunk_id=1,
+        chunk_text="Speaker: Hallo und willkommen.",
+    )
+
+    assert "do not invent" not in result.text
+
+
+def test_render_episode_summary_prompt_with_hosts() -> None:
+    renderer = PromptRenderer(default_prompt_registry())
+
+    result = render_episode_summary_prompt(
+        renderer=renderer,
+        chunk_summaries_json='[{"summary_markdown": "test"}]',
+        hosts=["Jochen", "Dominik"],
+    )
+
+    assert "Jochen, Dominik" in result.text
+    assert "do not invent" in result.text
+
+
+def test_render_episode_summary_prompt_without_hosts() -> None:
+    renderer = PromptRenderer(default_prompt_registry())
+
+    result = render_episode_summary_prompt(
+        renderer=renderer,
+        chunk_summaries_json='[{"summary_markdown": "test"}]',
+    )
+
+    assert "do not invent" not in result.text
 
 
 def test_render_asset_candidates_prompt_includes_envelope_schema() -> None:

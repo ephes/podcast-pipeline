@@ -67,6 +67,7 @@ def generate_draft_candidates_llm(
     candidates_per_asset: int,
     runner: DrafterRunner,
     renderer: PromptRenderer,
+    hosts: Sequence[str] | None = None,
 ) -> dict[str, list[Candidate]]:
     """Generate draft candidates for all asset types via LLM calls.
 
@@ -87,6 +88,7 @@ def generate_draft_candidates_llm(
             topics=episode_summary.topics,
             chapters=list(chapters),
             num_candidates=candidates_per_asset,
+            hosts=hosts,
         )
         typer.echo(f"  Generating candidates for {asset_id}...", err=True)
         payload = runner.run(prompt.text)

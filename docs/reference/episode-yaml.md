@@ -13,6 +13,9 @@ configuration.
 ```yaml
 schema_version: 1
 episode_id: ep_001
+hosts:
+  - Jochen
+  - Dominik
 inputs:
   transcript: /path/to/transcript.txt
   chapters: /path/to/chapters.txt
@@ -50,6 +53,7 @@ auphonic:
 
 - `schema_version` (int, default `1`)
 - `episode_id` (string, required)
+- `hosts` (list of strings or null, optional): podcast host names injected into LLM prompts to prevent hallucinated speakers
 - `inputs` (object, optional)
 - `sources` (object, optional)
 - `tracks` (list of objects, optional)

@@ -134,6 +134,18 @@ def _try_render_code(text: str, idx: int) -> tuple[str, int] | None:
     return f"<code>{html.escape(code)}</code>", end + 1
 
 
+_ALLOWED_URL_SCHEMES = frozenset({"http", "https", "mailto", ""})
+
+
+def _is_safe_url(url: str) -> bool:
+    """Check if a URL uses a safe scheme (http, https, mailto, or relative)."""
+    colon = url.find(":")
+    if colon < 0:
+        return True  # relative URL, no scheme
+    scheme = url[:colon].lower().strip()
+    return scheme in _ALLOWED_URL_SCHEMES
+
+
 def _try_render_link(text: str, idx: int) -> tuple[str, int] | None:
     if not text.startswith("[", idx):
         return None
@@ -146,6 +158,9 @@ def _try_render_link(text: str, idx: int) -> tuple[str, int] | None:
 
     label = text[idx + 1 : close]
     url = text[close + 2 : end].strip()
+    if not _is_safe_url(url):
+        # Render label text only, skip the dangerous link
+        return _render_inline(label), end + 1
     label_html = _render_inline(label)
     href = html.escape(url, quote=True)
     return f'<a href="{href}">{label_html}</a>', end + 1

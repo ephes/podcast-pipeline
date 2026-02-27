@@ -596,6 +596,23 @@ def _read_episode_inputs(layout: EpisodeWorkspaceLayout) -> dict[str, Any]:
     return {}
 
 
+def _read_hosts(layout: EpisodeWorkspaceLayout) -> list[str] | None:
+    """Read hosts list from episode.yaml."""
+    import yaml
+
+    if not layout.episode_yaml.exists():
+        return None
+    try:
+        data = yaml.safe_load(layout.episode_yaml.read_text(encoding="utf-8"))
+        if isinstance(data, dict):
+            hosts = data.get("hosts")
+            if isinstance(hosts, list) and all(isinstance(h, str) for h in hosts):
+                return hosts if hosts else None
+    except (OSError, UnicodeDecodeError, yaml.YAMLError):
+        pass
+    return None
+
+
 def load_episode_context_from_workspace(layout: EpisodeWorkspaceLayout) -> str | None:
     """Load episode context (summary, chapters, transcript) from workspace files.
 
@@ -606,12 +623,14 @@ def load_episode_context_from_workspace(layout: EpisodeWorkspaceLayout) -> str |
     inputs = _read_episode_inputs(layout)
     chapters = _read_input_file(layout.root, inputs, "chapters")
     transcript_excerpt = _read_input_file(layout.root, inputs, "transcript")
+    hosts = _read_hosts(layout)
 
     context = render_episode_context(
         summary=summary,
         key_points=key_points,
         chapters=chapters,
         transcript_excerpt=transcript_excerpt,
+        hosts=hosts,
     )
     return context if context else None
 
