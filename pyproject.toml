@@ -13,7 +13,9 @@ dependencies = [
   "pydantic>=2.7",
   "pyyaml>=6.0",
   "rich>=13.9",
+  "starlette>=0.37",
   "typer>=0.12",
+  "uvicorn>=0.30",
 ]
 
 [project.scripts]

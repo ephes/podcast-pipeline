@@ -1,0 +1,1069 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Podcast Pipeline - Dashboard</title>
+<style>
+  :root {
+    --bg: #f5f5f5; --card-bg: #fff; --border: #ddd; --accent: #2563eb;
+    --accent-hover: #1d4ed8; --selected-bg: #e0f2fe; --selected-border: #2563eb;
+    --text: #1a1a1a; --text-muted: #666; --success: #16a34a;
+    --warning: #ca8a04; --error: #dc2626; --info: #0ea5e9;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+         background: var(--bg); color: var(--text); }
+  header { background: var(--card-bg); border-bottom: 1px solid var(--border);
+           padding: 0.75rem 2rem; display: flex; align-items: center; justify-content: space-between; }
+  header h1 { font-size: 1.15rem; }
+  .header-right { display: flex; align-items: center; gap: 1rem; }
+  .jobs-indicator { font-size: 0.8rem; color: var(--info); cursor: pointer;
+                    background: none; border: none; padding: 0; text-decoration: underline; }
+
+  /* Tabs */
+  .tabs { display: flex; background: var(--card-bg); border-bottom: 1px solid var(--border);
+          padding: 0 2rem; gap: 0; }
+  .tab { padding: 0.6rem 1.2rem; cursor: pointer; border-bottom: 2px solid transparent;
+         font-size: 0.85rem; color: var(--text-muted); transition: all 0.15s; }
+  .tab:hover { color: var(--text); }
+  .tab.active { color: var(--accent); border-bottom-color: var(--accent); font-weight: 600; }
+
+  /* Content */
+  .content { padding: 1.5rem 2rem; max-width: 1400px; }
+  .tab-panel { display: none; }
+  .tab-panel.active { display: block; }
+
+  /* Cards */
+  .card { background: var(--card-bg); border: 1px solid var(--border); border-radius: 8px;
+          padding: 1rem 1.25rem; margin-bottom: 1rem; }
+  .card h3 { font-size: 0.95rem; margin-bottom: 0.75rem; }
+
+  /* Status grid */
+  .status-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 0.75rem; }
+  .status-item { padding: 0.75rem; border-radius: 6px; border: 1px solid var(--border); }
+  .status-item .label { font-size: 0.75rem; color: var(--text-muted); text-transform: uppercase; }
+  .status-item .value { font-size: 1.1rem; font-weight: 600; margin-top: 0.25rem; }
+  .status-ok { border-left: 3px solid var(--success); }
+  .status-missing { border-left: 3px solid var(--error); }
+  .status-partial { border-left: 3px solid var(--warning); }
+
+  /* Forms */
+  .form-group { margin-bottom: 0.75rem; }
+  .form-group label { display: block; font-size: 0.8rem; color: var(--text-muted);
+                      margin-bottom: 0.25rem; }
+  .form-group input, .form-group textarea, .form-group select,
+  .inline-flex input, .inline-flex select {
+    width: 100%; padding: 0.4rem 0.6rem;
+    border: 1px solid var(--border); border-radius: 4px; font-size: 0.85rem;
+    font-family: inherit; background: #fff;
+  }
+  .form-group textarea { resize: vertical; min-height: 60px; }
+  .btn { background: var(--accent); color: #fff; border: none; padding: 0.4rem 1rem;
+         border-radius: 4px; cursor: pointer; font-size: 0.8rem; font-weight: 600; }
+  .btn:hover { background: var(--accent-hover); }
+  .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+  .btn-sm { padding: 0.3rem 0.7rem; font-size: 0.75rem; }
+  .btn-success { background: var(--success); }
+  .btn-warning { background: var(--warning); }
+  .btn-danger { background: var(--error); }
+  .btn-outline { background: transparent; color: var(--accent); border: 1px solid var(--accent); }
+  .btn-outline:hover { background: var(--accent); color: #fff; }
+
+  /* Pick tab */
+  .pick-container { display: flex; height: calc(100vh - 160px); }
+  .pick-sidebar { width: 240px; min-width: 200px; border-right: 1px solid var(--border);
+                  background: var(--card-bg); overflow-y: auto; border-radius: 8px 0 0 8px; }
+  .pick-sidebar-item { padding: 0.75rem 1rem; cursor: pointer; border-bottom: 1px solid var(--border);
+                       font-size: 0.85rem; display: flex; justify-content: space-between; align-items: center;
+                       width: 100%; background: transparent; border-left: none; border-right: none; border-top: none;
+                       text-align: left; }
+  .pick-sidebar-item:hover { background: #f0f0f0; }
+  .pick-sidebar-item.active { background: var(--selected-bg); font-weight: 600; }
+  .pick-sidebar-item .check { color: var(--success); font-weight: bold; }
+  .pick-main { flex: 1; overflow-y: auto; padding: 1.5rem; background: var(--card-bg);
+               border-radius: 0 8px 8px 0; }
+  .candidates-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(400px, 1fr)); gap: 1rem; }
+  .candidate-card { background: var(--bg); border: 2px solid var(--border);
+                    border-radius: 8px; padding: 1rem; }
+  .candidate-card.selected { border-color: var(--selected-border); background: var(--selected-bg); }
+  .candidate-card .card-header { display: flex; justify-content: space-between;
+                                 align-items: center; margin-bottom: 0.75rem; }
+  .candidate-card .card-label { font-size: 0.8rem; color: var(--text-muted); }
+  .select-btn { background: var(--accent); color: #fff; border: none; padding: 0.35rem 1rem;
+                border-radius: 4px; cursor: pointer; font-size: 0.8rem; }
+  .select-btn:hover { background: var(--accent-hover); }
+  .candidate-card.selected .select-btn { background: var(--success); }
+  .candidate-content { font-size: 0.9rem; line-height: 1.6; max-height: 60vh; overflow-y: auto; }
+  .candidate-content h1, .candidate-content h2, .candidate-content h3 { margin: 0.5em 0 0.25em; }
+  .candidate-content p { margin: 0.4em 0; }
+  .candidate-content ul, .candidate-content ol { padding-left: 1.5em; margin: 0.4em 0; }
+
+  /* Notes section */
+  .notes-section { margin-top: 1rem; padding: 1rem; background: var(--bg); border-radius: 6px;
+                   border: 1px solid var(--border); }
+  .notes-section h4 { font-size: 0.85rem; margin-bottom: 0.5rem; }
+
+  /* Log panel */
+  .log-panel { background: #1e1e2e; color: #cdd6f4; border-radius: 6px; padding: 1rem;
+               font-family: "SF Mono", "Fira Code", monospace; font-size: 0.8rem;
+               max-height: 400px; overflow-y: auto; white-space: pre-wrap; }
+  .log-line { padding: 0.1rem 0; }
+  .log-line.error { color: #f38ba8; }
+  .log-line.success { color: #a6e3a1; }
+
+  .job-progress { margin-bottom: 0.75rem; display: none; }
+  .job-progress.running { display: block; }
+  .job-progress .label { font-size: 0.75rem; color: var(--text-muted); margin-bottom: 0.35rem; }
+  .job-progress .bar { position: relative; width: 100%; height: 8px; border-radius: 999px; overflow: hidden;
+                       border: 1px solid #1e3a8a; background: #dbeafe; }
+  .job-progress .bar::before {
+    content: "";
+    position: absolute;
+    width: 35%;
+    height: 100%;
+    left: -35%;
+    background: linear-gradient(90deg, #1d4ed8, #2563eb, #60a5fa);
+    animation: indeterminate 1.2s infinite ease-in-out;
+  }
+  @keyframes indeterminate {
+    0% { left: -35%; }
+    100% { left: 100%; }
+  }
+
+  /* Table */
+  table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+  th, td { padding: 0.5rem 0.75rem; text-align: left; border-bottom: 1px solid var(--border); }
+  th { font-size: 0.75rem; color: var(--text-muted); text-transform: uppercase; }
+
+  /* Badge */
+  .badge { display: inline-block; padding: 0.15rem 0.5rem; border-radius: 10px;
+           font-size: 0.7rem; font-weight: 600; }
+  .badge-success { background: #dcfce7; color: #166534; }
+  .badge-warning { background: #fef9c3; color: #854d0e; }
+  .badge-error { background: #fecaca; color: #991b1b; }
+  .badge-info { background: #e0f2fe; color: #075985; }
+  .badge-neutral { background: #f3f4f6; color: #374151; }
+
+  /* Actions row */
+  .actions-row { display: flex; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 1rem; }
+
+  /* JSON preview */
+  .json-preview { background: #1e1e2e; color: #cdd6f4; border-radius: 6px; padding: 1rem;
+                  font-family: "SF Mono", "Fira Code", monospace; font-size: 0.8rem;
+                  max-height: 500px; overflow-y: auto; white-space: pre-wrap; }
+
+  .progress-text { font-size: 0.85rem; color: var(--text-muted); }
+  .inline-flex { display: flex; align-items: center; gap: 0.5rem; }
+  .inline-flex .field-grow { flex: 1 1 auto; }
+  .inline-flex .field-sm { width: 130px; }
+  .mt-1 { margin-top: 0.5rem; }
+
+  @media (max-width: 980px) {
+    header, .tabs, .content { padding-left: 1rem; padding-right: 1rem; }
+    .pick-container { flex-direction: column; height: auto; }
+    .pick-sidebar { width: 100%; min-width: 100%; border-right: none; border-bottom: 1px solid var(--border);
+                    border-radius: 8px 8px 0 0; max-height: 280px; }
+    .pick-main { border-radius: 0 0 8px 8px; }
+    .candidates-grid { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>Podcast Pipeline</h1>
+  <div class="header-right">
+    <button class="jobs-indicator" id="jobs-indicator" style="display:none"></button>
+    <button class="btn btn-sm btn-outline" id="close-btn">Close</button>
+  </div>
+</header>
+<div class="tabs" id="tabs">
+  <div class="tab active" data-tab="overview">Overview</div>
+  <div class="tab" data-tab="draft">Draft</div>
+  <div class="tab" data-tab="review">Review</div>
+  <div class="tab" data-tab="pick">Pick</div>
+  <div class="tab" data-tab="produce">Produce</div>
+</div>
+<div class="content">
+  <div class="tab-panel active" id="panel-overview">
+    <div class="card">
+      <h3>Pipeline Status</h3>
+      <div class="status-grid" id="status-grid">Loading...</div>
+    </div>
+    <div class="card">
+      <h3>Episode Metadata</h3>
+      <div id="metadata-form">
+        <div class="form-group">
+          <label for="meta-episode-id">Episode ID</label>
+          <input type="text" id="meta-episode-id">
+        </div>
+        <div class="form-group">
+          <label for="meta-hosts">Hosts (comma-separated)</label>
+          <input type="text" id="meta-hosts" placeholder="Jochen, Dominik">
+        </div>
+        <button class="btn btn-sm" id="save-metadata-btn">Save Metadata</button>
+      </div>
+    </div>
+    <div class="card" id="active-jobs-card" style="display:none">
+      <h3>Active Jobs</h3>
+      <table>
+        <thead><tr><th>Job</th><th>Stage</th><th>Status</th><th>Details</th></tr></thead>
+        <tbody id="active-jobs-body"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="tab-panel" id="panel-draft">
+    <div class="card">
+      <h3>Draft Pipeline</h3>
+      <p class="progress-text">Run the full draft pipeline or individual steps.</p>
+      <div class="actions-row mt-1">
+        <button class="btn" id="run-draft-btn">Run Full Draft</button>
+        <button class="btn btn-outline" id="run-summarize-btn">Summarize Only</button>
+        <button class="btn btn-outline" id="run-candidates-btn">Generate Candidates Only</button>
+      </div>
+    </div>
+    <div class="card" id="draft-log-card" style="display:none">
+      <h3>Draft Progress</h3>
+      <div class="job-progress" id="draft-progress"><div class="label">Running...</div><div class="bar"></div></div>
+      <div class="log-panel" id="draft-log"></div>
+    </div>
+  </div>
+
+  <div class="tab-panel" id="panel-review">
+    <div class="card">
+      <h3>Review Loop</h3>
+      <p class="progress-text">Run the Creator/Reviewer loop for an asset.</p>
+      <div class="inline-flex mt-1">
+        <div class="field-grow">
+          <select id="review-asset-select" aria-label="Select asset">
+            <option value="">Select asset...</option>
+          </select>
+        </div>
+        <div class="field-sm">
+          <input type="number" id="review-max-iter" value="3" min="1" max="10" title="Max iterations">
+        </div>
+        <button class="btn" id="run-review-btn">Run Review</button>
+      </div>
+    </div>
+    <div class="card" id="review-log-card" style="display:none">
+      <h3>Review Progress</h3>
+      <div class="job-progress" id="review-progress"><div class="label">Running...</div><div class="bar"></div></div>
+      <div class="log-panel" id="review-log"></div>
+    </div>
+  </div>
+
+  <div class="tab-panel" id="panel-pick">
+    <div class="pick-container" id="pick-container">
+      <nav class="pick-sidebar" id="pick-sidebar"></nav>
+      <main class="pick-main" id="pick-main">
+        <p style="color:var(--text-muted)">Select an asset from the sidebar.</p>
+      </main>
+    </div>
+  </div>
+
+  <div class="tab-panel" id="panel-produce">
+    <div class="card">
+      <h3>Auphonic Production</h3>
+      <div class="actions-row">
+        <button class="btn btn-outline" id="produce-preview-btn">Preview Payload</button>
+        <button class="btn btn-warning" id="run-produce-btn">Start Production</button>
+      </div>
+    </div>
+    <div class="card" id="produce-preview-card" style="display:none">
+      <h3>Auphonic Payload Preview</h3>
+      <div class="json-preview" id="produce-preview"></div>
+    </div>
+    <div class="card" id="produce-log-card" style="display:none">
+      <h3>Production Progress</h3>
+      <div class="job-progress" id="produce-progress"><div class="label">Running...</div><div class="bar"></div></div>
+      <div class="log-panel" id="produce-log"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+const state = {
+  statusData: null,
+  episodeData: null,
+  assets: [],
+  activePickAsset: null,
+  currentJobStreams: {},
+  jobPollInterval: null,
+};
+
+const elements = {
+  tabs: document.getElementById("tabs"),
+  jobsIndicator: document.getElementById("jobs-indicator"),
+  closeBtn: document.getElementById("close-btn"),
+  statusGrid: document.getElementById("status-grid"),
+  metaEpisodeId: document.getElementById("meta-episode-id"),
+  metaHosts: document.getElementById("meta-hosts"),
+  saveMetadataBtn: document.getElementById("save-metadata-btn"),
+  activeJobsCard: document.getElementById("active-jobs-card"),
+  activeJobsBody: document.getElementById("active-jobs-body"),
+  runDraftBtn: document.getElementById("run-draft-btn"),
+  runSummarizeBtn: document.getElementById("run-summarize-btn"),
+  runCandidatesBtn: document.getElementById("run-candidates-btn"),
+  draftLogCard: document.getElementById("draft-log-card"),
+  draftProgress: document.getElementById("draft-progress"),
+  draftLog: document.getElementById("draft-log"),
+  reviewAssetSelect: document.getElementById("review-asset-select"),
+  reviewMaxIter: document.getElementById("review-max-iter"),
+  runReviewBtn: document.getElementById("run-review-btn"),
+  reviewLogCard: document.getElementById("review-log-card"),
+  reviewProgress: document.getElementById("review-progress"),
+  reviewLog: document.getElementById("review-log"),
+  pickSidebar: document.getElementById("pick-sidebar"),
+  pickMain: document.getElementById("pick-main"),
+  producePreviewBtn: document.getElementById("produce-preview-btn"),
+  runProduceBtn: document.getElementById("run-produce-btn"),
+  producePreviewCard: document.getElementById("produce-preview-card"),
+  producePreview: document.getElementById("produce-preview"),
+  produceLogCard: document.getElementById("produce-log-card"),
+  produceProgress: document.getElementById("produce-progress"),
+  produceLog: document.getElementById("produce-log"),
+};
+
+function esc(value) {
+  const div = document.createElement("div");
+  div.textContent = String(value ?? "");
+  return div.innerHTML;
+}
+
+async function parseErrorResponse(resp) {
+  const defaultMessage = `${resp.status} ${resp.statusText}`.trim();
+  try {
+    const text = await resp.text();
+    if (!text) return defaultMessage;
+    try {
+      const payload = JSON.parse(text);
+      if (payload && typeof payload.error === "string" && payload.error.trim()) {
+        return payload.error;
+      }
+    } catch (_) {
+      return text;
+    }
+    return text;
+  } catch (_) {
+    return defaultMessage;
+  }
+}
+
+async function apiJson(method, path, body) {
+  const options = { method, headers: {} };
+  if (body !== undefined) {
+    options.headers["Content-Type"] = "application/json";
+    options.body = JSON.stringify(body);
+  }
+
+  const resp = await fetch(path, options);
+  if (!resp.ok) {
+    throw new Error(await parseErrorResponse(resp));
+  }
+
+  const text = await resp.text();
+  if (!text) return {};
+
+  try {
+    return JSON.parse(text);
+  } catch (_) {
+    throw new Error(`Invalid JSON response from ${path}`);
+  }
+}
+
+function appendLog(logEl, message, cls) {
+  const line = document.createElement("div");
+  line.className = cls ? `log-line ${cls}` : "log-line";
+  line.textContent = message;
+  logEl.appendChild(line);
+  logEl.scrollTop = logEl.scrollHeight;
+}
+
+function setButtonsDisabled(buttons, disabled) {
+  buttons.forEach((button) => {
+    button.disabled = disabled;
+  });
+}
+
+function setProgressRunning(progressEl, running) {
+  progressEl.classList.toggle("running", running);
+}
+
+function openLogCard(cardEl, logEl, message, progressEl) {
+  cardEl.style.display = "";
+  logEl.innerHTML = "";
+  appendLog(logEl, message);
+  setProgressRunning(progressEl, true);
+}
+
+function switchTab(tabName) {
+  document.querySelectorAll(".tab").forEach((tab) => {
+    tab.classList.toggle("active", tab.dataset.tab === tabName);
+  });
+  document.querySelectorAll(".tab-panel").forEach((panel) => {
+    panel.classList.toggle("active", panel.id === `panel-${tabName}`);
+  });
+
+  if (tabName === "pick") {
+    loadAssets();
+  }
+  if (tabName === "review") {
+    loadReviewAssets();
+  }
+  if (tabName === "overview") {
+    loadStatus();
+    loadJobs();
+  }
+}
+
+function statusCard(label, value, status) {
+  return `<div class="status-item status-${status}"><div class="label">${esc(label)}</div><div class="value">${esc(value)}</div></div>`;
+}
+
+function renderStatus() {
+  if (!state.statusData) return;
+  const stages = state.statusData.stages;
+  elements.statusGrid.innerHTML = [
+    statusCard("Episode YAML", stages.episode_yaml ? "Ready" : "Missing", stages.episode_yaml ? "ok" : "missing"),
+    statusCard("Transcript", stages.transcript ? "Ready" : "Missing", stages.transcript ? "ok" : "missing"),
+    statusCard("Chunks", stages.chunks > 0 ? `${stages.chunks} chunks` : "None", stages.chunks > 0 ? "ok" : "missing"),
+    statusCard("Summary", stages.summary ? "Ready" : "Missing", stages.summary ? "ok" : "missing"),
+    statusCard("Candidates", stages.candidates > 0 ? `${stages.candidates} total` : "None", stages.candidates > 0 ? "ok" : "missing"),
+    statusCard(
+      "Selected",
+      `${stages.selected}/${stages.total_assets}`,
+      stages.selected === stages.total_assets && stages.total_assets > 0 ? "ok" : stages.selected > 0 ? "partial" : "missing"
+    ),
+  ].join("");
+}
+
+async function loadStatus() {
+  try {
+    state.statusData = await apiJson("GET", "/api/status");
+    renderStatus();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    elements.statusGrid.innerHTML = `<div class="status-item status-missing"><div class="value">${esc(message)}</div></div>`;
+  }
+}
+
+async function loadEpisode() {
+  try {
+    state.episodeData = await apiJson("GET", "/api/episode");
+    elements.metaEpisodeId.value = state.episodeData.episode_id || "";
+    elements.metaHosts.value = (state.episodeData.hosts || []).join(", ");
+  } catch (_) {
+    // Keep metadata controls usable even if load fails.
+  }
+}
+
+async function saveMetadata() {
+  const episodeId = elements.metaEpisodeId.value.trim();
+  const hostsRaw = elements.metaHosts.value.trim();
+  const hosts = hostsRaw ? hostsRaw.split(",").map((h) => h.trim()).filter(Boolean) : [];
+
+  try {
+    await apiJson("POST", "/api/episode", { episode_id: episodeId, hosts });
+    await loadStatus();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    alert(`Save failed: ${message}`);
+  }
+}
+
+function jobBadge(status) {
+  if (status === "running") return "info";
+  if (status === "completed") return "success";
+  if (status === "failed") return "error";
+  return "neutral";
+}
+
+async function loadJobs() {
+  try {
+    const jobs = await apiJson("GET", "/api/jobs");
+    const running = jobs.filter((job) => job.status === "running");
+
+    if (running.length > 0) {
+      elements.jobsIndicator.style.display = "";
+      elements.jobsIndicator.textContent = `${running.length} job(s) running`;
+    } else {
+      elements.jobsIndicator.style.display = "none";
+    }
+
+    if (jobs.length === 0) {
+      elements.activeJobsCard.style.display = "none";
+      elements.activeJobsBody.innerHTML = "";
+      return;
+    }
+
+    elements.activeJobsCard.style.display = "";
+    elements.activeJobsBody.innerHTML = jobs.map((job) => {
+      const details = job.error ? `<span style="color:var(--error);font-size:0.8rem">${esc(job.error)}</span>` : "";
+      return `<tr><td>${esc(job.job_id)}</td><td>${esc(job.stage)}</td><td><span class="badge badge-${jobBadge(job.status)}">${esc(job.status)}</span></td><td>${details}</td></tr>`;
+    }).join("");
+  } catch (error) {
+    elements.jobsIndicator.style.display = "none";
+    elements.activeJobsCard.style.display = "";
+    elements.activeJobsBody.innerHTML = `<tr><td colspan="4" style="color:var(--error)">${esc(error instanceof Error ? error.message : String(error))}</td></tr>`;
+  }
+}
+
+function streamJob(jobId, logEl, progressEl, onDone) {
+  const eventSource = new EventSource(`/api/jobs/${jobId}/stream`);
+  state.currentJobStreams[jobId] = eventSource;
+  setProgressRunning(progressEl, true);
+  let settled = false;
+  let reconnectNoted = false;
+  let healthCheckInFlight = false;
+
+  function finishJob(status, errorMessage) {
+    if (settled) return;
+    settled = true;
+    setProgressRunning(progressEl, false);
+    const cls = status === "completed" ? "success" : "error";
+    let message = `Job ${status}`;
+    if (errorMessage) message += `: ${errorMessage}`;
+    appendLog(logEl, message, cls);
+    eventSource.close();
+    delete state.currentJobStreams[jobId];
+    loadJobs();
+    loadStatus();
+    if (onDone) onDone({ type: "done", status, error: errorMessage || null });
+  }
+
+  eventSource.onmessage = (event) => {
+    let payload;
+    try {
+      payload = JSON.parse(event.data);
+    } catch (_) {
+      appendLog(logEl, `Invalid stream payload: ${event.data}`, "error");
+      return;
+    }
+
+    if (payload.type === "progress") {
+      reconnectNoted = false;
+      appendLog(logEl, payload.message || "");
+      return;
+    }
+
+    if (payload.type === "done") {
+      finishJob(payload.status, payload.error || "");
+    }
+  };
+
+  eventSource.onerror = async () => {
+    if (settled || healthCheckInFlight) return;
+    healthCheckInFlight = true;
+    try {
+      const snapshot = await apiJson("GET", `/api/jobs/${encodeURIComponent(jobId)}`);
+      if (snapshot.status === "completed" || snapshot.status === "failed") {
+        finishJob(snapshot.status, snapshot.error || "");
+        return;
+      }
+      if (!reconnectNoted) {
+        appendLog(logEl, "Stream interrupted, reconnecting...", "error");
+        reconnectNoted = true;
+      }
+    } catch (_) {
+      if (!reconnectNoted) {
+        appendLog(logEl, "Stream interrupted, waiting for reconnect...", "error");
+        reconnectNoted = true;
+      }
+    } finally {
+      healthCheckInFlight = false;
+    }
+  };
+}
+
+async function runDraft() {
+  const draftButtons = [elements.runDraftBtn, elements.runSummarizeBtn, elements.runCandidatesBtn];
+  if (elements.runDraftBtn.disabled) return;
+  setButtonsDisabled(draftButtons, true);
+  openLogCard(elements.draftLogCard, elements.draftLog, "Starting draft pipeline...", elements.draftProgress);
+  try {
+    const data = await apiJson("POST", "/api/draft", { candidates: 3 });
+    if (data.job_id) {
+      streamJob(data.job_id, elements.draftLog, elements.draftProgress, () => {
+        setButtonsDisabled(draftButtons, false);
+      });
+    } else {
+      setProgressRunning(elements.draftProgress, false);
+      appendLog(elements.draftLog, "No job id returned.", "error");
+      setButtonsDisabled(draftButtons, false);
+    }
+  } catch (error) {
+    setProgressRunning(elements.draftProgress, false);
+    appendLog(elements.draftLog, error instanceof Error ? error.message : String(error), "error");
+    setButtonsDisabled(draftButtons, false);
+  }
+}
+
+async function runSummarize() {
+  const draftButtons = [elements.runDraftBtn, elements.runSummarizeBtn, elements.runCandidatesBtn];
+  if (elements.runSummarizeBtn.disabled) return;
+  setButtonsDisabled(draftButtons, true);
+  openLogCard(elements.draftLogCard, elements.draftLog, "Starting summarization...", elements.draftProgress);
+  try {
+    const data = await apiJson("POST", "/api/draft/summarize", {});
+    if (data.job_id) {
+      streamJob(data.job_id, elements.draftLog, elements.draftProgress, () => {
+        setButtonsDisabled(draftButtons, false);
+      });
+    } else {
+      setProgressRunning(elements.draftProgress, false);
+      appendLog(elements.draftLog, "No job id returned.", "error");
+      setButtonsDisabled(draftButtons, false);
+    }
+  } catch (error) {
+    setProgressRunning(elements.draftProgress, false);
+    appendLog(elements.draftLog, error instanceof Error ? error.message : String(error), "error");
+    setButtonsDisabled(draftButtons, false);
+  }
+}
+
+async function runCandidates() {
+  const draftButtons = [elements.runDraftBtn, elements.runSummarizeBtn, elements.runCandidatesBtn];
+  if (elements.runCandidatesBtn.disabled) return;
+  setButtonsDisabled(draftButtons, true);
+  openLogCard(elements.draftLogCard, elements.draftLog, "Starting candidate generation...", elements.draftProgress);
+  try {
+    const data = await apiJson("POST", "/api/draft/candidates", { candidates: 3 });
+    if (data.job_id) {
+      streamJob(data.job_id, elements.draftLog, elements.draftProgress, () => {
+        setButtonsDisabled(draftButtons, false);
+      });
+    } else {
+      setProgressRunning(elements.draftProgress, false);
+      appendLog(elements.draftLog, "No job id returned.", "error");
+      setButtonsDisabled(draftButtons, false);
+    }
+  } catch (error) {
+    setProgressRunning(elements.draftProgress, false);
+    appendLog(elements.draftLog, error instanceof Error ? error.message : String(error), "error");
+    setButtonsDisabled(draftButtons, false);
+  }
+}
+
+async function loadReviewAssets() {
+  try {
+    const assets = await apiJson("GET", "/api/assets");
+    elements.reviewAssetSelect.innerHTML = "";
+    const placeholder = document.createElement("option");
+    placeholder.value = "";
+    placeholder.textContent = "Select asset...";
+    elements.reviewAssetSelect.appendChild(placeholder);
+
+    assets.forEach((asset) => {
+      const option = document.createElement("option");
+      option.value = asset.asset_id;
+      option.textContent = asset.asset_id;
+      elements.reviewAssetSelect.appendChild(option);
+    });
+  } catch (_) {
+    elements.reviewAssetSelect.innerHTML = "<option value=''>Failed to load assets</option>";
+  }
+}
+
+async function runReview() {
+  if (elements.runReviewBtn.disabled) return;
+  elements.runReviewBtn.disabled = true;
+  const assetId = elements.reviewAssetSelect.value;
+  const maxIterations = Number.parseInt(elements.reviewMaxIter.value, 10) || 3;
+
+  if (!assetId) {
+    alert("Select an asset first.");
+    elements.runReviewBtn.disabled = false;
+    return;
+  }
+
+  openLogCard(elements.reviewLogCard, elements.reviewLog, `Starting review for ${assetId}...`, elements.reviewProgress);
+  try {
+    const data = await apiJson("POST", "/api/review", { asset_id: assetId, max_iterations: maxIterations });
+    if (data.job_id) {
+      streamJob(data.job_id, elements.reviewLog, elements.reviewProgress, () => {
+        elements.runReviewBtn.disabled = false;
+      });
+    } else {
+      setProgressRunning(elements.reviewProgress, false);
+      appendLog(elements.reviewLog, "No job id returned.", "error");
+      elements.runReviewBtn.disabled = false;
+    }
+  } catch (error) {
+    setProgressRunning(elements.reviewProgress, false);
+    appendLog(elements.reviewLog, error instanceof Error ? error.message : String(error), "error");
+    elements.runReviewBtn.disabled = false;
+  }
+}
+
+function renderPickSidebar() {
+  elements.pickSidebar.innerHTML = "";
+
+  state.assets.forEach((asset) => {
+    const item = document.createElement("button");
+    item.type = "button";
+    item.className = `pick-sidebar-item${state.activePickAsset === asset.asset_id ? " active" : ""}`;
+    item.dataset.assetId = asset.asset_id;
+
+    const label = document.createElement("span");
+    label.textContent = asset.asset_id;
+    item.appendChild(label);
+
+    if (asset.selected_candidate_id) {
+      const check = document.createElement("span");
+      check.className = "check";
+      check.innerHTML = "&#10003;";
+      item.appendChild(check);
+    }
+
+    elements.pickSidebar.appendChild(item);
+  });
+}
+
+function createPickAssetHeader(assetId) {
+  const header = document.createElement("div");
+  header.style.display = "flex";
+  header.style.justifyContent = "space-between";
+  header.style.alignItems = "center";
+  header.style.marginBottom = "1rem";
+
+  const title = document.createElement("span");
+  title.style.fontSize = "1.1rem";
+  title.style.fontWeight = "600";
+  title.textContent = assetId;
+  header.appendChild(title);
+
+  const generateBtn = document.createElement("button");
+  generateBtn.type = "button";
+  generateBtn.className = "btn btn-sm btn-outline";
+  generateBtn.dataset.action = "regenerate";
+  generateBtn.dataset.assetId = assetId;
+  generateBtn.textContent = "Generate More";
+  header.appendChild(generateBtn);
+
+  return header;
+}
+
+function createPickNotesSection(assetId, notes) {
+  const section = document.createElement("div");
+  section.className = "notes-section";
+
+  const h4 = document.createElement("h4");
+  h4.textContent = "Editorial Notes";
+  section.appendChild(h4);
+
+  const textarea = document.createElement("textarea");
+  textarea.id = "pick-notes";
+  textarea.dataset.assetId = assetId;
+  textarea.placeholder = "Add notes...";
+  textarea.value = notes || "";
+  section.appendChild(textarea);
+
+  const row = document.createElement("div");
+  row.className = "mt-1";
+
+  const saveBtn = document.createElement("button");
+  saveBtn.type = "button";
+  saveBtn.className = "btn btn-sm";
+  saveBtn.dataset.action = "save-notes";
+  saveBtn.dataset.assetId = assetId;
+  saveBtn.textContent = "Save Notes";
+  row.appendChild(saveBtn);
+
+  section.appendChild(row);
+  return section;
+}
+
+function createPickCandidatesGrid(asset) {
+  const grid = document.createElement("div");
+  grid.className = "candidates-grid";
+  grid.style.marginTop = "1rem";
+
+  asset.candidates.forEach((candidate, index) => {
+    const selected = candidate.candidate_id === asset.selected_candidate_id;
+    const card = document.createElement("div");
+    card.className = selected ? "candidate-card selected" : "candidate-card";
+
+    const cardHeader = document.createElement("div");
+    cardHeader.className = "card-header";
+
+    const label = document.createElement("span");
+    label.className = "card-label";
+    label.textContent = `Candidate ${index + 1} (${candidate.format})`;
+    cardHeader.appendChild(label);
+
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "select-btn";
+    button.dataset.action = "select-candidate";
+    button.dataset.assetId = asset.asset_id;
+    button.dataset.candidateId = candidate.candidate_id;
+    button.textContent = selected ? "Selected" : "Select";
+    cardHeader.appendChild(button);
+
+    card.appendChild(cardHeader);
+
+    const content = document.createElement("div");
+    content.className = "candidate-content";
+    content.innerHTML = candidate.content_html;
+    card.appendChild(content);
+
+    grid.appendChild(card);
+  });
+
+  return grid;
+}
+
+function createPickRegenSection(assetId) {
+  const container = document.createElement("div");
+  container.id = "pick-regen";
+  container.dataset.assetId = assetId;
+  container.style.display = "none";
+  container.style.marginTop = "1rem";
+
+  const progress = document.createElement("div");
+  progress.className = "job-progress";
+  progress.id = "pick-regen-progress";
+  progress.innerHTML = '<div class="label">Running...</div><div class="bar"></div>';
+
+  const log = document.createElement("div");
+  log.className = "log-panel";
+  log.id = "pick-regen-log";
+
+  container.appendChild(progress);
+  container.appendChild(log);
+  return container;
+}
+
+function selectPickAsset(assetId) {
+  state.activePickAsset = assetId;
+  renderPickSidebar();
+  renderPickMain();
+}
+
+async function renderPickMain() {
+  const main = elements.pickMain;
+  const asset = state.assets.find((item) => item.asset_id === state.activePickAsset);
+
+  main.innerHTML = "";
+  if (!asset) {
+    const empty = document.createElement("p");
+    empty.style.color = "var(--text-muted)";
+    empty.textContent = "Select an asset from the sidebar.";
+    main.appendChild(empty);
+    return;
+  }
+
+  let notes = "";
+  try {
+    const response = await apiJson("GET", `/api/assets/${encodeURIComponent(asset.asset_id)}/notes`);
+    notes = response.notes || "";
+  } catch (_) {
+    notes = "";
+  }
+
+  main.appendChild(createPickAssetHeader(asset.asset_id));
+  main.appendChild(createPickNotesSection(asset.asset_id, notes));
+  main.appendChild(createPickCandidatesGrid(asset));
+  main.appendChild(createPickRegenSection(asset.asset_id));
+}
+
+async function loadAssets() {
+  try {
+    state.assets = await apiJson("GET", "/api/assets");
+    renderPickSidebar();
+
+    if (state.assets.length === 0) {
+      state.activePickAsset = null;
+      await renderPickMain();
+      return;
+    }
+
+    const hasActive = state.assets.some((asset) => asset.asset_id === state.activePickAsset);
+    if (!hasActive) {
+      state.activePickAsset = state.assets[0].asset_id;
+    }
+
+    await renderPickMain();
+  } catch (error) {
+    elements.pickSidebar.innerHTML = "";
+    elements.pickMain.innerHTML = `<p style="color:var(--error)">${esc(error instanceof Error ? error.message : String(error))}</p>`;
+  }
+}
+
+async function handlePickSelect(assetId, candidateId) {
+  try {
+    await apiJson("POST", "/api/select", { asset_id: assetId, candidate_id: candidateId });
+    const asset = state.assets.find((item) => item.asset_id === assetId);
+    if (asset) {
+      asset.selected_candidate_id = candidateId;
+    }
+    renderPickSidebar();
+    await renderPickMain();
+    await loadStatus();
+  } catch (error) {
+    alert(error instanceof Error ? error.message : String(error));
+  }
+}
+
+async function saveNotes(assetId) {
+  const textarea = document.getElementById("pick-notes");
+  if (!textarea) return;
+
+  try {
+    await apiJson("PUT", `/api/assets/${encodeURIComponent(assetId)}/notes`, { notes: textarea.value });
+    alert("Notes saved.");
+  } catch (error) {
+    alert(`Failed to save notes: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
+async function regenerateAsset(assetId) {
+  const regenContainer = document.getElementById("pick-regen");
+  const regenLog = document.getElementById("pick-regen-log");
+  const regenProgress = document.getElementById("pick-regen-progress");
+  if (!regenContainer || !regenLog || !regenProgress) return;
+
+  regenContainer.style.display = "";
+  regenLog.innerHTML = "";
+  appendLog(regenLog, "Regenerating candidates...");
+  setProgressRunning(regenProgress, true);
+
+  try {
+    const data = await apiJson("POST", `/api/assets/${encodeURIComponent(assetId)}/regenerate`, { candidates: 3 });
+    if (data.job_id) {
+      streamJob(data.job_id, regenLog, regenProgress, async () => {
+        await loadAssets();
+      });
+    } else {
+      setProgressRunning(regenProgress, false);
+      appendLog(regenLog, "No job id returned.", "error");
+    }
+  } catch (error) {
+    setProgressRunning(regenProgress, false);
+    appendLog(regenLog, error instanceof Error ? error.message : String(error), "error");
+  }
+}
+
+async function producePreview() {
+  elements.producePreviewCard.style.display = "";
+  elements.producePreview.textContent = "Loading...";
+
+  try {
+    const data = await apiJson("POST", "/api/produce/preview", {});
+    elements.producePreview.textContent = JSON.stringify(data, null, 2);
+  } catch (error) {
+    elements.producePreview.textContent = `Error: ${error instanceof Error ? error.message : String(error)}`;
+  }
+}
+
+async function runProduce() {
+  if (elements.runProduceBtn.disabled) return;
+  elements.runProduceBtn.disabled = true;
+  if (!confirm("Start Auphonic production? This will upload and process audio.")) {
+    elements.runProduceBtn.disabled = false;
+    return;
+  }
+
+  openLogCard(elements.produceLogCard, elements.produceLog, "Starting production...", elements.produceProgress);
+
+  try {
+    const data = await apiJson("POST", "/api/produce", {});
+    if (data.job_id) {
+      streamJob(data.job_id, elements.produceLog, elements.produceProgress, () => {
+        elements.runProduceBtn.disabled = false;
+      });
+    } else {
+      setProgressRunning(elements.produceProgress, false);
+      appendLog(elements.produceLog, "No job id returned.", "error");
+      elements.runProduceBtn.disabled = false;
+    }
+  } catch (error) {
+    setProgressRunning(elements.produceProgress, false);
+    appendLog(elements.produceLog, error instanceof Error ? error.message : String(error), "error");
+    elements.runProduceBtn.disabled = false;
+  }
+}
+
+async function handleDone() {
+  if (state.jobPollInterval !== null) {
+    window.clearInterval(state.jobPollInterval);
+    state.jobPollInterval = null;
+  }
+
+  Object.values(state.currentJobStreams).forEach((stream) => {
+    stream.close();
+  });
+  state.currentJobStreams = {};
+
+  try {
+    await apiJson("POST", "/api/done", {});
+  } catch (_) {
+    // Server shutdown might race with response handling.
+  }
+
+  document.body.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100vh;font-size:1.5rem;color:var(--success)">Dashboard closed.</div>';
+}
+
+function wireEvents() {
+  elements.tabs.addEventListener("click", (event) => {
+    const tab = event.target.closest(".tab[data-tab]");
+    if (!tab) return;
+    switchTab(tab.dataset.tab);
+  });
+
+  elements.jobsIndicator.addEventListener("click", () => {
+    switchTab("overview");
+  });
+
+  elements.closeBtn.addEventListener("click", handleDone);
+  elements.saveMetadataBtn.addEventListener("click", saveMetadata);
+  elements.runDraftBtn.addEventListener("click", runDraft);
+  elements.runSummarizeBtn.addEventListener("click", runSummarize);
+  elements.runCandidatesBtn.addEventListener("click", runCandidates);
+  elements.runReviewBtn.addEventListener("click", runReview);
+  elements.producePreviewBtn.addEventListener("click", producePreview);
+  elements.runProduceBtn.addEventListener("click", runProduce);
+
+  elements.pickSidebar.addEventListener("click", (event) => {
+    const item = event.target.closest("[data-asset-id]");
+    if (!item) return;
+    selectPickAsset(item.dataset.assetId);
+  });
+
+  elements.pickMain.addEventListener("click", (event) => {
+    const actionElement = event.target.closest("[data-action]");
+    if (!actionElement) return;
+
+    const action = actionElement.dataset.action;
+    const assetId = actionElement.dataset.assetId || "";
+
+    if (action === "select-candidate") {
+      const candidateId = actionElement.dataset.candidateId || "";
+      if (assetId && candidateId) {
+        handlePickSelect(assetId, candidateId);
+      }
+      return;
+    }
+
+    if (action === "save-notes") {
+      if (assetId) saveNotes(assetId);
+      return;
+    }
+
+    if (action === "regenerate") {
+      if (assetId) regenerateAsset(assetId);
+    }
+  });
+}
+
+async function init() {
+  wireEvents();
+  await Promise.allSettled([loadStatus(), loadEpisode(), loadJobs(), loadReviewAssets()]);
+  state.jobPollInterval = window.setInterval(loadJobs, 5000);
+}
+
+init();
+</script>
+</body>
+</html>
