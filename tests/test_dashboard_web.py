@@ -12,6 +12,7 @@ from typing import Any, cast
 import pytest
 import uvicorn
 
+from podcast_pipeline.dashboard_api_models import AssetOut, StatusOut
 from podcast_pipeline.dashboard_context import DashboardContext
 from podcast_pipeline.domain.models import Candidate, TextFormat
 from podcast_pipeline.entrypoints.dashboard_web import create_dashboard_app
@@ -166,6 +167,15 @@ def test_get_api_status(dashboard_server: _DashboardServerTuple) -> None:
     assert data["stages"]["episode_yaml"] is True
 
 
+def test_get_api_status_matches_contract(dashboard_server: _DashboardServerTuple) -> None:
+    _server, base_url, _ctx = dashboard_server
+    resp = urllib.request.urlopen(f"{base_url}/api/status")
+    assert resp.status == 200
+    data = json.loads(resp.read().decode("utf-8"))
+    parsed = StatusOut.model_validate(data)
+    assert parsed.model_dump(mode="json") == data
+
+
 def test_get_api_episode(dashboard_server: _DashboardServerTuple) -> None:
     _server, base_url, _ctx = dashboard_server
     resp = urllib.request.urlopen(f"{base_url}/api/episode")
@@ -267,6 +277,27 @@ def test_get_api_assets(dashboard_server: _DashboardServerTuple) -> None:
     assert asset_ids == {"description", "shownotes"}
 
 
+def test_get_api_assets_matches_contract(dashboard_server: _DashboardServerTuple) -> None:
+    _server, base_url, _ctx = dashboard_server
+    resp = urllib.request.urlopen(f"{base_url}/api/assets")
+    assert resp.status == 200
+    data = json.loads(resp.read().decode("utf-8"))
+
+    parsed_assets = [AssetOut.model_validate(item) for item in data]
+    expected: list[dict[str, Any]] = []
+    for parsed in parsed_assets:
+        serialized = parsed.model_dump(mode="json")
+        if serialized.get("selected_tags") is None:
+            serialized.pop("selected_tags", None)
+        for candidate in serialized["candidates"]:
+            if candidate.get("tags") is None:
+                candidate.pop("tags", None)
+        expected.append(serialized)
+
+    assert expected == data
+    assert all("selected_candidate_id" in item for item in data)
+
+
 def test_post_api_select(dashboard_server: _DashboardServerTuple) -> None:
     _server, base_url, ctx = dashboard_server
     # Get candidates first
@@ -314,6 +345,28 @@ def test_delete_candidate_removes_it_from_assets(dashboard_server: _DashboardSer
     candidate_ids = {item["candidate_id"] for item in desc["candidates"]}
     assert removed_id not in candidate_ids
     assert len(desc["candidates"]) == 1
+
+
+def test_delete_last_candidate_removes_asset_from_assets_list(dashboard_server: _DashboardServerTuple) -> None:
+    _server, base_url, _ctx = dashboard_server
+
+    resp = urllib.request.urlopen(f"{base_url}/api/assets")
+    assets = json.loads(resp.read().decode("utf-8"))
+    shownotes = next(a for a in assets if a["asset_id"] == "shownotes")
+    candidate_id = shownotes["candidates"][0]["candidate_id"]
+
+    req = urllib.request.Request(
+        f"{base_url}/api/assets/shownotes/candidates/{candidate_id}",
+        method="DELETE",
+    )
+    resp = urllib.request.urlopen(req)
+    assert resp.status == 200
+
+    resp = urllib.request.urlopen(f"{base_url}/api/assets")
+    assets_after = json.loads(resp.read().decode("utf-8"))
+    asset_ids = {asset["asset_id"] for asset in assets_after}
+    assert "shownotes" not in asset_ids
+    assert "description" in asset_ids
 
 
 def test_delete_selected_candidate_clears_selection(

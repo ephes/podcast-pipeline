@@ -125,14 +125,14 @@ class _DashboardApi:
     async def serve_asset_notes(self, request: Request) -> Response:
         asset_id = request.path_params["asset_id"]
         with self.ctx.lock:
-            notes = self.ctx.get_editorial_notes(asset_id)
-        return JSONResponse({"asset_id": asset_id, "notes": notes})
+            data = self.ctx.get_asset_notes_json(asset_id)
+        return JSONResponse(data)
 
     async def serve_asset_tags(self, request: Request) -> Response:
         asset_id = request.path_params["asset_id"]
         with self.ctx.lock:
-            tags = self.ctx.get_selected_tags(asset_id)
-        return JSONResponse({"asset_id": asset_id, "tags": tags})
+            data = self.ctx.get_asset_tags_json(asset_id)
+        return JSONResponse(data)
 
     async def handle_put_notes(self, request: Request) -> Response:
         asset_id = request.path_params["asset_id"]

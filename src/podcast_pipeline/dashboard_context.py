@@ -7,6 +7,14 @@ from pathlib import Path
 from typing import Any
 from uuid import UUID
 
+from podcast_pipeline.dashboard_api_models import (
+    AssetCandidateOut,
+    AssetNotesOut,
+    AssetOut,
+    AssetTagsOut,
+    StatusOut,
+    StatusStagesOut,
+)
 from podcast_pipeline.domain.models import Candidate, EpisodeWorkspace, TextFormat
 from podcast_pipeline.markdown_html import markdown_to_deterministic_html
 from podcast_pipeline.pick_core import (
@@ -85,22 +93,23 @@ class DashboardContext:
             )
         )
 
-        return {
-            "workspace": str(self.workspace.resolve()),
-            "episode_id": episode_yaml.get("episode_id", ""),
-            "hosts": episode_yaml.get("hosts") or [],
-            "stages": {
-                "episode_yaml": layout.episode_yaml.exists(),
-                "state_json": layout.state_json.exists(),
-                "transcript": transcript_ok,
-                "chunks": chunk_count,
-                "summary": summary_ok,
-                "candidates": candidate_count,
-                "candidate_assets": candidate_assets,
-                "selected": selected_count,
-                "total_assets": len(list(candidates.keys())),
-            },
-        }
+        payload = StatusOut(
+            workspace=str(self.workspace.resolve()),
+            episode_id=episode_yaml.get("episode_id", ""),
+            hosts=episode_yaml.get("hosts") or [],
+            stages=StatusStagesOut(
+                episode_yaml=layout.episode_yaml.exists(),
+                state_json=layout.state_json.exists(),
+                transcript=transcript_ok,
+                chunks=chunk_count,
+                summary=summary_ok,
+                candidates=candidate_count,
+                candidate_assets=candidate_assets,
+                selected=selected_count,
+                total_assets=len(candidates),
+            ),
+        )
+        return payload.model_dump(mode="json")
 
     def get_episode_json(self) -> dict[str, Any]:
         data = self._read_episode_yaml_safe()
@@ -140,35 +149,44 @@ class DashboardContext:
         ws = self._ensure_workspace_state()
         assets_by_id = {asset.asset_id: asset for asset in ws.assets}
 
-        result: list[dict[str, Any]] = []
+        result: list[AssetOut] = []
         for asset_key in sorted(candidates):
             cands = candidates[asset_key]
             existing = assets_by_id.get(asset_key)
             selected_id = str(existing.selected_candidate_id) if existing and existing.selected_candidate_id else None
             has_selection = self._is_asset_selected(asset_key, existing.selected_candidate_id if existing else None)
 
-            candidate_items: list[dict[str, Any]] = []
+            candidate_items: list[AssetCandidateOut] = []
             for c in cands:
-                candidate_data: dict[str, Any] = {
-                    "candidate_id": str(c.candidate_id),
-                    "content": c.content,
-                    "content_html": markdown_to_deterministic_html(c.content),
-                    "format": c.format.value,
-                }
+                candidate_data = AssetCandidateOut(
+                    candidate_id=str(c.candidate_id),
+                    content=c.content,
+                    content_html=markdown_to_deterministic_html(c.content),
+                    format=c.format.value,
+                )
                 if _is_tag_asset(asset_key):
-                    candidate_data["tags"] = parse_tag_list(c.content)
+                    candidate_data = candidate_data.model_copy(update={"tags": parse_tag_list(c.content)})
                 candidate_items.append(candidate_data)
 
-            asset_data: dict[str, Any] = {
-                "asset_id": asset_key,
-                "selected_candidate_id": selected_id,
-                "has_selection": has_selection,
-                "candidates": candidate_items,
-            }
+            asset_data = AssetOut(
+                asset_id=asset_key,
+                selected_candidate_id=selected_id,
+                has_selection=has_selection,
+                candidates=candidate_items,
+            )
             if _is_tag_asset(asset_key):
-                asset_data["selected_tags"] = self.get_selected_tags(asset_key)
+                asset_data = asset_data.model_copy(update={"selected_tags": self.get_selected_tags(asset_key)})
             result.append(asset_data)
-        return result
+        payload: list[dict[str, Any]] = []
+        for asset in result:
+            serialized_asset = asset.model_dump(mode="json")
+            if serialized_asset.get("selected_tags") is None:
+                serialized_asset.pop("selected_tags", None)
+            for candidate in serialized_asset["candidates"]:
+                if candidate.get("tags") is None:
+                    candidate.pop("tags", None)
+            payload.append(serialized_asset)
+        return payload
 
     def select_candidate(self, asset_id: str, candidate_id_str: str) -> str | None:
         """Select a candidate. Returns error message on failure, None on success."""
@@ -275,6 +293,9 @@ class DashboardContext:
             return str(value) if value else ""
         return ""
 
+    def get_asset_notes_json(self, asset_id: str) -> dict[str, Any]:
+        return AssetNotesOut(asset_id=asset_id, notes=self.get_editorial_notes(asset_id)).model_dump(mode="json")
+
     def set_editorial_notes(self, asset_id: str, notes: str) -> None:
         data = self._read_episode_yaml_safe()
         editorial = data.get("editorial_notes") or {}
@@ -294,6 +315,9 @@ class DashboardContext:
         if not _is_tag_asset(asset_id):
             return []
         return parse_tag_list(self._read_selected_text(asset_id))
+
+    def get_asset_tags_json(self, asset_id: str) -> dict[str, Any]:
+        return AssetTagsOut(asset_id=asset_id, tags=self.get_selected_tags(asset_id)).model_dump(mode="json")
 
     def set_selected_tags(self, asset_id: str, tags: list[str]) -> str | None:
         try:

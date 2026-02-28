@@ -1101,8 +1101,19 @@ async function handlePickSelect(assetId, candidateId) {
   }
 }
 
+function candidateDeleteConfirmation(assetId) {
+  const asset = state.assets.find((item) => item.asset_id === assetId);
+  if (asset && Array.isArray(asset.candidates) && asset.candidates.length === 1) {
+    return (
+      "Delete this last candidate? This cannot be undone.\n\n" +
+      "Deleting it will remove this asset from the sidebar until candidates are regenerated."
+    );
+  }
+  return "Delete this candidate? This cannot be undone.";
+}
+
 async function handlePickDelete(assetId, candidateId) {
-  if (!confirm("Delete this candidate? This cannot be undone.")) {
+  if (!confirm(candidateDeleteConfirmation(assetId))) {
     return;
   }
   try {
