@@ -30,6 +30,8 @@ fmt:
 typecheck *ARGS="":
   if uv sync; then uv run mypy src tests {{ARGS}}; elif [ -x .venv/bin/python ]; then .venv/bin/python -m mypy src tests {{ARGS}}; else echo "uv sync failed and .venv/bin/python is missing" >&2; exit 1; fi
 
+check: lint typecheck test
+
 test *ARGS="":
   if uv sync; then uv run pytest {{ARGS}}; elif [ -x .venv/bin/python ]; then .venv/bin/python -m pytest {{ARGS}}; else echo "uv sync failed and .venv/bin/python is missing" >&2; exit 1; fi
 
