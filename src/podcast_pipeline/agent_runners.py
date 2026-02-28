@@ -125,16 +125,23 @@ def _extract_json_payload(raw: str, *, label: str) -> dict[str, Any]:
     stripped = raw.strip()
     if not stripped:
         raise AgentRunnerError(f"{label} CLI output was empty")
+
+    decoder = json.JSONDecoder()
     try:
         parsed = json.loads(stripped)
     except json.JSONDecodeError as exc:
-        start = stripped.find("{")
-        end = stripped.rfind("}")
-        if start < 0 or end <= start:
-            raise AgentRunnerError(f"{label} CLI output did not contain a JSON object") from exc
-        try:
-            parsed = json.loads(stripped[start : end + 1])
-        except json.JSONDecodeError as exc:
+        # Fall back to decoding the first valid JSON object embedded in surrounding text.
+        for idx, ch in enumerate(stripped):
+            if ch != "{":
+                continue
+            try:
+                candidate, _end = decoder.raw_decode(stripped, idx)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(candidate, dict):
+                parsed = candidate
+                break
+        else:
             raise AgentRunnerError(f"{label} CLI returned invalid JSON: {exc}") from exc
     if not isinstance(parsed, dict):
         raise AgentRunnerError(f"{label} CLI JSON must be an object")

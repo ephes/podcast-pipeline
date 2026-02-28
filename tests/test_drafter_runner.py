@@ -56,6 +56,19 @@ def test_run_extracts_json_from_surrounding_text(monkeypatch: pytest.MonkeyPatch
     assert result == expected
 
 
+def test_run_extracts_first_valid_json_when_trailing_text_contains_braces(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    expected = {"key": "value"}
+    raw_output = (
+        f"Some preamble text\n{json.dumps(expected)}\nSome trailing text with braces: {{not valid json object}}\n"
+    )
+    monkeypatch.setattr(subprocess, "run", _fake_run_ok(raw_output))
+    runner = _make_runner()
+    result = runner.run("test prompt")
+    assert result == expected
+
+
 def test_run_raises_on_nonzero_exit(monkeypatch: pytest.MonkeyPatch) -> None:
     def fake_run(
         command: list[str],
