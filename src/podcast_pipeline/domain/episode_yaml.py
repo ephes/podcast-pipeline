@@ -52,6 +52,7 @@ class EpisodeYaml(SchemaVersioned):
     sources: EpisodeSources | None = None
     tracks: list[EpisodeTrack] = Field(default_factory=list)
     agents: EpisodeAgents | None = None
+    editorial_notes: dict[str, str] | None = None
 
     def to_mapping(self, *, exclude_unset: bool = False) -> dict[str, Any]:
         payload = self.model_dump(mode="json", exclude_none=True, exclude_unset=exclude_unset)

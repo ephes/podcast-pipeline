@@ -457,6 +457,24 @@ def cms_examples(
 
 
 @app.command()
+def dashboard(
+    *,
+    workspace: Annotated[
+        Path,
+        typer.Option(
+            exists=True,
+            file_okay=False,
+            help="Episode workspace directory (must exist).",
+        ),
+    ],
+) -> None:
+    """Launch the web dashboard for the pipeline."""
+    from podcast_pipeline.entrypoints.dashboard_web import run_dashboard
+
+    run_dashboard(workspace=workspace)
+
+
+@app.command()
 def status(
     *,
     workspace: Annotated[
