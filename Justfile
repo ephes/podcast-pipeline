@@ -54,3 +54,8 @@ beadsflow *args:
 loop epic *args="":
   @if [ -z "{{epic}}" ]; then echo "Usage: just loop <epic-id> [--dry-run|--once|--verbose]" >&2; exit 1; fi
   @if [ -z "{{args}}" ]; then just beadsflow run {{epic}} --interval 30 --verbose; else just beadsflow run {{epic}} {{args}}; fi
+
+# Dashboard helper: `just dashboard ep_068` -> `--workspace workspaces/ep_068`.
+dashboard workspace:
+  uv sync
+  @if [ -d "{{workspace}}" ]; then uv run podcast dashboard --workspace "{{workspace}}"; else uv run podcast dashboard --workspace "workspaces/{{workspace}}"; fi

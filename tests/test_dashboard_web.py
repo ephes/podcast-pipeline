@@ -13,7 +13,7 @@ import pytest
 import uvicorn
 
 from podcast_pipeline.dashboard_context import DashboardContext
-from podcast_pipeline.domain.models import Candidate
+from podcast_pipeline.domain.models import Candidate, TextFormat
 from podcast_pipeline.entrypoints.dashboard_web import create_dashboard_app
 from podcast_pipeline.workspace_store import EpisodeWorkspaceStore
 
@@ -102,6 +102,40 @@ def bare_dashboard_server(
     tmp_path: Path,
 ) -> Generator[_DashboardServerTuple, None, None]:
     """Dashboard server on a workspace with no episode.yaml."""
+    ctx = DashboardContext(workspace=tmp_path)
+    server, sock, thread, base_url = _start_dashboard_server(ctx)
+
+    yield server, base_url, ctx
+
+    server.should_exit = True
+    thread.join(timeout=5)
+    sock.close()
+
+
+@pytest.fixture()
+def dashboard_server_with_tags(
+    tmp_path: Path,
+) -> Generator[_DashboardServerTuple, None, None]:
+    store = _setup_workspace(tmp_path)
+    store.write_candidate(Candidate(asset_id="audio_tags", content="# Audio tags\n\n- AI\n- Python\n- LLM"))
+    store.write_candidate(
+        Candidate(
+            asset_id="cms_tags",
+            format=TextFormat.plain,
+            content=(
+                "Python LLM Agentic Coding Claude Code Gemini CLI MCP Model Context Protocol "
+                "Künstliche Intelligenz Python 3.14 PostgreSQL Electron Django CSS Self-Hosting "
+                "HomeLab Infrastructure as Code KI-Benchmarks Tun Beads Multi-Agent DevOps"
+            ),
+        )
+    )
+    store.write_candidate(
+        Candidate(
+            asset_id="itunes_keywords",
+            content="# iTunes keywords\n\npython, llm, agentic coding, devops",
+        )
+    )
+
     ctx = DashboardContext(workspace=tmp_path)
     server, sock, thread, base_url = _start_dashboard_server(ctx)
 
@@ -259,6 +293,86 @@ def test_post_api_select(dashboard_server: _DashboardServerTuple) -> None:
     assert desc2["selected_candidate_id"] == cid
 
 
+def test_delete_candidate_removes_it_from_assets(dashboard_server: _DashboardServerTuple) -> None:
+    _server, base_url, _ctx = dashboard_server
+
+    resp = urllib.request.urlopen(f"{base_url}/api/assets")
+    assets = json.loads(resp.read().decode("utf-8"))
+    desc = next(a for a in assets if a["asset_id"] == "description")
+    removed_id = desc["candidates"][0]["candidate_id"]
+
+    req = urllib.request.Request(
+        f"{base_url}/api/assets/description/candidates/{removed_id}",
+        method="DELETE",
+    )
+    resp = urllib.request.urlopen(req)
+    assert resp.status == 200
+
+    resp = urllib.request.urlopen(f"{base_url}/api/assets")
+    assets = json.loads(resp.read().decode("utf-8"))
+    desc = next(a for a in assets if a["asset_id"] == "description")
+    candidate_ids = {item["candidate_id"] for item in desc["candidates"]}
+    assert removed_id not in candidate_ids
+    assert len(desc["candidates"]) == 1
+
+
+def test_delete_selected_candidate_clears_selection(
+    dashboard_server: _DashboardServerTuple,
+) -> None:
+    _server, base_url, ctx = dashboard_server
+
+    resp = urllib.request.urlopen(f"{base_url}/api/assets")
+    assets = json.loads(resp.read().decode("utf-8"))
+    desc = next(a for a in assets if a["asset_id"] == "description")
+    selected_id = desc["candidates"][0]["candidate_id"]
+
+    payload = json.dumps({"asset_id": "description", "candidate_id": selected_id}).encode()
+    select_req = urllib.request.Request(
+        f"{base_url}/api/select",
+        data=payload,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    select_resp = urllib.request.urlopen(select_req)
+    assert select_resp.status == 200
+
+    selected_md = ctx.layout.selected_text_path("description", TextFormat.markdown)
+    selected_html = ctx.layout.selected_text_path("description", TextFormat.html)
+    assert selected_md.exists()
+    assert selected_html.exists()
+
+    delete_req = urllib.request.Request(
+        f"{base_url}/api/assets/description/candidates/{selected_id}",
+        method="DELETE",
+    )
+    delete_resp = urllib.request.urlopen(delete_req)
+    assert delete_resp.status == 200
+
+    resp = urllib.request.urlopen(f"{base_url}/api/assets")
+    assets = json.loads(resp.read().decode("utf-8"))
+    desc_after = next(a for a in assets if a["asset_id"] == "description")
+    assert desc_after["selected_candidate_id"] is None
+
+    assert not selected_md.exists()
+    assert not selected_html.exists()
+
+
+def test_delete_unknown_candidate_returns_400(dashboard_server: _DashboardServerTuple) -> None:
+    _server, base_url, _ctx = dashboard_server
+
+    req = urllib.request.Request(
+        f"{base_url}/api/assets/description/candidates/00000000-0000-0000-0000-000000000000",
+        method="DELETE",
+    )
+    try:
+        urllib.request.urlopen(req)
+        pytest.fail("Expected HTTP 400")
+    except urllib.error.HTTPError as exc:
+        assert exc.code == 400
+        body = json.loads(exc.read().decode("utf-8"))
+        assert "not found" in body["error"]
+
+
 def test_editorial_notes_crud(dashboard_server: _DashboardServerTuple) -> None:
     _server, base_url, _ctx = dashboard_server
 
@@ -295,6 +409,206 @@ def test_editorial_notes_crud(dashboard_server: _DashboardServerTuple) -> None:
     resp = urllib.request.urlopen(f"{base_url}/api/assets/description/notes")
     data = json.loads(resp.read().decode("utf-8"))
     assert data["notes"] == ""
+
+
+def test_tag_api_roundtrip(dashboard_server_with_tags: _DashboardServerTuple) -> None:
+    _server, base_url, _ctx = dashboard_server_with_tags
+
+    resp = urllib.request.urlopen(f"{base_url}/api/assets/audio_tags/tags")
+    data = json.loads(resp.read().decode("utf-8"))
+    assert data["tags"] == []
+
+    payload = json.dumps({"tags": ["AI", "Python", "ai", ""]}).encode()
+    req = urllib.request.Request(
+        f"{base_url}/api/assets/audio_tags/tags",
+        data=payload,
+        headers={"Content-Type": "application/json"},
+        method="PUT",
+    )
+    resp = urllib.request.urlopen(req)
+    assert resp.status == 200
+
+    resp = urllib.request.urlopen(f"{base_url}/api/assets/audio_tags/tags")
+    data = json.loads(resp.read().decode("utf-8"))
+    assert data["tags"] == ["AI", "Python"]
+
+    resp = urllib.request.urlopen(f"{base_url}/api/assets")
+    assets = json.loads(resp.read().decode("utf-8"))
+    audio_tags = next(item for item in assets if item["asset_id"] == "audio_tags")
+    assert audio_tags["selected_tags"] == ["AI", "Python"]
+    assert audio_tags["candidates"][0]["tags"] == ["AI", "Python", "LLM"]
+    assert audio_tags["has_selection"] is True
+
+    payload = json.dumps({"tags": ["python", "LLM", "devops"]}).encode()
+    req = urllib.request.Request(
+        f"{base_url}/api/assets/itunes_keywords/tags",
+        data=payload,
+        headers={"Content-Type": "application/json"},
+        method="PUT",
+    )
+    resp = urllib.request.urlopen(req)
+    assert resp.status == 200
+
+    resp = urllib.request.urlopen(f"{base_url}/api/assets/itunes_keywords/tags")
+    data = json.loads(resp.read().decode("utf-8"))
+    assert data["tags"] == ["python", "LLM", "devops"]
+
+    resp = urllib.request.urlopen(f"{base_url}/api/status")
+    status = json.loads(resp.read().decode("utf-8"))
+    assert status["stages"]["selected"] >= 2
+
+
+def test_set_selected_tags_clears_stale_non_markdown_files(
+    dashboard_server_with_tags: _DashboardServerTuple,
+) -> None:
+    _server, base_url, ctx = dashboard_server_with_tags
+
+    # Simulate stale non-markdown artifacts from older behavior.
+    selected_txt = ctx.layout.selected_text_path("cms_tags", TextFormat.plain)
+    selected_txt.parent.mkdir(parents=True, exist_ok=True)
+    selected_txt.write_text("legacy txt tags\n", encoding="utf-8")
+    selected_html = ctx.layout.selected_text_path("cms_tags", TextFormat.html)
+    selected_html.write_text("<p>legacy html</p>\n", encoding="utf-8")
+    selected_md = ctx.layout.selected_text_path("cms_tags", TextFormat.markdown)
+    assert selected_txt.exists()
+    assert selected_html.exists()
+
+    # Then save curated tags; this should clear stale .txt and write .md.
+    payload = json.dumps({"tags": ["python", "llm"]}).encode()
+    put_req = urllib.request.Request(
+        f"{base_url}/api/assets/cms_tags/tags",
+        data=payload,
+        headers={"Content-Type": "application/json"},
+        method="PUT",
+    )
+    put_resp = urllib.request.urlopen(put_req)
+    assert put_resp.status == 200
+
+    assert not selected_txt.exists()
+    assert selected_md.exists()
+    assert selected_html.exists()
+    assert selected_html.read_text(encoding="utf-8") != "<p>legacy html</p>\n"
+
+
+def test_select_tag_candidate_clears_stale_selected_text_files(
+    dashboard_server_with_tags: _DashboardServerTuple,
+) -> None:
+    _server, base_url, ctx = dashboard_server_with_tags
+
+    stale_txt = ctx.layout.selected_text_path("audio_tags", TextFormat.plain)
+    stale_txt.parent.mkdir(parents=True, exist_ok=True)
+    stale_txt.write_text("legacy audio tag text\n", encoding="utf-8")
+    assert stale_txt.exists()
+
+    resp = urllib.request.urlopen(f"{base_url}/api/assets")
+    assets = json.loads(resp.read().decode("utf-8"))
+    audio_tags = next(item for item in assets if item["asset_id"] == "audio_tags")
+    candidate_id = audio_tags["candidates"][0]["candidate_id"]
+
+    payload = json.dumps({"asset_id": "audio_tags", "candidate_id": candidate_id}).encode()
+    req = urllib.request.Request(
+        f"{base_url}/api/select",
+        data=payload,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    resp = urllib.request.urlopen(req)
+    assert resp.status == 200
+    assert not stale_txt.exists()
+
+
+def test_manual_tag_edits_survive_deleting_previously_selected_candidate(
+    dashboard_server_with_tags: _DashboardServerTuple,
+) -> None:
+    _server, base_url, _ctx = dashboard_server_with_tags
+
+    resp = urllib.request.urlopen(f"{base_url}/api/assets")
+    assets = json.loads(resp.read().decode("utf-8"))
+    cms_tags = next(item for item in assets if item["asset_id"] == "cms_tags")
+    candidate_id = cms_tags["candidates"][0]["candidate_id"]
+
+    select_payload = json.dumps({"asset_id": "cms_tags", "candidate_id": candidate_id}).encode()
+    select_req = urllib.request.Request(
+        f"{base_url}/api/select",
+        data=select_payload,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    select_resp = urllib.request.urlopen(select_req)
+    assert select_resp.status == 200
+
+    tags_payload = json.dumps({"tags": ["manual-a", "manual-b"]}).encode()
+    tags_req = urllib.request.Request(
+        f"{base_url}/api/assets/cms_tags/tags",
+        data=tags_payload,
+        headers={"Content-Type": "application/json"},
+        method="PUT",
+    )
+    tags_resp = urllib.request.urlopen(tags_req)
+    assert tags_resp.status == 200
+
+    resp = urllib.request.urlopen(f"{base_url}/api/assets")
+    assets_after_tags = json.loads(resp.read().decode("utf-8"))
+    cms_tags_after_tags = next(item for item in assets_after_tags if item["asset_id"] == "cms_tags")
+    assert cms_tags_after_tags["selected_candidate_id"] is None
+
+    delete_req = urllib.request.Request(
+        f"{base_url}/api/assets/cms_tags/candidates/{candidate_id}",
+        method="DELETE",
+    )
+    delete_resp = urllib.request.urlopen(delete_req)
+    assert delete_resp.status == 200
+
+    resp = urllib.request.urlopen(f"{base_url}/api/assets/cms_tags/tags")
+    persisted = json.loads(resp.read().decode("utf-8"))
+    assert persisted["tags"] == ["manual-a", "manual-b"]
+
+
+def test_select_plain_cms_tags_candidate_extracts_multiple_tags(
+    dashboard_server_with_tags: _DashboardServerTuple,
+) -> None:
+    _server, base_url, _ctx = dashboard_server_with_tags
+
+    resp = urllib.request.urlopen(f"{base_url}/api/assets")
+    assets = json.loads(resp.read().decode("utf-8"))
+    cms_tags = next(item for item in assets if item["asset_id"] == "cms_tags")
+    candidate_id = cms_tags["candidates"][0]["candidate_id"]
+
+    payload = json.dumps({"asset_id": "cms_tags", "candidate_id": candidate_id}).encode()
+    req = urllib.request.Request(
+        f"{base_url}/api/select",
+        data=payload,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    resp = urllib.request.urlopen(req)
+    assert resp.status == 200
+
+    resp = urllib.request.urlopen(f"{base_url}/api/assets/cms_tags/tags")
+    data = json.loads(resp.read().decode("utf-8"))
+    tags = data["tags"]
+    assert len(tags) > 8
+    assert "Python" in tags
+    assert "DevOps" in tags
+
+
+def test_tag_api_rejects_non_tag_asset(dashboard_server: _DashboardServerTuple) -> None:
+    _server, base_url, _ctx = dashboard_server
+
+    payload = json.dumps({"tags": ["x"]}).encode()
+    req = urllib.request.Request(
+        f"{base_url}/api/assets/description/tags",
+        data=payload,
+        headers={"Content-Type": "application/json"},
+        method="PUT",
+    )
+    try:
+        urllib.request.urlopen(req)
+        pytest.fail("Expected HTTP 400")
+    except urllib.error.HTTPError as exc:
+        assert exc.code == 400
+        body = json.loads(exc.read().decode("utf-8"))
+        assert "does not support per-tag editing" in body["error"]
 
 
 def test_get_api_jobs_empty(dashboard_server: _DashboardServerTuple) -> None:

@@ -8,6 +8,7 @@ import yaml
 
 from podcast_pipeline.agent_cli_config import global_config_path
 from podcast_pipeline.domain.models import TextFormat
+from podcast_pipeline.tag_parsing import parse_tag_list
 from podcast_pipeline.workspace_store import EpisodeWorkspaceLayout
 
 
@@ -153,13 +154,13 @@ def _resolve_metadata(
     _set_default(metadata, "summary", _first_content_line(selected.get("summary_short")))
     _set_default(metadata, "description", _strip_heading(selected.get("description")))
 
-    selected_tags = _parse_tag_list(selected.get("audio_tags")) or _parse_tag_list(selected.get("cms_tags"))
+    selected_tags = parse_tag_list(selected.get("audio_tags")) or parse_tag_list(selected.get("cms_tags"))
     if selected_tags:
         _set_default(metadata, "tags", selected_tags)
 
-    selected_keywords = _first_content_line(selected.get("itunes_keywords"))
+    selected_keywords = parse_tag_list(selected.get("itunes_keywords"))
     if selected_keywords:
-        _set_default(metadata, "itunes_keywords", selected_keywords)
+        _set_default(metadata, "itunes_keywords", ", ".join(selected_keywords))
 
     if not _has_value(metadata.get("title")):
         episode_id = episode_yaml.get("episode_id")
@@ -372,26 +373,6 @@ def _strip_heading(text: str | None) -> str | None:
             idx += 1
     body = "\n".join(lines[idx:]).strip()
     return body or None
-
-
-def _parse_tag_list(text: str | None) -> list[str]:
-    if text is None:
-        return []
-    items: list[str] = []
-    for text_line in text.splitlines():
-        stripped = text_line.strip()
-        if not stripped or stripped.startswith("#"):
-            continue
-        if stripped.startswith(("-", "*")):
-            item = stripped.lstrip("-*").strip()
-            if item:
-                items.append(item)
-    if items:
-        return items
-    first_line = _first_content_line(text)
-    if first_line:
-        return [part.strip() for part in first_line.split(",") if part.strip()]
-    return []
 
 
 def _normalize_chapters(value: object, *, source: str) -> list[dict[str, Any]]:

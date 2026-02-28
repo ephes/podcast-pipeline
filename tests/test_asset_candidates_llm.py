@@ -187,3 +187,30 @@ def test_generate_draft_candidates_llm_rejects_wrong_count() -> None:
             runner=runner,
             renderer=renderer,
         )
+
+
+def test_generate_draft_candidates_llm_shownotes_prompt_requires_links() -> None:
+    episode_summary = _make_episode_summary()
+    responses = {
+        kind.value: {
+            "candidates": [
+                {"asset_id": kind.value, "content": "candidate 1"},
+            ],
+        }
+        for kind in AssetKind
+    }
+    runner = FakeDrafterRunner(responses)
+    renderer = PromptRenderer(default_prompt_registry())
+
+    generate_draft_candidates_llm(
+        episode_summary=episode_summary,
+        chapters=["00:00 Intro"],
+        candidates_per_asset=1,
+        runner=runner,
+        renderer=renderer,
+    )
+
+    shownotes_prompt = next(prompt for prompt in runner.prompts if "Asset type: shownotes" in prompt)
+    assert "link-first shownotes" in shownotes_prompt
+    assert "section '## Links'" in shownotes_prompt
+    assert "many concrete markdown links" in shownotes_prompt

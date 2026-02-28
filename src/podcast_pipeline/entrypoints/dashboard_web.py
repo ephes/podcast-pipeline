@@ -112,11 +112,27 @@ class _DashboardApi:
             return JSONResponse({"error": error}, status_code=400)
         return JSONResponse({"ok": True})
 
+    async def handle_delete_candidate(self, request: Request) -> Response:
+        asset_id = request.path_params["asset_id"]
+        candidate_id = request.path_params["candidate_id"]
+
+        with self.ctx.lock:
+            error = self.ctx.delete_candidate(asset_id, candidate_id)
+        if error:
+            return JSONResponse({"error": error}, status_code=400)
+        return JSONResponse({"ok": True})
+
     async def serve_asset_notes(self, request: Request) -> Response:
         asset_id = request.path_params["asset_id"]
         with self.ctx.lock:
             notes = self.ctx.get_editorial_notes(asset_id)
         return JSONResponse({"asset_id": asset_id, "notes": notes})
+
+    async def serve_asset_tags(self, request: Request) -> Response:
+        asset_id = request.path_params["asset_id"]
+        with self.ctx.lock:
+            tags = self.ctx.get_selected_tags(asset_id)
+        return JSONResponse({"asset_id": asset_id, "tags": tags})
 
     async def handle_put_notes(self, request: Request) -> Response:
         asset_id = request.path_params["asset_id"]
@@ -137,6 +153,23 @@ class _DashboardApi:
         asset_id = request.path_params["asset_id"]
         with self.ctx.lock:
             self.ctx.clear_editorial_notes(asset_id)
+        return JSONResponse({"ok": True})
+
+    async def handle_put_tags(self, request: Request) -> Response:
+        asset_id = request.path_params["asset_id"]
+        payload, error_response = await self._parse_json_object(request)
+        if error_response is not None:
+            return error_response
+        assert payload is not None
+
+        tags_raw = payload.get("tags")
+        if not isinstance(tags_raw, list) or not all(isinstance(tag, str) for tag in tags_raw):
+            return JSONResponse({"error": "tags must be a list of strings"}, status_code=400)
+
+        with self.ctx.lock:
+            error = self.ctx.set_selected_tags(asset_id, tags_raw)
+        if error:
+            return JSONResponse({"error": error}, status_code=400)
         return JSONResponse({"ok": True})
 
     async def handle_regenerate(self, request: Request) -> Response:
@@ -388,9 +421,16 @@ def create_dashboard_app(
         Route("/api/episode", api.handle_update_episode, methods=["POST"]),
         Route("/api/assets", api.serve_assets, methods=["GET"]),
         Route("/api/select", api.handle_select, methods=["POST"]),
+        Route(
+            "/api/assets/{asset_id:str}/candidates/{candidate_id:str}",
+            api.handle_delete_candidate,
+            methods=["DELETE"],
+        ),
         Route("/api/assets/{asset_id:str}/notes", api.serve_asset_notes, methods=["GET"]),
         Route("/api/assets/{asset_id:str}/notes", api.handle_put_notes, methods=["PUT"]),
         Route("/api/assets/{asset_id:str}/notes", api.handle_delete_notes, methods=["DELETE"]),
+        Route("/api/assets/{asset_id:str}/tags", api.serve_asset_tags, methods=["GET"]),
+        Route("/api/assets/{asset_id:str}/tags", api.handle_put_tags, methods=["PUT"]),
         Route("/api/assets/{asset_id:str}/regenerate", api.handle_regenerate, methods=["POST"]),
         Route("/api/draft", api.handle_draft, methods=["POST"]),
         Route("/api/draft/summarize", api.handle_draft_summarize, methods=["POST"]),

@@ -18,8 +18,11 @@ _ASSET_GUIDANCE: dict[str, str] = {
         "(headings, bullet lists, bold). Cover the main topics and key takeaways."
     ),
     AssetKind.shownotes: (
-        "Write structured shownotes in German with markdown. Include chapter-by-chapter "
-        "notes, links, and resources mentioned in the episode."
+        "Write link-first shownotes in German using markdown. The output should be mostly "
+        "a curated list of links (not long prose). Create a section '## Links' and provide "
+        "many concrete markdown links in the form '- [Label](https://...) - short context'. "
+        "Include links to tools, libraries, articles, people, and resources mentioned or "
+        "strongly implied by the episode. Add chapter notes only as a secondary section."
     ),
     AssetKind.summary_short: (
         "Write a short summary (2-3 sentences) in German suitable for RSS feeds and podcast directories."
@@ -38,16 +41,17 @@ _ASSET_GUIDANCE: dict[str, str] = {
         "separate words. Keep it concise and descriptive."
     ),
     AssetKind.cms_tags: (
-        "Generate a list of CMS tags (topics) for this episode. Mix German and "
-        "English terms as appropriate. Return each tag as the content field."
+        "Generate CMS tags (topics) for this episode. Return markdown only as a bullet list "
+        "with one tag per line (format: '- tag'). No prose, no explanations, no sentences. "
+        "Mix German and English terms as appropriate."
     ),
     AssetKind.audio_tags: (
-        "Generate ID3/audio metadata tags for this episode. Use short topic labels. "
-        "Return each tag as the content field."
+        "Generate ID3/audio metadata tags for this episode. Return markdown only as a bullet "
+        "list with one short tag per line (format: '- tag'). No prose or commentary."
     ),
     AssetKind.itunes_keywords: (
-        "Generate comma-separated iTunes keywords. Mix German and English terms. "
-        "Return the full comma-separated string as the content field."
+        "Generate iTunes keywords. Return only a comma-separated keyword list (single line), "
+        "with no heading and no extra prose. Mix German and English terms."
     ),
     AssetKind.mastodon: (
         "Write a Mastodon/social media post in German announcing the episode. "

@@ -90,10 +90,21 @@
   .candidate-card .card-header { display: flex; justify-content: space-between;
                                  align-items: center; margin-bottom: 0.75rem; }
   .candidate-card .card-label { font-size: 0.8rem; color: var(--text-muted); }
+  .card-actions { display: flex; align-items: center; gap: 0.45rem; }
   .select-btn { background: var(--accent); color: #fff; border: none; padding: 0.35rem 1rem;
                 border-radius: 4px; cursor: pointer; font-size: 0.8rem; }
   .select-btn:hover { background: var(--accent-hover); }
   .candidate-card.selected .select-btn { background: var(--success); }
+  .delete-btn {
+    background: transparent;
+    color: var(--error);
+    border: 1px solid #fca5a5;
+    padding: 0.35rem 0.65rem;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 0.8rem;
+  }
+  .delete-btn:hover { background: #fee2e2; border-color: #ef4444; }
   .candidate-content { font-size: 0.9rem; line-height: 1.6; max-height: 60vh; overflow-y: auto; }
   .candidate-content h1, .candidate-content h2, .candidate-content h3 { margin: 0.5em 0 0.25em; }
   .candidate-content p { margin: 0.4em 0; }
@@ -103,6 +114,44 @@
   .notes-section { margin-top: 1rem; padding: 1rem; background: var(--bg); border-radius: 6px;
                    border: 1px solid var(--border); }
   .notes-section h4 { font-size: 0.85rem; margin-bottom: 0.5rem; }
+  .notes-section textarea { width: 100%; min-height: 120px; }
+  .tags-section { margin-top: 1rem; padding: 1rem; background: var(--bg); border-radius: 6px;
+                  border: 1px solid var(--border); }
+  .tags-section h4 { font-size: 0.85rem; margin-bottom: 0.5rem; }
+  .tag-list { display: flex; flex-wrap: wrap; gap: 0.4rem; margin-bottom: 0.75rem; }
+  .tag-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    border: 1px solid #93c5fd;
+    background: #eff6ff;
+    color: #1e3a8a;
+    border-radius: 999px;
+    padding: 0.18rem 0.55rem;
+    font-size: 0.75rem;
+  }
+  .tag-remove {
+    border: none;
+    background: transparent;
+    cursor: pointer;
+    color: #1e3a8a;
+    line-height: 1;
+    padding: 0;
+    font-size: 0.85rem;
+    font-weight: 700;
+  }
+  .tag-remove:hover { color: #1d4ed8; }
+  .tag-empty { font-size: 0.8rem; color: var(--text-muted); margin-bottom: 0.75rem; }
+  .tag-suggestions { margin-top: 0.65rem; display: flex; flex-wrap: wrap; gap: 0.35rem; }
+  .tag-suggestion {
+    border: 1px solid var(--border);
+    background: #fff;
+    border-radius: 999px;
+    padding: 0.18rem 0.55rem;
+    font-size: 0.73rem;
+    cursor: pointer;
+  }
+  .tag-suggestion:hover { border-color: var(--accent); color: var(--accent); }
 
   /* Log panel */
   .log-panel { background: #1e1e2e; color: #cdd6f4; border-radius: 6px; padding: 1rem;
@@ -291,6 +340,7 @@ const state = {
   currentJobStreams: {},
   jobPollInterval: null,
 };
+const TAG_ASSET_IDS = new Set(["audio_tags", "cms_tags", "itunes_keywords"]);
 
 const elements = {
   tabs: document.getElementById("tabs"),
@@ -388,6 +438,52 @@ function setButtonsDisabled(buttons, disabled) {
 
 function setProgressRunning(progressEl, running) {
   progressEl.classList.toggle("running", running);
+}
+
+function isTagAsset(assetId) {
+  return TAG_ASSET_IDS.has(assetId);
+}
+
+function tagEditorTitle(assetId) {
+  if (assetId === "itunes_keywords") return "Approved Keywords";
+  return "Approved Tags";
+}
+
+function tagEditorPlaceholder(assetId) {
+  if (assetId === "itunes_keywords") return "Add keyword (comma-separated supported)";
+  return "Add tag (comma-separated supported)";
+}
+
+function tagEditorEmptyText(assetId) {
+  if (assetId === "itunes_keywords") {
+    return "No keywords selected yet. Select a candidate or add keywords manually.";
+  }
+  return "No tags selected yet. Select a candidate or add tags manually.";
+}
+
+function normalizeTags(tags) {
+  const out = [];
+  const seen = new Set();
+  (tags || []).forEach((raw) => {
+    const value = String(raw || "").trim();
+    if (!value) return;
+    const key = value.toLowerCase();
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push(value);
+  });
+  return out;
+}
+
+function collectCandidateTags(asset) {
+  if (!asset || !Array.isArray(asset.candidates)) return [];
+  const all = [];
+  asset.candidates.forEach((candidate) => {
+    if (Array.isArray(candidate.tags)) {
+      all.push(...candidate.tags);
+    }
+  });
+  return normalizeTags(all);
 }
 
 function openLogCard(cardEl, logEl, message, progressEl) {
@@ -709,7 +805,7 @@ function renderPickSidebar() {
     label.textContent = asset.asset_id;
     item.appendChild(label);
 
-    if (asset.selected_candidate_id) {
+    if (asset.has_selection || asset.selected_candidate_id) {
       const check = document.createElement("span");
       check.className = "check";
       check.innerHTML = "&#10003;";
@@ -799,7 +895,20 @@ function createPickCandidatesGrid(asset) {
     button.dataset.assetId = asset.asset_id;
     button.dataset.candidateId = candidate.candidate_id;
     button.textContent = selected ? "Selected" : "Select";
-    cardHeader.appendChild(button);
+
+    const deleteButton = document.createElement("button");
+    deleteButton.type = "button";
+    deleteButton.className = "delete-btn";
+    deleteButton.dataset.action = "delete-candidate";
+    deleteButton.dataset.assetId = asset.asset_id;
+    deleteButton.dataset.candidateId = candidate.candidate_id;
+    deleteButton.textContent = "Delete";
+
+    const actions = document.createElement("div");
+    actions.className = "card-actions";
+    actions.appendChild(button);
+    actions.appendChild(deleteButton);
+    cardHeader.appendChild(actions);
 
     card.appendChild(cardHeader);
 
@@ -812,6 +921,85 @@ function createPickCandidatesGrid(asset) {
   });
 
   return grid;
+}
+
+function createPickTagsSection(asset) {
+  const section = document.createElement("div");
+  section.className = "tags-section";
+
+  const title = document.createElement("h4");
+  title.textContent = tagEditorTitle(asset.asset_id);
+  section.appendChild(title);
+
+  const selectedTags = normalizeTags(asset.selected_tags || []);
+  if (selectedTags.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "tag-empty";
+    empty.textContent = tagEditorEmptyText(asset.asset_id);
+    section.appendChild(empty);
+  } else {
+    const list = document.createElement("div");
+    list.className = "tag-list";
+    selectedTags.forEach((tag) => {
+      const pill = document.createElement("span");
+      pill.className = "tag-pill";
+      pill.textContent = tag;
+
+      const removeBtn = document.createElement("button");
+      removeBtn.type = "button";
+      removeBtn.className = "tag-remove";
+      removeBtn.dataset.action = "remove-tag";
+      removeBtn.dataset.assetId = asset.asset_id;
+      removeBtn.dataset.tag = tag;
+      removeBtn.setAttribute("aria-label", `Remove tag ${tag}`);
+      removeBtn.textContent = "×";
+      pill.appendChild(removeBtn);
+      list.appendChild(pill);
+    });
+    section.appendChild(list);
+  }
+
+  const addRow = document.createElement("div");
+  addRow.className = "inline-flex";
+  addRow.style.marginTop = "0.35rem";
+
+  const input = document.createElement("input");
+  input.type = "text";
+  input.id = "pick-tag-input";
+  input.className = "field-grow";
+  input.placeholder = tagEditorPlaceholder(asset.asset_id);
+  addRow.appendChild(input);
+
+  const addBtn = document.createElement("button");
+  addBtn.type = "button";
+  addBtn.className = "btn btn-sm";
+  addBtn.dataset.action = "add-tag";
+  addBtn.dataset.assetId = asset.asset_id;
+  addBtn.textContent = asset.asset_id === "itunes_keywords" ? "Add Keyword" : "Add Tag";
+  addRow.appendChild(addBtn);
+
+  section.appendChild(addRow);
+
+  const selectedSet = new Set(selectedTags.map((tag) => tag.toLowerCase()));
+  const suggestions = collectCandidateTags(asset).filter((tag) => !selectedSet.has(tag.toLowerCase()));
+  if (suggestions.length > 0) {
+    const suggestionBox = document.createElement("div");
+    suggestionBox.className = "tag-suggestions";
+
+    suggestions.slice(0, 20).forEach((tag) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "tag-suggestion";
+      button.dataset.action = "quick-add-tag";
+      button.dataset.assetId = asset.asset_id;
+      button.dataset.tag = tag;
+      button.textContent = `+ ${tag}`;
+      suggestionBox.appendChild(button);
+    });
+    section.appendChild(suggestionBox);
+  }
+
+  return section;
 }
 
 function createPickRegenSection(assetId) {
@@ -862,8 +1050,20 @@ async function renderPickMain() {
     notes = "";
   }
 
+  if (isTagAsset(asset.asset_id) && !Array.isArray(asset.selected_tags)) {
+    try {
+      const tagsResponse = await apiJson("GET", `/api/assets/${encodeURIComponent(asset.asset_id)}/tags`);
+      asset.selected_tags = Array.isArray(tagsResponse.tags) ? tagsResponse.tags : [];
+    } catch (_) {
+      asset.selected_tags = [];
+    }
+  }
+
   main.appendChild(createPickAssetHeader(asset.asset_id));
   main.appendChild(createPickNotesSection(asset.asset_id, notes));
+  if (isTagAsset(asset.asset_id)) {
+    main.appendChild(createPickTagsSection(asset));
+  }
   main.appendChild(createPickCandidatesGrid(asset));
   main.appendChild(createPickRegenSection(asset.asset_id));
 }
@@ -894,12 +1094,20 @@ async function loadAssets() {
 async function handlePickSelect(assetId, candidateId) {
   try {
     await apiJson("POST", "/api/select", { asset_id: assetId, candidate_id: candidateId });
-    const asset = state.assets.find((item) => item.asset_id === assetId);
-    if (asset) {
-      asset.selected_candidate_id = candidateId;
-    }
-    renderPickSidebar();
-    await renderPickMain();
+    await loadAssets();
+    await loadStatus();
+  } catch (error) {
+    alert(error instanceof Error ? error.message : String(error));
+  }
+}
+
+async function handlePickDelete(assetId, candidateId) {
+  if (!confirm("Delete this candidate? This cannot be undone.")) {
+    return;
+  }
+  try {
+    await apiJson("DELETE", `/api/assets/${encodeURIComponent(assetId)}/candidates/${encodeURIComponent(candidateId)}`);
+    await loadAssets();
     await loadStatus();
   } catch (error) {
     alert(error instanceof Error ? error.message : String(error));
@@ -915,6 +1123,53 @@ async function saveNotes(assetId) {
     alert("Notes saved.");
   } catch (error) {
     alert(`Failed to save notes: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
+async function saveTags(assetId, tags) {
+  const normalized = normalizeTags(tags);
+  await apiJson("PUT", `/api/assets/${encodeURIComponent(assetId)}/tags`, { tags: normalized });
+  await loadAssets();
+  await loadStatus();
+}
+
+async function addTags(assetId, newTags) {
+  const asset = state.assets.find((item) => item.asset_id === assetId);
+  if (!asset) return false;
+  const current = normalizeTags(asset.selected_tags || []);
+  const combined = normalizeTags([...current, ...newTags]);
+  if (combined.length === current.length) return true;
+  try {
+    await saveTags(assetId, combined);
+    return true;
+  } catch (error) {
+    alert(`Failed to update tags: ${error instanceof Error ? error.message : String(error)}`);
+    return false;
+  }
+}
+
+async function removeTag(assetId, tag) {
+  const asset = state.assets.find((item) => item.asset_id === assetId);
+  if (!asset) return;
+  const current = normalizeTags(asset.selected_tags || []);
+  const next = current.filter((item) => item.toLowerCase() !== String(tag).toLowerCase());
+  if (next.length === current.length) return;
+  try {
+    await saveTags(assetId, next);
+  } catch (error) {
+    alert(`Failed to update tags: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
+async function addTagsFromInput(assetId) {
+  const input = document.getElementById("pick-tag-input");
+  if (!input) return;
+  const raw = input.value || "";
+  const tags = raw.split(",").map((part) => part.trim()).filter(Boolean);
+  if (tags.length === 0) return;
+  const ok = await addTags(assetId, tags);
+  if (ok) {
+    input.value = "";
   }
 }
 
@@ -1046,6 +1301,14 @@ function wireEvents() {
       return;
     }
 
+    if (action === "delete-candidate") {
+      const candidateId = actionElement.dataset.candidateId || "";
+      if (assetId && candidateId) {
+        handlePickDelete(assetId, candidateId);
+      }
+      return;
+    }
+
     if (action === "save-notes") {
       if (assetId) saveNotes(assetId);
       return;
@@ -1053,6 +1316,35 @@ function wireEvents() {
 
     if (action === "regenerate") {
       if (assetId) regenerateAsset(assetId);
+      return;
+    }
+
+    if (action === "add-tag") {
+      if (assetId) addTagsFromInput(assetId);
+      return;
+    }
+
+    if (action === "quick-add-tag") {
+      const tag = actionElement.dataset.tag || "";
+      if (assetId && tag) addTags(assetId, [tag]);
+      return;
+    }
+
+    if (action === "remove-tag") {
+      const tag = actionElement.dataset.tag || "";
+      if (assetId && tag) removeTag(assetId, tag);
+    }
+  });
+
+  elements.pickMain.addEventListener("keydown", (event) => {
+    const target = event.target;
+    if (!(target instanceof HTMLInputElement)) return;
+    if (target.id !== "pick-tag-input") return;
+    if (event.key !== "Enter") return;
+    event.preventDefault();
+    const assetId = target.closest(".tags-section")?.querySelector("[data-action='add-tag']")?.dataset.assetId || "";
+    if (assetId) {
+      addTagsFromInput(assetId);
     }
   });
 }

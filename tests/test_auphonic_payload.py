@@ -164,3 +164,24 @@ def test_payload_rejects_invalid_global_yaml(
             episode_yaml={"auphonic": {"preset": "main"}},
             workspace=workspace,
         )
+
+
+def test_payload_parses_selected_itunes_keywords_from_markdown_list(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _set_global_config(monkeypatch, tmp_path, {"auphonic": {"presets": {"main": "preset_123"}}})
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    _write_selected_text(
+        workspace,
+        "itunes_keywords",
+        "# iTunes keywords\n\n- python\n- llm\n- agentic coding\n- devops\n",
+    )
+
+    payload = build_auphonic_payload(
+        episode_yaml={"episode_id": "ep_004", "auphonic": {"preset": "main"}},
+        workspace=workspace,
+    )
+
+    assert payload["metadata"]["itunes_keywords"] == "python, llm, agentic coding, devops"

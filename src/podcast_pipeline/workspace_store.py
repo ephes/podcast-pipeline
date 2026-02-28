@@ -371,6 +371,24 @@ class EpisodeWorkspaceStore:
             _atomic_write_text(html_path, markdown_to_deterministic_html(content))
         return path
 
+    def clear_selected_text(self, asset_id: str) -> None:
+        for fmt in TextFormat:
+            path = self.layout.selected_text_path(asset_id, fmt)
+            try:
+                path.unlink(missing_ok=True)
+            except OSError as exc:
+                raise WorkspaceStoreError(f"Failed to remove selected text at {path}: {exc}") from exc
+
+    def delete_candidate_files(self, asset_id: str, candidate_id: UUID) -> None:
+        paths = {self.layout.candidate_json_path(asset_id, candidate_id)}
+        for fmt in TextFormat:
+            paths.add(self.layout.candidate_text_path(asset_id, candidate_id, fmt))
+        for path in paths:
+            try:
+                path.unlink(missing_ok=True)
+            except OSError as exc:
+                raise WorkspaceStoreError(f"Failed to remove candidate artifact at {path}: {exc}") from exc
+
     def read_selected_text(self, asset_id: str, fmt: TextFormat) -> str:
         return _read_text(self.layout.selected_text_path(asset_id, fmt))
 
