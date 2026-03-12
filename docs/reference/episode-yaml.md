@@ -98,7 +98,7 @@ Optional settings used by `podcast produce --dry-run` to build an Auphonic paylo
 
 - `preset` (string): Auphonic preset id or a key in `auphonic.presets` from the global config.
 - `preset_id` (string): Explicit preset id override (skips preset mapping).
-- `input_file` (string or null): Path to the final mix audio file (relative to the workspace is ok).
+- `input_file` (string or null): Path to the final mix audio file (relative to the workspace is ok). `podcast transcribe` also uses this as the preferred source audio input when present.
 - `input_files` (list or null): Multiple input paths (preview only).
 - `metadata` (object, optional): Metadata merged into the payload.
 - `title`, `subtitle`, `summary`, `description` (string or null): Convenience overrides merged into metadata.
@@ -108,3 +108,6 @@ Optional settings used by `podcast produce --dry-run` to build an Auphonic paylo
 
 If metadata fields are missing, the payload builder falls back to selected copy in `copy/selected/` (for example
 `title_detail`, `subtitle_auphonic`, `summary_short`, `description`, `audio_tags`, and `itunes_keywords`).
+
+For `podcast transcribe`, if `auphonic.input_file` is not set, the command falls back to `tracks` and uses a single
+preferred mix/master/final track. If multiple possible inputs exist, set `auphonic.input_file` explicitly.

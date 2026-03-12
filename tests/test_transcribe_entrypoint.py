@@ -12,7 +12,11 @@ from typer.testing import CliRunner
 import podcast_pipeline.entrypoints.transcribe as transcribe
 from podcast_pipeline.entrypoints.cli import app
 from podcast_pipeline.entrypoints.transcribe import (
+    _args_need_audio_file,
+    _default_args_for_command,
+    _podcast_transcript_plaintext_path,
     _render_args,
+    _resolve_audio_file,
     _update_episode_inputs,
     _validate_command,
     _write_transcribe_provenance,
@@ -48,19 +52,32 @@ def test_validate_command_rejects_invalid_inputs(command: str) -> None:
 
 
 def test_validate_command_accepts_single_token_command() -> None:
-    assert _validate_command("podcast-transcript") == "podcast-transcript"
+    assert _validate_command("transcribe") == "transcribe"
 
 
 def test_render_args_rejects_unknown_placeholder() -> None:
     with pytest.raises(typer.BadParameter):
-        _render_args(("run", "{unknown}"), mode="draft", output_dir=Path("/tmp/out"), workspace=Path("/tmp"))
+        _render_args(
+            ("run", "{unknown}"),
+            mode="draft",
+            output_dir=Path("/tmp/out"),
+            workspace=Path("/tmp"),
+            audio_file=Path("/tmp/audio.mp3"),
+        )
 
 
 def test_render_args_renders_known_placeholders(tmp_path: Path) -> None:
     output_dir = tmp_path / "output"
     workspace = tmp_path / "workspace"
-    args = ("--mode", "{mode}", "--output-dir", "{output_dir}", "--workspace", "{workspace}")
-    rendered = _render_args(args, mode="final", output_dir=output_dir, workspace=workspace)
+    audio_file = tmp_path / "audio.mp3"
+    args = ("--mode", "{mode}", "--output-dir", "{output_dir}", "--workspace", "{workspace}", "{audio_file}")
+    rendered = _render_args(
+        args,
+        mode="final",
+        output_dir=output_dir,
+        workspace=workspace,
+        audio_file=audio_file,
+    )
     assert rendered == [
         "--mode",
         "final",
@@ -68,7 +85,110 @@ def test_render_args_renders_known_placeholders(tmp_path: Path) -> None:
         str(output_dir),
         "--workspace",
         str(workspace),
+        str(audio_file),
     ]
+
+
+def test_default_args_use_audio_file_for_transcribe_command() -> None:
+    assert _default_args_for_command("transcribe") == ("{audio_file}",)
+
+
+def test_default_args_keep_legacy_contract_for_other_commands() -> None:
+    assert _default_args_for_command("custom-transcriber") == ("--mode", "{mode}", "--output-dir", "{output_dir}")
+
+
+def test_args_need_audio_file_detects_placeholder() -> None:
+    assert _args_need_audio_file(("{audio_file}", "--backend", "voxhelm")) is True
+
+
+def test_args_need_audio_file_ignores_legacy_templates() -> None:
+    assert _args_need_audio_file(("--mode", "{mode}", "--output-dir", "{output_dir}")) is False
+
+
+def test_resolve_audio_file_prefers_auphonic_input_file(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    audio_file = workspace / "mix.mp3"
+    audio_file.write_bytes(b"audio")
+
+    resolved = _resolve_audio_file(
+        episode_yaml={"episode_id": "ep_001", "auphonic": {"input_file": "mix.mp3"}},
+        workspace=workspace,
+    )
+
+    assert resolved == audio_file.resolve()
+
+
+def test_resolve_audio_file_accepts_single_auphonic_input_files_entry(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    audio_file = workspace / "mix.mp3"
+    audio_file.write_bytes(b"audio")
+
+    resolved = _resolve_audio_file(
+        episode_yaml={"episode_id": "ep_001", "auphonic": {"input_files": ["mix.mp3"]}},
+        workspace=workspace,
+    )
+
+    assert resolved == audio_file.resolve()
+
+
+def test_resolve_audio_file_uses_single_preferred_track(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    media_dir = tmp_path / "media"
+    media_dir.mkdir()
+    mix_path = media_dir / "mix.wav"
+    mix_path.write_bytes(b"audio")
+    dialog_path = media_dir / "dialog.wav"
+    dialog_path.write_bytes(b"audio")
+
+    resolved = _resolve_audio_file(
+        episode_yaml={
+            "episode_id": "ep_001",
+            "sources": {"reaper_media_dir": str(media_dir)},
+            "tracks": [
+                {"path": "mix.wav", "role": "mix"},
+                {"path": "dialog.wav", "role": "dialog"},
+            ],
+        },
+        workspace=workspace,
+    )
+
+    assert resolved == mix_path.resolve()
+
+
+def test_resolve_audio_file_rejects_multiple_preferred_tracks(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    media_dir = tmp_path / "media"
+    media_dir.mkdir()
+    (media_dir / "mix_a.wav").write_bytes(b"audio")
+    (media_dir / "mix_b.wav").write_bytes(b"audio")
+
+    with pytest.raises(typer.BadParameter, match="multiple preferred"):
+        _resolve_audio_file(
+            episode_yaml={
+                "episode_id": "ep_001",
+                "sources": {"reaper_media_dir": str(media_dir)},
+                "tracks": [
+                    {"path": "mix_a.wav", "role": "mix"},
+                    {"path": "mix_b.wav", "role": "final"},
+                ],
+            },
+            workspace=workspace,
+        )
+
+
+def test_resolve_audio_file_rejects_missing_audio_metadata(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    with pytest.raises(typer.BadParameter, match="Could not determine a single source audio file"):
+        _resolve_audio_file(
+            episode_yaml={"episode_id": "ep_001"},
+            workspace=workspace,
+        )
 
 
 def test_update_episode_inputs_writes_transcript_paths(tmp_path: Path) -> None:
@@ -165,7 +285,7 @@ def test_run_transcriber_wraps_timeout(tmp_path: Path, monkeypatch: pytest.Monke
     assert "timed out" in str(exc.value)
 
 
-def test_run_transcribe_resolves_workspace_and_appends_args(
+def test_run_transcribe_keeps_legacy_wrapper_args_for_custom_commands(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -196,7 +316,7 @@ def test_run_transcribe_resolves_workspace_and_appends_args(
     transcribe.run_transcribe(
         workspace=Path("workspace"),
         mode=transcribe.TranscriptionMode.draft,
-        config=transcribe.TranscribeConfig(command="podcast-transcript", args=("--foo", "bar")),
+        config=transcribe.TranscribeConfig(command="custom-transcriber", args=("--foo", "bar")),
     )
 
     args = captured["args"]
@@ -209,3 +329,117 @@ def test_run_transcribe_resolves_workspace_and_appends_args(
     ]
     assert args[4:] == ["--foo", "bar"]
     assert captured["cwd"] == workspace.resolve()
+
+
+def test_run_transcribe_skips_audio_resolution_for_custom_commands_without_audio_metadata(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "episode.yaml").write_text("schema_version: 1\nepisode_id: ep_001\n", encoding="utf-8")
+
+    def fake_run_transcriber(
+        *,
+        command: str,
+        args: list[str],
+        cwd: Path,
+        timeout_seconds: float | None,
+    ) -> None:
+        output_dir = workspace / "transcript" / "draft"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        (output_dir / "transcript.txt").write_text("legacy custom output", encoding="utf-8")
+
+    monkeypatch.setattr(transcribe, "_run_transcriber", fake_run_transcriber)
+
+    transcribe.run_transcribe(
+        workspace=workspace,
+        mode=transcribe.TranscriptionMode.draft,
+        config=transcribe.TranscribeConfig(command="custom-transcriber"),
+    )
+
+    assert (workspace / "transcript" / "draft" / "transcript.txt").read_text(encoding="utf-8") == (
+        "legacy custom output"
+    )
+
+
+def test_run_transcribe_keeps_direct_workspace_output_when_present(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    audio_file = workspace / "mix.mp3"
+    audio_file.write_bytes(b"audio")
+    (workspace / "episode.yaml").write_text(
+        "schema_version: 1\nepisode_id: ep_001\nauphonic:\n  input_file: mix.mp3\n",
+        encoding="utf-8",
+    )
+
+    transcript_dir = tmp_path / "podcast-transcripts"
+    monkeypatch.setenv("TRANSCRIPT_DIR", str(transcript_dir))
+
+    def fake_run_transcriber(
+        *,
+        command: str,
+        args: list[str],
+        cwd: Path,
+        timeout_seconds: float | None,
+    ) -> None:
+        output_dir = workspace / "transcript" / "draft"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        (output_dir / "transcript.txt").write_text("workspace wins", encoding="utf-8")
+
+        output_path = _podcast_transcript_plaintext_path(audio_file.resolve())
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text("external transcript", encoding="utf-8")
+
+    monkeypatch.setattr(transcribe, "_run_transcriber", fake_run_transcriber)
+
+    transcribe.run_transcribe(
+        workspace=workspace,
+        mode=transcribe.TranscriptionMode.draft,
+        config=transcribe.TranscribeConfig(command="transcribe"),
+    )
+
+    assert (workspace / "transcript" / "draft" / "transcript.txt").read_text(encoding="utf-8") == "workspace wins"
+
+
+def test_run_transcribe_imports_podcast_transcript_plaintext_output(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    audio_file = workspace / "mix.mp3"
+    audio_file.write_bytes(b"audio")
+    (workspace / "episode.yaml").write_text(
+        "schema_version: 1\nepisode_id: ep_001\nauphonic:\n  input_file: mix.mp3\n",
+        encoding="utf-8",
+    )
+
+    transcript_dir = tmp_path / "podcast-transcripts"
+    monkeypatch.setenv("TRANSCRIPT_DIR", str(transcript_dir))
+
+    def fake_run_transcriber(
+        *,
+        command: str,
+        args: list[str],
+        cwd: Path,
+        timeout_seconds: float | None,
+    ) -> None:
+        output_path = _podcast_transcript_plaintext_path(audio_file.resolve())
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text("hello from podcast-transcript", encoding="utf-8")
+
+    monkeypatch.setattr(transcribe, "_run_transcriber", fake_run_transcriber)
+
+    transcribe.run_transcribe(
+        workspace=workspace,
+        mode=transcribe.TranscriptionMode.final,
+        config=transcribe.TranscribeConfig(command="transcribe"),
+    )
+
+    assert (workspace / "transcript" / "final" / "transcript.txt").read_text(encoding="utf-8") == (
+        "hello from podcast-transcript"
+    )

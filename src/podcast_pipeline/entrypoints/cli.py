@@ -86,13 +86,13 @@ def transcribe(
     ] = "draft",
     command: Annotated[
         str,
-        typer.Option(help="Transcription CLI command (default: podcast-transcript)."),
-    ] = "podcast-transcript",
+        typer.Option(help="Transcription CLI command (default: transcribe)."),
+    ] = "transcribe",
     arg: Annotated[
         list[str] | None,
         typer.Option(
             "--arg",
-            help="Extra args for the transcription CLI (supports {mode}, {output_dir}, {workspace}).",
+            help="Extra args for the transcription CLI (supports {audio_file}, {mode}, {output_dir}, {workspace}).",
         ),
     ] = None,
 ) -> None:

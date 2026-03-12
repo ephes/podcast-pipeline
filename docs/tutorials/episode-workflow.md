@@ -17,19 +17,31 @@ Notes:
 ## 2. Export and transcribe audio
 
 **Export a master mix** from Ultraschall/Reaper to MP3 first. The per-track FLAC files in the Reaper media folder are
-not suitable for transcription — transcription tools expect a single mixed audio file.
+not suitable for transcription unless one track is explicitly marked as the mix source. `podcast transcribe` expects a
+single audio input and prefers `auphonic.input_file` from `episode.yaml`.
 
 ```bash
-# Transcribe using podcast-transcript (MLX backend, runs locally on Apple Silicon)
-time uvx --from 'podcast-transcript[mlx]' transcribe \
-  --backend mlx \
-  /Users/jochen/Documents/REAPER\ Media/pp_068/pp_068.mp3
+# Example episode.yaml snippet
+cat >> ./workspaces/ep_068/episode.yaml <<'YAML'
+auphonic:
+  input_file: /Users/jochen/Documents/REAPER Media/pp_068/pp_068.mp3
+YAML
+
+# Transcribe through podcast-pipeline using podcast-transcript + Voxhelm
+VOXHELM_API_BASE=https://voxhelm.home.xn--wersdrfer-47a.de \
+VOXHELM_API_KEY=your_voxhelm_token_here \
+podcast transcribe \
+  --workspace ./workspaces/ep_068 \
+  --command transcribe \
+  --arg=--backend \
+  --arg=voxhelm
 ```
 
 Notes:
 
-- The transcript file (`.txt`) is what you pass to `podcast draft` in the next step.
-- Transcripts are stored outside the workspace — by convention under `~/.podcast-transcripts/transcripts/pp_<NNN>/`.
+- `podcast transcribe` imports the generated plain-text transcript into `transcript/<mode>/transcript.txt` inside the workspace.
+- `podcast-transcript` still keeps its own artifacts under `TRANSCRIPT_DIR` (default `~/.podcast-transcripts/transcripts/`).
+- If the workspace has multiple possible audio inputs, set `auphonic.input_file` explicitly before running the command.
 
 ## 3. Draft text assets (draft)
 
