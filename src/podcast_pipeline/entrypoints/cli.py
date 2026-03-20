@@ -86,17 +86,20 @@ def transcribe(
     ] = "draft",
     command: Annotated[
         str,
-        typer.Option(help="Transcription CLI command (default: transcribe)."),
+        typer.Option(help="Transcription CLI command (default: 'transcribe' from the podcast-transcript package)."),
     ] = "transcribe",
     arg: Annotated[
         list[str] | None,
         typer.Option(
             "--arg",
-            help="Extra args for the transcription CLI (supports {audio_file}, {mode}, {output_dir}, {workspace}).",
+            help=(
+                "Extra args for the transcription CLI (supports {audio_file}, {mode}, {output_dir}, {workspace}); "
+                "recommended: --arg=--backend --arg=voxhelm."
+            ),
         ),
     ] = None,
 ) -> None:
-    """Run podcast-transcript to generate transcript artifacts."""
+    """Run transcription for a workspace; recommended with podcast-transcript + Voxhelm."""
     from podcast_pipeline.entrypoints.transcribe import TranscribeConfig, TranscriptionMode, run_transcribe
 
     try:

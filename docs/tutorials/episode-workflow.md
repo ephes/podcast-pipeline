@@ -18,7 +18,8 @@ Notes:
 
 **Export a master mix** from Ultraschall/Reaper to MP3 first. The per-track FLAC files in the Reaper media folder are
 not suitable for transcription unless one track is explicitly marked as the mix source. `podcast transcribe` expects a
-single audio input and prefers `auphonic.input_file` from `episode.yaml`.
+single audio input and prefers `auphonic.input_file` from `episode.yaml`. The recommended transcription path is
+`podcast-transcript` with the `voxhelm` backend.
 
 ```bash
 # Example episode.yaml snippet
@@ -39,9 +40,12 @@ podcast transcribe \
 
 Notes:
 
+- Voxhelm requires a reachable service instance and a valid API key.
 - `podcast transcribe` imports the generated plain-text transcript into `transcript/<mode>/transcript.txt` inside the workspace.
 - `podcast-transcript` still keeps its own artifacts under `TRANSCRIPT_DIR` (default `~/.podcast-transcripts/transcripts/`).
 - If the workspace has multiple possible audio inputs, set `auphonic.input_file` explicitly before running the command.
+- If you want to override the backend or pass extra transcription flags, add more `--arg` entries; for example
+  `--arg=--language --arg=de`.
 
 ## 3. Draft text assets (draft)
 
@@ -51,7 +55,6 @@ if one is present (clearing stale chunks/summaries on re-run).
 ```bash
 podcast draft \
   --workspace ./workspaces/ep_068 \
-  --transcript ~/.podcast-transcripts/transcripts/pp_68/pp_68.txt \
   --episode-id ep_068 \
   --host Jochen --host Dominik \
   --candidates 3
@@ -60,6 +63,10 @@ podcast draft \
 The `--host` flag is repeatable and persists host names to `episode.yaml`. On subsequent runs without `--host`, the
 stored names are reused automatically. Host names are injected into all LLM prompts (summarization and candidate
 generation) to prevent hallucinated speaker names.
+
+When the workspace already has `transcript/transcript.txt` from `podcast transcribe`, `podcast draft` reuses it. Pass
+`--transcript /path/to/file.txt` only when creating a new workspace from an external transcript or when you want to
+replace the transcript currently stored in the workspace.
 
 Outputs:
 
