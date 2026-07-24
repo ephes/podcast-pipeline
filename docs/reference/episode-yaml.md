@@ -99,7 +99,7 @@ Optional settings used by `podcast produce --dry-run` to build an Auphonic paylo
 - `preset` (string): Auphonic preset id or a key in `auphonic.presets` from the global config.
 - `preset_id` (string): Explicit preset id override (skips preset mapping).
 - `input_file` (string or null): Path to the final mix audio file (relative to the workspace is ok). `podcast transcribe` also uses this as the preferred source audio input when present.
-- `input_files` (list or null): Multiple input paths (preview only).
+- `input_files` (list or null): Multiple local paths or URLs to upload or submit to Auphonic.
 - `metadata` (object, optional): Metadata merged into the payload.
 - `title`, `subtitle`, `summary`, `description` (string or null): Convenience overrides merged into metadata.
 - `tags` (string or list): Tags merged into metadata.
