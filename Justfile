@@ -39,22 +39,6 @@ pre-commit:
   uv sync
   uv run pre-commit run -a
 
-# Beads helper: `just bead` -> `bd ready`, `just bead <cmd> ...` -> `bd <cmd> ...`
-bead *args:
-  @if [ -z "{{args}}" ]; then BEADS_NO_DAEMON=1 BEADS_DIR="$PWD/.beads" bd --no-daemon ready; else BEADS_NO_DAEMON=1 BEADS_DIR="$PWD/.beads" bd --no-daemon {{args}}; fi
-
-# beadsflow helper: run beadsflow from sibling repo checkout.
-# Usage: `just beadsflow run <epic-id> --dry-run --verbose`
-beadsflow *args:
-  @if [ ! -d "$PWD/../beadsflow" ]; then echo "Missing ../beadsflow checkout; clone it next to this repo to run beadsflow locally." >&2; exit 1; fi
-  @BEADS_NO_DAEMON=1 BEADS_DIR="$PWD/.beads" BD_ISSUE_PREFIX=podcast-pipeline BEADSFLOW_CONFIG="$PWD/beadsflow.toml" uv run --project "$PWD/../beadsflow" beadsflow {{args}}
-
-# Loop helper: run beadsflow for an epic (defaults to --interval 30 --verbose).
-# Usage: `just loop <epic-id> [--dry-run|--once|--interval N|--verbose]`
-loop epic *args="":
-  @if [ -z "{{epic}}" ]; then echo "Usage: just loop <epic-id> [--dry-run|--once|--verbose]" >&2; exit 1; fi
-  @if [ -z "{{args}}" ]; then just beadsflow run {{epic}} --interval 30 --verbose; else just beadsflow run {{epic}} {{args}}; fi
-
 # Dashboard helper: `just dashboard ep_068` -> `--workspace workspaces/ep_068`.
 dashboard workspace:
   uv sync

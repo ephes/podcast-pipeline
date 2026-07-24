@@ -32,10 +32,3 @@ The preview runs at http://127.0.0.1:8000 and static output lands in `docs/_buil
 ## Domain models
 
 Core Pydantic models live in `podcast_pipeline.domain` and are intended to back `episode.yaml` + `state.json`.
-
-Beads (issues):
-
-```bash
-bd onboard
-just bead
-```

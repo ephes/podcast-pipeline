@@ -1,8 +1,6 @@
 # CLAUDE.md
 
-**Note**: This project uses [bd (beads)](https://github.com/steveyegge/beads) for issue tracking. Use `bd` commands instead of markdown TODOs. See `AGENTS.md` for workflow details.
-
-**IMPORTANT**: Do not run `git commit`, `git push`, or `bd sync` unless the user explicitly asks you to commit/push.
+**IMPORTANT**: Do not run `git commit` or `git push` unless the user explicitly asks you to commit/push.
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
@@ -26,7 +24,6 @@ uv sync
 just lint
 just typecheck
 just test
-just bead
 ```
 
 ## Quality Gates (Required)
@@ -37,34 +34,4 @@ Do not declare a change finished unless these pass:
 just lint
 just typecheck
 just test
-```
-
-## Beads (bd) Workflow
-
-- Find work: `bd ready`
-- Start: `bd update <id> --status in_progress`
-- Context: `bd show <id> --json`, `bd dep tree <id>`
-- Finish: `bd close <id> --reason "Done: <summary>"`
-- Keep in sync: `bd sync`
-
-## beadsflow (autopilot) integration (optional)
-
-This repo can run an implementer↔reviewer epic loop using `beadsflow` with `beadsflow.toml`.
-
-Recommended env:
-
-```bash
-export BEADS_NO_DAEMON=1
-export BEADS_DIR="$PWD/.beads"
-export BEADSFLOW_CONFIG="$PWD/beadsflow.toml"
-```
-
-Safe first run:
-
-```bash
-# Prefer running beadsflow from a local checkout (so bugs can be fixed directly):
-uvx --from "$PWD/../beadsflow" beadsflow run <epic-id> --dry-run --verbose
-
-# Convenience wrapper:
-just beadsflow run <epic-id> --dry-run --verbose
 ```

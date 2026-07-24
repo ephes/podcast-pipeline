@@ -1,7 +1,7 @@
 # Developer guide
 
 This guide orients contributors to the podcast pipeline architecture, how to extend providers,
-how to run the quality gates, and how we track work with Beads.
+and how to run the quality gates.
 
 ## Core architecture
 
@@ -78,23 +78,3 @@ uv run ruff format --check .
 uv run mypy src tests
 uv run pytest
 ```
-
-## Beads workflow
-
-This repo uses a local Beads database under `.beads/`. To avoid accidentally using a global database:
-
-```bash
-export BEADS_NO_DAEMON=1
-export BEADS_DIR="$PWD/.beads"
-bd --no-daemon list
-```
-
-Recommended flow:
-
-1. `bd ready`
-2. `bd show <id> --json`
-3. `bd update <id> --status in_progress`
-4. Implement changes
-5. `bd close <id> --reason "Done: <summary>"`
-
-Beads is the source of truth for tracking; avoid markdown TODO lists for work items.
