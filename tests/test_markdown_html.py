@@ -97,3 +97,62 @@ def test_markdown_link_rejects_data_scheme() -> None:
     assert "data:" not in rendered
     assert "<a " not in rendered
     assert "bad" in rendered
+
+
+def _inline(markdown: str) -> str:
+    rendered = markdown_to_deterministic_html(markdown + "\n")
+    assert rendered.startswith("<p>") and rendered.endswith("</p>\n"), rendered
+    return rendered[len("<p>") : -len("</p>\n")]
+
+
+def test_markdown_link_keeps_balanced_parentheses_in_url() -> None:
+    md = "- [Python](https://en.wikipedia.org/wiki/Python_(programming_language)) und mehr\n"
+    assert markdown_to_deterministic_html(md) == "\n".join(
+        [
+            "<ul>",
+            '<li><a href="https://en.wikipedia.org/wiki/Python_(programming_language)">Python</a> und mehr</li>',
+            "</ul>",
+            "",
+        ],
+    )
+
+
+def test_markdown_link_keeps_nested_parentheses_in_url() -> None:
+    assert _inline("See [x](https://example.com/a_(b_(c))_d) now") == (
+        'See <a href="https://example.com/a_(b_(c))_d">x</a> now'
+    )
+
+
+def test_markdown_link_ends_at_first_unmatched_close_paren() -> None:
+    assert _inline("([x](https://example.com/a) more)") == ('(<a href="https://example.com/a">x</a> more)')
+
+
+def test_markdown_link_with_unbalanced_open_paren_stays_plain_text() -> None:
+    assert _inline("[x](https://example.com/a_(b and more") == ("[x](https://example.com/a_(b and more")
+
+
+def test_markdown_link_rejects_javascript_scheme_with_balanced_parens() -> None:
+    assert _inline("[click me](javascript:alert(1)) after") == "click me after"
+
+
+def test_markdown_rejected_data_link_leaves_no_stray_paren() -> None:
+    assert _inline("[x](data:text/html,<script>alert(1)</script>) after") == "x after"
+
+
+def test_markdown_asterisks_between_digits_stay_literal() -> None:
+    assert _inline("2*3*4 math") == "2*3*4 math"
+
+
+def test_markdown_asterisks_surrounded_by_spaces_stay_literal() -> None:
+    assert _inline("a * b * c") == "a * b * c"
+
+
+def test_markdown_emphasis_and_strong_still_render() -> None:
+    assert _inline("*em* and **strong** and *x **y** z*") == (
+        "<em>em</em> and <strong>strong</strong> and <em>x <strong>y</strong> z</em>"
+    )
+
+
+def test_markdown_emphasis_does_not_close_after_whitespace() -> None:
+    assert _inline("*a * b*") == "<em>a * b</em>"
+    assert _inline("*open but never closed *") == "*open but never closed *"

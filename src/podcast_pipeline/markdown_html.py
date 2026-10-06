@@ -16,9 +16,12 @@ def markdown_to_deterministic_html(markdown_text: str) -> str:
     - Unordered lists: `- `, `* `, `+ `
     - Ordered lists: `1. `
     - Paragraphs (consecutive non-empty lines are joined with spaces)
-    - Inline links: `[label](url)`
+    - Inline links: `[label](url)`; parentheses in the URL must be balanced
     - Inline code: `` `code` ``
-    - Inline emphasis: `*em*` and `**strong**` (best-effort)
+    - Inline emphasis: `*em*` and `**strong**` (best-effort); a single `*` opens
+      emphasis only before non-whitespace and not between two letters or digits,
+      and closes it only after non-whitespace, so `2*3*4` and `a * b * c` stay
+      literal (intraword `foo*bar*` emphasis is not supported)
     """
     renderer = _BlockRenderer()
     for raw in markdown_text.splitlines():
@@ -152,8 +155,8 @@ def _try_render_link(text: str, idx: int) -> tuple[str, int] | None:
     close = text.find("]", idx + 1)
     if close == -1 or close + 1 >= len(text) or text[close + 1] != "(":
         return None
-    end = text.find(")", close + 2)
-    if end == -1:
+    end = _find_link_destination_end(text, close + 2)
+    if end is None:
         return None
 
     label = text[idx + 1 : close]
@@ -164,6 +167,34 @@ def _try_render_link(text: str, idx: int) -> tuple[str, int] | None:
     label_html = _render_inline(label)
     href = html.escape(url, quote=True)
     return f'<a href="{href}">{label_html}</a>', end + 1
+
+
+def _find_link_destination_end(text: str, start: int) -> int | None:
+    """Return the index of the `)` that closes a link destination starting at `start`.
+
+    Parentheses inside the destination must be balanced, as in CommonMark, so URLs
+    such as `https://en.wikipedia.org/wiki/Python_(programming_language)` stay whole.
+    Returns None when the destination is never closed.
+    """
+    depth = 0
+    for pos in range(start, len(text)):
+        char = text[pos]
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            if depth == 0:
+                return pos
+            depth -= 1
+    return None
+
+
+def _can_open_emphasis(text: str, idx: int) -> bool:
+    """A `*` opens emphasis only when followed by non-whitespace and not flanked by
+    alphanumerics on both sides (simplified CommonMark flanking rule)."""
+    after = idx + 1
+    if after >= len(text) or text[after].isspace():
+        return False
+    return not (idx > 0 and text[idx - 1].isalnum() and text[after].isalnum())
 
 
 def _try_render_strong(text: str, idx: int) -> tuple[str, int] | None:
@@ -177,10 +208,16 @@ def _try_render_strong(text: str, idx: int) -> tuple[str, int] | None:
 
 
 def _try_render_em(text: str, idx: int) -> tuple[str, int] | None:
-    if not text.startswith("*", idx):
+    if not text.startswith("*", idx) or not _can_open_emphasis(text, idx):
         return None
-    end = text.find("*", idx + 1)
-    if end == -1:
-        return None
-    inner = text[idx + 1 : end]
-    return f"<em>{_render_inline(inner)}</em>", end + 1
+    pos = idx + 2
+    while pos < len(text):
+        if text.startswith("**", pos):
+            # A `**` run belongs to nested strong emphasis, not to this `*`.
+            pos += 2
+            continue
+        if text[pos] == "*" and not text[pos - 1].isspace():
+            inner = text[idx + 1 : pos]
+            return f"<em>{_render_inline(inner)}</em>", pos + 1
+        pos += 1
+    return None
