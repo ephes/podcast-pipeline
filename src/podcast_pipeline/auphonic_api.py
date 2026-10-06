@@ -86,15 +86,17 @@ def load_auphonic_credentials() -> AuphonicCredentials:
     )
 
 
-class _ApiOriginAuthTransport(httpx.BaseTransport):
+class _ApiOriginCredentials:
     """Attach Auphonic credentials only to requests for the API's own origin.
 
-    It wraps the real transport, so the check runs on every request that goes
-    out, including each redirect hop. Output download URLs and redirects may
-    point at other origins; those never receive the API key or password.
+    Installed as an httpx request event hook, which runs before every request
+    that goes out, including each redirect hop. Output download URLs and
+    redirects may point at other origins; those never receive the API key or
+    password. Using a hook (not a custom transport) keeps httpx's environment
+    proxy support (HTTP_PROXY, HTTPS_PROXY, ALL_PROXY, NO_PROXY).
     """
 
-    def __init__(self, credentials: AuphonicCredentials, wrapped: httpx.BaseTransport) -> None:
+    def __init__(self, credentials: AuphonicCredentials) -> None:
         if credentials.api_key:
             self._header = f"Bearer {credentials.api_key}"
         elif credentials.username and credentials.password:
@@ -103,17 +105,12 @@ class _ApiOriginAuthTransport(httpx.BaseTransport):
         else:
             raise AuphonicApiError("Auphonic credentials need an API key or a username and password.")
         self._origin = _origin(httpx.URL(credentials.base_url))
-        self._wrapped = wrapped
 
-    def handle_request(self, request: httpx.Request) -> httpx.Response:
+    def __call__(self, request: httpx.Request) -> None:
         if _origin(request.url) == self._origin:
             request.headers["Authorization"] = self._header
         else:
             request.headers.pop("Authorization", None)
-        return self._wrapped.handle_request(request)
-
-    def close(self) -> None:
-        self._wrapped.close()
 
 
 def _origin(url: httpx.URL) -> tuple[str, str, int | None]:
@@ -135,7 +132,8 @@ class AuphonicClient:
         self._client = httpx.Client(
             timeout=timeout_seconds,
             follow_redirects=True,
-            transport=_ApiOriginAuthTransport(credentials, transport or httpx.HTTPTransport()),
+            transport=transport,
+            event_hooks={"request": [_ApiOriginCredentials(credentials)]},
         )
 
     def close(self) -> None:

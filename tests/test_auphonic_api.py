@@ -553,3 +553,12 @@ def test_same_host_scheme_change_redirect_drops_credentials(tmp_path: Path, cred
     sent = {str(r.url): r.headers.get("authorization") for r in recorder.requests}
     assert sent["http://auphonic.test/download/a.mp3"] is not None
     assert sent["https://auphonic.test/final.mp3"] is None
+
+
+def test_default_client_keeps_environment_proxy_support(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("HTTPS_PROXY", "http://proxy.example:3128")
+    monkeypatch.delenv("NO_PROXY", raising=False)
+    monkeypatch.delenv("no_proxy", raising=False)
+    with AuphonicClient(CREDS) as client:
+        mounts = client._client._mounts
+        assert any(pattern.matches(httpx.URL("https://auphonic.com/api")) for pattern in mounts)
