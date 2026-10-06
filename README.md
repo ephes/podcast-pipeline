@@ -29,6 +29,14 @@ just docs-build
 
 The preview runs at http://127.0.0.1:8000 and static output lands in `docs/_build/html/`.
 
+## Auphonic production
+
+`podcast produce --workspace <ep>` creates and starts an Auphonic production (uploading a local input file), polls
+it until Auphonic reports Done or a failure status, and downloads the outputs. Reruns resume the production stored in
+`state.json`; `--restart` deliberately starts a new (paid) one after a failure, and `--dry-run` only prints the payload.
+Credentials: `AUPHONIC_API_KEY`, or `AUPHONIC_USER` + `AUPHONIC_PASSWORD`. Details:
+`docs/tutorials/episode-workflow.md` ("Produce with Auphonic").
+
 ## Local web UIs
 
 `podcast dashboard` and `podcast pick --web` listen on `127.0.0.1` only and reject requests from other origins or

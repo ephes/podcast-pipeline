@@ -1,13 +1,13 @@
 from __future__ import annotations
 
-import json
+import base64
 import os
 import tempfile
 import time
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import IO, Any
+from typing import Any
 from urllib.parse import urlparse
 
 import httpx
@@ -17,11 +17,44 @@ class AuphonicApiError(RuntimeError):
     pass
 
 
+class AuphonicProductionFailedError(AuphonicApiError):
+    """The polled production reached a terminal state other than Done."""
+
+
+# Production status codes as returned by https://auphonic.com/api/info/production_status.json.
+# Anything not listed as done or terminal (0 File Upload, 1 Waiting, 4 Audio Processing,
+# 5 Audio Encoding, 6 Outgoing File Transfer, 7 Mono Mixdown, 8 Split On Chapters,
+# 12 Incoming File Transfer, 13 Stopping, 14 Speech Recognition, unknown codes) is running.
+_STATUS_BY_CODE: dict[int, str] = {
+    2: "error",  # Error
+    3: "done",  # Done
+    9: "error",  # Incomplete
+    10: "not_started",  # Not Started Yet
+    11: "error",  # Outdated
+    15: "changed",  # Production Changed
+    98: "error",  # Empty Production
+}
+_STATUS_BY_NAME: dict[str, str] = {
+    "done": "done",
+    "error": "error",
+    "incomplete": "error",
+    "not started yet": "not_started",
+    "production not started yet": "not_started",
+    "outdated": "error",
+    "production outdated": "error",
+    "production changed": "changed",
+    "empty production": "error",
+}
+
+
 @dataclass(frozen=True)
 class AuphonicCredentials:
-    username: str
-    api_key: str
+    """Either an API key (sent as a Bearer token) or a username and password (HTTP Basic)."""
+
     base_url: str
+    api_key: str | None = None
+    username: str | None = None
+    password: str | None = None
 
 
 @dataclass(frozen=True)
@@ -39,21 +72,70 @@ class AuphonicProduction:
 
 
 def load_auphonic_credentials() -> AuphonicCredentials:
-    username = os.environ.get("AUPHONIC_USER") or os.environ.get("AUPHONIC_USERNAME")
-    api_key = os.environ.get("AUPHONIC_API_KEY") or os.environ.get("AUPHONIC_PASSWORD")
-    if not username or not api_key:
-        raise AuphonicApiError("Missing Auphonic credentials. Set AUPHONIC_USER and AUPHONIC_API_KEY.")
     base_url = os.environ.get("AUPHONIC_BASE_URL", "https://auphonic.com/api")
-    return AuphonicCredentials(username=username, api_key=api_key, base_url=base_url)
+    api_key = (os.environ.get("AUPHONIC_API_KEY") or "").strip()
+    if api_key:
+        return AuphonicCredentials(base_url=base_url, api_key=api_key)
+    username = (os.environ.get("AUPHONIC_USER") or os.environ.get("AUPHONIC_USERNAME") or "").strip()
+    password = os.environ.get("AUPHONIC_PASSWORD") or ""
+    if username and password:
+        return AuphonicCredentials(base_url=base_url, username=username, password=password)
+    raise AuphonicApiError(
+        "Missing Auphonic credentials. Set AUPHONIC_API_KEY (an Auphonic API key), "
+        "or AUPHONIC_USER and AUPHONIC_PASSWORD."
+    )
+
+
+class _ApiOriginAuthTransport(httpx.BaseTransport):
+    """Attach Auphonic credentials only to requests for the API's own origin.
+
+    It wraps the real transport, so the check runs on every request that goes
+    out, including each redirect hop. Output download URLs and redirects may
+    point at other origins; those never receive the API key or password.
+    """
+
+    def __init__(self, credentials: AuphonicCredentials, wrapped: httpx.BaseTransport) -> None:
+        if credentials.api_key:
+            self._header = f"Bearer {credentials.api_key}"
+        elif credentials.username and credentials.password:
+            token = base64.b64encode(f"{credentials.username}:{credentials.password}".encode()).decode("ascii")
+            self._header = f"Basic {token}"
+        else:
+            raise AuphonicApiError("Auphonic credentials need an API key or a username and password.")
+        self._origin = _origin(httpx.URL(credentials.base_url))
+        self._wrapped = wrapped
+
+    def handle_request(self, request: httpx.Request) -> httpx.Response:
+        if _origin(request.url) == self._origin:
+            request.headers["Authorization"] = self._header
+        else:
+            request.headers.pop("Authorization", None)
+        return self._wrapped.handle_request(request)
+
+    def close(self) -> None:
+        self._wrapped.close()
+
+
+def _origin(url: httpx.URL) -> tuple[str, str, int | None]:
+    port = url.port
+    if port is None:
+        port = {"http": 80, "https": 443}.get(url.scheme)
+    return (url.scheme, url.host, port)
 
 
 class AuphonicClient:
-    def __init__(self, credentials: AuphonicCredentials, *, timeout_seconds: float = 300.0) -> None:
+    def __init__(
+        self,
+        credentials: AuphonicCredentials,
+        *,
+        timeout_seconds: float = 300.0,
+        transport: httpx.BaseTransport | None = None,
+    ) -> None:
         self._base_url = credentials.base_url.rstrip("/")
         self._client = httpx.Client(
-            auth=(credentials.username, credentials.api_key),
             timeout=timeout_seconds,
             follow_redirects=True,
+            transport=_ApiOriginAuthTransport(credentials, transport or httpx.HTTPTransport()),
         )
 
     def close(self) -> None:
@@ -65,46 +147,59 @@ class AuphonicClient:
     def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
         self.close()
 
-    def start_production(self, payload: Mapping[str, Any]) -> AuphonicProduction:
+    def start_production(
+        self,
+        payload: Mapping[str, Any],
+        *,
+        on_created: Callable[[str], None] | None = None,
+    ) -> AuphonicProduction:
+        """Create an Auphonic production from ``payload`` and start it.
+
+        Follows the JSON API flow: create the production (which only saves it),
+        upload a local input file to ``production/{uuid}/upload.json`` (URL inputs
+        are part of the create request), then call ``production/{uuid}/start.json``.
+        ``on_created`` receives the UUID before the paid start request, so a
+        caller can persist it even when the start's outcome is unknown.
+        """
         input_files = _extract_input_files(payload)
-        payload_core = _strip_input_files(payload)
-        url = f"{self._base_url}/productions.json"
+        if len(input_files) > 1:
+            raise AuphonicApiError(
+                "Auphonic single-track productions take exactly one input file "
+                f"(got {len(input_files)}); multitrack productions are not supported."
+            )
 
-        if not input_files:
-            response = _request_json(self._client, "POST", url, json=payload_core)
-            return _parse_production(response)
-
-        if _all_urls(input_files):
-            payload_core = dict(payload_core)
-            if len(input_files) == 1:
-                payload_core["input_file"] = input_files[0]
+        body = _strip_input_files(payload)
+        local_path: Path | None = None
+        if input_files:
+            if _looks_like_url(input_files[0]):
+                body["input_file"] = input_files[0]
             else:
-                payload_core["input_files"] = list(input_files)
-            response = _request_json(self._client, "POST", url, json=payload_core)
-            return _parse_production(response)
+                local_path = Path(input_files[0])
+                if not local_path.is_file():
+                    raise AuphonicApiError(f"Auphonic input file not found: {local_path}")
 
-        if _any_urls(input_files):
-            raise AuphonicApiError("Auphonic input files cannot mix URLs with local paths.")
-
-        data = _payload_to_form(payload_core)
-        field = "input_file"
-        files: list[tuple[str, tuple[str, IO[bytes], str]]] = []
-        for item in input_files:
-            path = Path(item)
-            if not path.exists() or not path.is_file():
-                raise AuphonicApiError(f"Auphonic input file not found: {path}")
-            handle: IO[bytes] = path.open("rb")
-            files.append((field, (path.name, handle, "application/octet-stream")))
-
+        created = _parse_production(
+            _request_json(self._client, "POST", f"{self._base_url}/productions.json", json=body)
+        )
+        if on_created is not None:
+            on_created(created.uuid)
+        production_url = f"{self._base_url}/production/{created.uuid}"
         try:
-            response = _request_json(self._client, "POST", url, data=data, files=files)
-        finally:
-            for _, (_, handle, _) in files:
-                try:
-                    handle.close()
-                except OSError:
-                    pass
-        return _parse_production(response)
+            if local_path is not None:
+                with local_path.open("rb") as handle:
+                    _request_json(
+                        self._client,
+                        "POST",
+                        f"{production_url}/upload.json",
+                        files={"input_file": (local_path.name, handle, "application/octet-stream")},
+                    )
+            return _parse_production(_request_json(self._client, "POST", f"{production_url}/start.json"))
+        except (AuphonicApiError, OSError) as exc:
+            raise AuphonicApiError(
+                f"Auphonic production {created.uuid} was created but starting it failed: {exc}. "
+                "A plain rerun follows it if Auphonic did start it; otherwise rerun with "
+                "`podcast produce --restart`."
+            ) from exc
 
     def fetch_production(self, uuid: str) -> AuphonicProduction:
         url = f"{self._base_url}/production/{uuid}.json"
@@ -117,16 +212,23 @@ class AuphonicClient:
         *,
         poll_interval: float,
         timeout_seconds: float,
+        not_started_grace_seconds: float = 0.0,
     ) -> AuphonicProduction:
+        """Poll until the production is done; raise on a failure status or timeout.
+
+        ``not_started_grace_seconds`` keeps polling while a production that was
+        just started still reports ``Not Started Yet``.
+        """
         start = time.monotonic()
         while True:
             production = self.fetch_production(uuid)
             status = _classify_status(production.status, production.status_string)
             if status == "done":
                 return production
-            if status == "error":
-                detail = production.status_string or str(production.status or "unknown")
-                raise AuphonicApiError(f"Auphonic production {uuid} failed (status: {detail}).")
+            if status == "not_started" and time.monotonic() - start <= not_started_grace_seconds:
+                status = "running"
+            if status != "running":
+                raise AuphonicProductionFailedError(_terminal_message(uuid, status, production))
             if time.monotonic() - start > timeout_seconds:
                 raise AuphonicApiError(f"Auphonic production {uuid} timed out after {timeout_seconds} seconds.")
             time.sleep(poll_interval)
@@ -182,10 +284,13 @@ def _request_json(client: httpx.Client, method: str, url: str, **kwargs: Any) ->
 def _extract_error_message(payload: object) -> str | None:
     if not isinstance(payload, Mapping):
         return None
-    for key in ("error", "message", "detail"):
+    for key in ("error_message", "error", "message", "detail"):
         value = payload.get(key)
         if isinstance(value, str) and value.strip():
             return value.strip()
+    form_errors = payload.get("form_errors")
+    if isinstance(form_errors, Mapping) and form_errors:
+        return "; ".join(f"{key}: {value}" for key, value in form_errors.items())
     errors = payload.get("errors")
     if isinstance(errors, Sequence) and not isinstance(errors, (str, bytes, bytearray)):
         parts = [str(item).strip() for item in errors if str(item).strip()]
@@ -264,29 +369,9 @@ def _strip_input_files(payload: Mapping[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in payload.items() if key not in {"input_file", "input_files"}}
 
 
-def _payload_to_form(payload: Mapping[str, Any]) -> dict[str, str]:
-    data: dict[str, str] = {}
-    for key, value in payload.items():
-        if value is None:
-            continue
-        if isinstance(value, (dict, list, tuple)):
-            data[key] = json.dumps(value)
-        else:
-            data[key] = str(value)
-    return data
-
-
 def _looks_like_url(value: str) -> bool:
     parsed = urlparse(value)
     return bool(parsed.scheme and parsed.netloc)
-
-
-def _any_urls(values: Sequence[str]) -> bool:
-    return any(_looks_like_url(item) for item in values)
-
-
-def _all_urls(values: Sequence[str]) -> bool:
-    return all(_looks_like_url(item) for item in values)
 
 
 def _required_str(value: object, *, key: str) -> str:
@@ -302,22 +387,48 @@ def _optional_str(value: object) -> str | None:
     return stripped or None
 
 
+def _status_code(status: object) -> int | None:
+    if isinstance(status, bool):
+        return None
+    if isinstance(status, int):
+        return status
+    if isinstance(status, str) and status.strip().isdigit():
+        return int(status.strip())
+    return None
+
+
 def _classify_status(status: object, status_string: str | None) -> str:
+    """Map an Auphonic production status to ``done``, ``running`` or a terminal problem.
+
+    The numeric code is authoritative; ``status_string`` is only consulted when
+    the code is missing. Unknown codes count as running, bounded by the wait
+    timeout.
+    """
+    code = _status_code(status)
+    if code is not None:
+        return _STATUS_BY_CODE.get(code, "running")
     text = status_string
     if text is None and isinstance(status, str):
         text = status
     if text is not None:
         normalized = text.strip().lower()
-        if any(token in normalized for token in ("done", "complete", "completed", "finished")):
-            return "done"
-        if any(token in normalized for token in ("error", "failed", "aborted")):
-            return "error"
-    if isinstance(status, int):
-        if status >= 4:
-            return "error"
-        if status == 3:
-            return "done"
+        for name, classification in _STATUS_BY_NAME.items():
+            if normalized == name:
+                return classification
     return "running"
+
+
+def _terminal_message(uuid: str, classification: str, production: AuphonicProduction) -> str:
+    detail = production.status_string or str(production.status if production.status is not None else "unknown")
+    hint = "Fix the cause, then rerun with `podcast produce --restart` to start a new production."
+    if classification == "not_started":
+        return f"Auphonic production {uuid} was never started (status: {detail}). {hint}"
+    if classification == "changed":
+        return (
+            f"Auphonic production {uuid} was changed after it finished (status: {detail}); "
+            f"reprocess it in Auphonic, or {hint[0].lower()}{hint[1:]}"
+        )
+    return f"Auphonic production {uuid} failed (status: {detail}). {hint}"
 
 
 def _filename_from_url(url: str) -> str | None:

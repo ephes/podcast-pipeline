@@ -277,10 +277,12 @@ class _FakeAuphonicClient:
     def __exit__(self, *_exc: object) -> None:
         return None
 
-    def start_production(self, _payload: object) -> _FakeProduction:
+    def start_production(self, _payload: object, *, on_created: Any = None) -> _FakeProduction:
         if _FakeAuphonicClient.on_start is not None:
             _FakeAuphonicClient.on_start()
         uuid = f"prod-{len(_FakeAuphonicClient.started) + 1}"
+        if on_created is not None:
+            on_created(uuid)
         _FakeAuphonicClient.started.append(uuid)
         return _FakeProduction(uuid)
 
@@ -449,3 +451,28 @@ def test_pick_web_accepts_same_origin_json(pick_port: int) -> None:
     body = json.dumps({"asset_id": "description", "candidate_id": "x"}).encode()
     # Reaches the handler: unknown candidate -> 400, not a guard rejection.
     assert _pick_request(pick_port, "POST", "/api/select", headers, body) == 400
+
+
+def test_stale_dashboard_state_does_not_roll_back_restarted_production_uuid(
+    tmp_path: Path, fake_auphonic: type[_FakeAuphonicClient]
+) -> None:
+    """A dashboard opened before ``produce --restart`` must not restore the old UUID on its next write."""
+    store = EpisodeWorkspaceStore(_workspace(tmp_path))
+    store.write_state(EpisodeWorkspace(episode_id="ep_001", root_dir=".", auphonic_production_uuid="old-prod"))
+    candidate = Candidate(asset_id="description", content="# Description\n\nText.")
+    store.write_candidate(candidate)
+    ctx = DashboardContext(workspace=tmp_path)
+    client = TestClient(dashboard_web.create_dashboard_app(ctx=ctx, port=_PORT), base_url=_BASE)
+    assert client.get("/api/status").status_code == 200  # caches state with old-prod
+
+    produce.run_produce(workspace=tmp_path, dry_run=False, restart=True)
+    assert store.read_state().auphonic_production_uuid == "prod-1"
+
+    resp = client.post(
+        "/api/select",
+        json={"asset_id": "description", "candidate_id": str(candidate.candidate_id)},
+    )
+    assert resp.status_code == 200
+    state = store.read_state()
+    assert state.auphonic_production_uuid == "prod-1"
+    assert any(asset.selected_candidate_id == candidate.candidate_id for asset in state.assets)

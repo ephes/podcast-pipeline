@@ -306,11 +306,20 @@ def produce(
         bool,
         typer.Option(help="Print the Auphonic payload JSON without calling the API."),
     ] = False,
+    restart: Annotated[
+        bool,
+        typer.Option(
+            help=(
+                "Ignore the production UUID stored in state.json and start a new (paid) Auphonic production, "
+                "for example after the stored one failed."
+            ),
+        ),
+    ] = False,
 ) -> None:
-    """Build the Auphonic payload for an episode workspace."""
+    """Start (or resume) the Auphonic production for an episode workspace and download its outputs."""
     from podcast_pipeline.entrypoints.produce import run_produce
 
-    run_produce(workspace=workspace, dry_run=dry_run)
+    run_produce(workspace=workspace, dry_run=dry_run, restart=restart)
 
 
 @app.command()

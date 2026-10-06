@@ -185,3 +185,42 @@ def test_payload_parses_selected_itunes_keywords_from_markdown_list(
     )
 
     assert payload["metadata"]["itunes_keywords"] == "python, llm, agentic coding, devops"
+
+
+def test_payload_rejects_multiple_input_files(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _set_global_config(monkeypatch, tmp_path, {})
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    with pytest.raises(AuphonicConfigError, match="single input file"):
+        build_auphonic_payload(
+            episode_yaml={"auphonic": {"preset_id": "p1", "input_files": ["a.wav", "b.wav"]}},
+            workspace=workspace,
+        )
+
+
+def test_payload_accepts_single_entry_input_files(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _set_global_config(monkeypatch, tmp_path, {})
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    payload = build_auphonic_payload(
+        episode_yaml={"auphonic": {"preset_id": "p1", "input_files": ["a.wav"]}},
+        workspace=workspace,
+    )
+
+    assert payload["input_file"] == str((workspace / "a.wav").resolve())
+    assert "input_files" not in payload
+
+
+def test_payload_keeps_url_inputs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _set_global_config(monkeypatch, tmp_path, {})
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    for config in (
+        {"preset_id": "p1", "input_file": "https://cdn.example/ep.mp3"},
+        {"preset_id": "p1", "input_files": ["https://cdn.example/ep.mp3"]},
+    ):
+        payload = build_auphonic_payload(episode_yaml={"auphonic": config}, workspace=workspace)
+        assert payload["input_file"] == "https://cdn.example/ep.mp3"

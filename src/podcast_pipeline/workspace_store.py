@@ -328,16 +328,16 @@ class EpisodeWorkspaceStore:
     def write_state(self, workspace: EpisodeWorkspace) -> None:
         """Write ``state.json``.
 
-        A stored ``auphonic_production_uuid`` is never cleared: writers holding an
-        older in-memory copy (dashboard, pick UI, review loop) would otherwise
-        drop the UUID of a paid production that ``podcast produce`` saved in the
-        meantime, and the next produce run would start a second production.
+        A stored ``auphonic_production_uuid`` is never cleared or replaced here:
+        writers holding an older in-memory copy (dashboard, pick UI, review
+        loop) would otherwise drop or roll back the UUID of a paid production
+        that ``podcast produce`` (or ``produce --restart``) saved in the
+        meantime. Only :meth:`set_auphonic_production_uuid` changes it.
         """
         with self._state_lock():
-            if workspace.auphonic_production_uuid is None:
-                stored = self._stored_auphonic_production_uuid()
-                if stored is not None:
-                    workspace = workspace.model_copy(update={"auphonic_production_uuid": stored})
+            stored = self._stored_auphonic_production_uuid()
+            if stored is not None and workspace.auphonic_production_uuid != stored:
+                workspace = workspace.model_copy(update={"auphonic_production_uuid": stored})
             self._write_state_unlocked(workspace)
 
     def set_auphonic_production_uuid(self, production_uuid: str, *, default: EpisodeWorkspace) -> EpisodeWorkspace:
