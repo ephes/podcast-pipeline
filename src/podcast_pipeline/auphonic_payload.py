@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 import yaml
 
@@ -52,11 +53,14 @@ def build_auphonic_payload(
     title = metadata.get("title")
     if _has_value(title):
         payload["title"] = title
+    if len(input_files) > 1:
+        raise AuphonicConfigError(
+            "Auphonic productions take a single input file, but "
+            f"{len(input_files)} were resolved ({', '.join(input_files)}). "
+            "Multitrack productions are not supported; set auphonic.input_file to the final mix."
+        )
     if input_files:
-        if len(input_files) == 1:
-            payload["input_file"] = input_files[0]
-        else:
-            payload["input_files"] = input_files
+        payload["input_file"] = input_files[0]
     if metadata:
         payload["metadata"] = metadata
     if chapters:
@@ -269,6 +273,9 @@ def _normalize_input_paths(
 
 
 def _resolve_path(raw: str, *, workspace: Path) -> str:
+    parsed = urlparse(raw.strip())
+    if parsed.scheme and parsed.netloc:
+        return raw.strip()
     path = Path(raw).expanduser()
     if path.is_absolute():
         return str(path)

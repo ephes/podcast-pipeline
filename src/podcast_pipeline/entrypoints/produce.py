@@ -14,7 +14,7 @@ from podcast_pipeline.domain.models import EpisodeWorkspace
 from podcast_pipeline.workspace_store import EpisodeWorkspaceStore
 
 
-def run_produce(*, workspace: Path, dry_run: bool) -> None:
+def run_produce(*, workspace: Path, dry_run: bool, restart: bool = False) -> None:
     store = EpisodeWorkspaceStore(workspace)
     if not store.layout.episode_yaml.exists():
         raise typer.BadParameter(f"Missing episode.yaml in {workspace}")
@@ -37,17 +37,29 @@ def run_produce(*, workspace: Path, dry_run: bool) -> None:
         with _produce_lock(store), AuphonicClient(credentials) as client:
             workspace_state = _load_workspace_state(store, episode_yaml)
             production_uuid = workspace_state.auphonic_production_uuid
+            just_started = False
+            if restart and production_uuid is not None:
+                typer.echo(f"Discarding stored Auphonic production {production_uuid}; starting a new one.")
+                production_uuid = None
             if production_uuid is None:
-                production = client.start_production(payload)
+
+                def remember(created_uuid: str) -> None:
+                    # Store the UUID as soon as the production exists, before the
+                    # paid start request: if the start's outcome is unknown (a
+                    # timeout), a rerun follows this production instead of paying
+                    # for another. Re-read state.json under its lock so selections
+                    # written meanwhile are kept.
+                    store.set_auphonic_production_uuid(created_uuid, default=workspace_state)
+
+                production = client.start_production(payload, on_created=remember)
                 production_uuid = production.uuid
-                # Re-read state.json under its lock so selections written while
-                # this run was starting are kept.
-                store.set_auphonic_production_uuid(production_uuid, default=workspace_state)
+                just_started = True
 
             production = client.wait_for_production(
                 production_uuid,
                 poll_interval=15.0,
                 timeout_seconds=60 * 60,
+                not_started_grace_seconds=120.0 if just_started else 0.0,
             )
             output_files = production.output_files
             if not output_files:
