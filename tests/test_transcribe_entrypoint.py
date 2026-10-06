@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import subprocess
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 import pytest
 import typer
@@ -301,6 +303,7 @@ def test_run_transcribe_keeps_legacy_wrapper_args_for_custom_commands(
         args: list[str],
         cwd: Path,
         timeout_seconds: float | None,
+        env: dict[str, str] | None = None,
     ) -> None:
         captured["command"] = command
         captured["args"] = args
@@ -345,6 +348,7 @@ def test_run_transcribe_skips_audio_resolution_for_custom_commands_without_audio
         args: list[str],
         cwd: Path,
         timeout_seconds: float | None,
+        env: dict[str, str] | None = None,
     ) -> None:
         output_dir = workspace / "transcript" / "draft"
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -363,21 +367,24 @@ def test_run_transcribe_skips_audio_resolution_for_custom_commands_without_audio
     )
 
 
-def test_run_transcribe_keeps_direct_workspace_output_when_present(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
-    audio_file = workspace / "mix.mp3"
-    audio_file.write_bytes(b"audio")
+def _write_podcast_transcript_workspace(workspace: Path, *, audio_name: str, audio_bytes: bytes) -> Path:
+    workspace.mkdir(parents=True)
+    audio_file = workspace / audio_name
+    audio_file.write_bytes(audio_bytes)
     (workspace / "episode.yaml").write_text(
-        "schema_version: 1\nepisode_id: ep_001\nauphonic:\n  input_file: mix.mp3\n",
+        f"schema_version: 1\nepisode_id: {workspace.name}\nauphonic:\n  input_file: {audio_name}\n",
         encoding="utf-8",
     )
+    return audio_file
 
-    transcript_dir = tmp_path / "podcast-transcripts"
-    monkeypatch.setenv("TRANSCRIPT_DIR", str(transcript_dir))
+
+def _fake_podcast_transcript(
+    captured_envs: list[dict[str, str] | None],
+    *,
+    text_for: dict[str, str] | None = None,
+    write_output: bool = True,
+) -> Any:
+    """Imitate podcast-transcript: write ``$TRANSCRIPT_DIR/<stem>/<stem>.txt`` from the env it gets."""
 
     def fake_run_transcriber(
         *,
@@ -385,12 +392,44 @@ def test_run_transcribe_keeps_direct_workspace_output_when_present(
         args: list[str],
         cwd: Path,
         timeout_seconds: float | None,
+        env: dict[str, str] | None = None,
+    ) -> None:
+        captured_envs.append(env)
+        if not write_output:
+            return
+        assert env is not None
+        audio_file = Path(args[0])
+        output_path = Path(env["TRANSCRIPT_DIR"]) / audio_file.stem / f"{audio_file.stem}.txt"
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        text = (text_for or {}).get(
+            audio_file.read_bytes().decode(), f"transcript of {audio_file.read_bytes().decode()}"
+        )
+        output_path.write_text(text, encoding="utf-8")
+
+    return fake_run_transcriber
+
+
+def test_run_transcribe_keeps_direct_workspace_output_when_present(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = tmp_path / "workspace"
+    audio_file = _write_podcast_transcript_workspace(workspace, audio_name="mix.mp3", audio_bytes=b"audio")
+
+    def fake_run_transcriber(
+        *,
+        command: str,
+        args: list[str],
+        cwd: Path,
+        timeout_seconds: float | None,
+        env: dict[str, str] | None = None,
     ) -> None:
         output_dir = workspace / "transcript" / "draft"
         output_dir.mkdir(parents=True, exist_ok=True)
         (output_dir / "transcript.txt").write_text("workspace wins", encoding="utf-8")
 
-        output_path = _podcast_transcript_plaintext_path(audio_file.resolve())
+        assert env is not None
+        output_path = _podcast_transcript_plaintext_path(Path(env["TRANSCRIPT_DIR"]), audio_file.resolve())
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_text("external transcript", encoding="utf-8")
 
@@ -410,29 +449,13 @@ def test_run_transcribe_imports_podcast_transcript_plaintext_output(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     workspace = tmp_path / "workspace"
-    workspace.mkdir()
-    audio_file = workspace / "mix.mp3"
-    audio_file.write_bytes(b"audio")
-    (workspace / "episode.yaml").write_text(
-        "schema_version: 1\nepisode_id: ep_001\nauphonic:\n  input_file: mix.mp3\n",
-        encoding="utf-8",
+    _write_podcast_transcript_workspace(workspace, audio_name="mix.mp3", audio_bytes=b"audio")
+    envs: list[dict[str, str] | None] = []
+    monkeypatch.setattr(
+        transcribe,
+        "_run_transcriber",
+        _fake_podcast_transcript(envs, text_for={"audio": "hello from podcast-transcript"}),
     )
-
-    transcript_dir = tmp_path / "podcast-transcripts"
-    monkeypatch.setenv("TRANSCRIPT_DIR", str(transcript_dir))
-
-    def fake_run_transcriber(
-        *,
-        command: str,
-        args: list[str],
-        cwd: Path,
-        timeout_seconds: float | None,
-    ) -> None:
-        output_path = _podcast_transcript_plaintext_path(audio_file.resolve())
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        output_path.write_text("hello from podcast-transcript", encoding="utf-8")
-
-    monkeypatch.setattr(transcribe, "_run_transcriber", fake_run_transcriber)
 
     transcribe.run_transcribe(
         workspace=workspace,
@@ -443,3 +466,151 @@ def test_run_transcribe_imports_podcast_transcript_plaintext_output(
     assert (workspace / "transcript" / "final" / "transcript.txt").read_text(encoding="utf-8") == (
         "hello from podcast-transcript"
     )
+
+
+def test_run_transcribe_passes_episode_local_content_keyed_transcript_dir(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = tmp_path / "workspace"
+    audio_file = _write_podcast_transcript_workspace(workspace, audio_name="mix.mp3", audio_bytes=b"audio")
+    monkeypatch.setenv("TRANSCRIPT_DIR", str(tmp_path / "shared-cache"))
+    monkeypatch.setenv("TRANSCRIPT_HOME", str(tmp_path / "home"))
+    envs: list[dict[str, str] | None] = []
+    monkeypatch.setattr(transcribe, "_run_transcriber", _fake_podcast_transcript(envs))
+
+    transcribe.run_transcribe(
+        workspace=workspace,
+        mode=transcribe.TranscriptionMode.draft,
+        config=transcribe.TranscribeConfig(command="podcast-transcript"),
+    )
+
+    [env] = envs
+    assert env is not None
+    expected = (
+        workspace.resolve()
+        / "transcript"
+        / "draft"
+        / ".podcast-transcript"
+        / hashlib.sha256(b"audio").hexdigest()[:16]
+    )
+    assert env["TRANSCRIPT_DIR"] == str(expected)
+    # Everything else (API keys, TRANSCRIPT_HOME with its .env) is still inherited.
+    assert env["TRANSCRIPT_HOME"] == str(tmp_path / "home")
+    assert (expected / audio_file.stem / f"{audio_file.stem}.txt").exists()
+
+
+def test_run_transcribe_does_not_set_transcript_dir_for_custom_commands(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "episode.yaml").write_text("schema_version: 1\nepisode_id: ep_001\n", encoding="utf-8")
+    envs: list[dict[str, str] | None] = []
+
+    def fake_run_transcriber(
+        *,
+        command: str,
+        args: list[str],
+        cwd: Path,
+        timeout_seconds: float | None,
+        env: dict[str, str] | None = None,
+    ) -> None:
+        envs.append(env)
+        output_dir = workspace / "transcript" / "draft"
+        (output_dir / "transcript.txt").write_text("custom", encoding="utf-8")
+
+    monkeypatch.setattr(transcribe, "_run_transcriber", fake_run_transcriber)
+
+    transcribe.run_transcribe(
+        workspace=workspace,
+        mode=transcribe.TranscriptionMode.draft,
+        config=transcribe.TranscribeConfig(command="custom-transcriber"),
+    )
+
+    assert envs == [None]
+    assert not (workspace / "transcript" / "draft" / ".podcast-transcript").exists()
+
+
+def test_run_transcribe_isolates_episodes_with_same_audio_file_name(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ep1 = tmp_path / "ep_001"
+    ep2 = tmp_path / "ep_002"
+    _write_podcast_transcript_workspace(ep1, audio_name="final_mix.wav", audio_bytes=b"episode one")
+    _write_podcast_transcript_workspace(ep2, audio_name="final_mix.wav", audio_bytes=b"episode two")
+    envs: list[dict[str, str] | None] = []
+    monkeypatch.setattr(transcribe, "_run_transcriber", _fake_podcast_transcript(envs))
+
+    for workspace in (ep1, ep2):
+        transcribe.run_transcribe(
+            workspace=workspace,
+            mode=transcribe.TranscriptionMode.draft,
+            config=transcribe.TranscribeConfig(command="transcribe"),
+        )
+
+    assert (ep1 / "transcript" / "transcript.txt").read_text(encoding="utf-8") == "transcript of episode one"
+    assert (ep2 / "transcript" / "transcript.txt").read_text(encoding="utf-8") == "transcript of episode two"
+    assert envs[0] is not None and envs[1] is not None
+    assert envs[0]["TRANSCRIPT_DIR"] != envs[1]["TRANSCRIPT_DIR"]
+
+
+def test_run_transcribe_refreshes_transcript_when_audio_content_changes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = tmp_path / "workspace"
+    audio_file = _write_podcast_transcript_workspace(workspace, audio_name="mix.mp3", audio_bytes=b"first cut")
+    envs: list[dict[str, str] | None] = []
+    monkeypatch.setattr(transcribe, "_run_transcriber", _fake_podcast_transcript(envs))
+
+    def run() -> str:
+        transcribe.run_transcribe(
+            workspace=workspace,
+            mode=transcribe.TranscriptionMode.draft,
+            config=transcribe.TranscribeConfig(command="transcribe"),
+        )
+        return (workspace / "transcript" / "draft" / "transcript.txt").read_text(encoding="utf-8")
+
+    assert run() == "transcript of first cut"
+    audio_file.write_bytes(b"second cut")
+    assert run() == "transcript of second cut"
+
+    assert envs[0] is not None and envs[1] is not None
+    cache_root = workspace / "transcript" / "draft" / ".podcast-transcript"
+    assert sorted(p.name for p in cache_root.iterdir()) == [Path(envs[1]["TRANSCRIPT_DIR"]).name]
+
+
+def test_run_transcribe_fails_instead_of_importing_stale_output(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = tmp_path / "workspace"
+    audio_file = _write_podcast_transcript_workspace(workspace, audio_name="mix.mp3", audio_bytes=b"audio")
+    mode_dir = workspace / "transcript" / "draft"
+    cache_dir = transcribe._podcast_transcript_cache_dir(mode_dir=mode_dir.resolve(), audio_file=audio_file)
+    stale_cache_output = _podcast_transcript_plaintext_path(cache_dir, audio_file)
+    stale_cache_output.parent.mkdir(parents=True)
+    stale_cache_output.write_text("stale cache transcript", encoding="utf-8")
+    (mode_dir / "transcript.txt").write_text("stale workspace transcript", encoding="utf-8")
+    # A transcript sitting in the legacy shared cache must not be picked up either.
+    shared = tmp_path / "shared-cache"
+    monkeypatch.setenv("TRANSCRIPT_DIR", str(shared))
+    legacy_output = _podcast_transcript_plaintext_path(shared, audio_file)
+    legacy_output.parent.mkdir(parents=True)
+    legacy_output.write_text("other episode transcript", encoding="utf-8")
+
+    envs: list[dict[str, str] | None] = []
+    monkeypatch.setattr(transcribe, "_run_transcriber", _fake_podcast_transcript(envs, write_output=False))
+
+    with pytest.raises(typer.BadParameter, match="Missing transcript output"):
+        transcribe.run_transcribe(
+            workspace=workspace,
+            mode=transcribe.TranscriptionMode.draft,
+            config=transcribe.TranscribeConfig(command="transcribe"),
+        )
+
+    assert not stale_cache_output.exists()
+    assert not (mode_dir / "transcript.txt").exists()

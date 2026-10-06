@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 from dataclasses import dataclass
@@ -25,6 +27,15 @@ _LEGACY_DEFAULT_TRANSCRIBE_ARGS: tuple[str, ...] = ("--mode", "{mode}", "--outpu
 _PODCAST_TRANSCRIPT_DEFAULT_ARGS: tuple[str, ...] = ("{audio_file}",)
 _PODCAST_TRANSCRIPT_COMMAND_NAMES = {"transcribe", "podcast-transcript"}
 _PREFERRED_AUDIO_TRACK_ROLES = {"mix", "master", "final", "mixdown"}
+# podcast-transcript keys its whole cache (copied audio, resampled audio, chunks, chunk
+# transcripts, plain text) by the audio file *stem*. Pointing it at a shared cache would let
+# two episodes whose masters share a file name (e.g. ``final_mix.wav``) read each other's
+# transcript, so every run gets a cache directory inside the episode workspace, keyed by a
+# hash of the audio content.
+_PODCAST_TRANSCRIPT_CACHE_DIRNAME = ".podcast-transcript"
+_AUDIO_HASH_PREFIX_LENGTH = 16
+_AUDIO_HASH_DIR_PATTERN = re.compile(rf"^[0-9a-f]{{{_AUDIO_HASH_PREFIX_LENGTH}}}$")
+_HASH_READ_CHUNK_BYTES = 1024 * 1024
 
 
 @dataclass(frozen=True)
@@ -69,25 +80,23 @@ def run_transcribe(
         mode_dir=mode_dir,
         workspace=workspace,
     )
-    _run_transcriber(
-        command=command,
-        args=rendered_args,
-        cwd=workspace,
-        timeout_seconds=config.timeout_seconds,
-    )
 
     mode_transcript = mode_dir / "transcript.txt"
-    if not mode_transcript.exists() and audio_file is not None:
-        _import_podcast_transcript_output(
-            command=command,
-            args=rendered_args,
-            audio_file=audio_file,
-            transcript_path=mode_transcript,
-        )
+    cache_dir = _run_transcriber_for_mode(
+        command=command,
+        rendered_args=rendered_args,
+        audio_file=audio_file,
+        mode_dir=mode_dir,
+        mode_transcript=mode_transcript,
+        workspace=workspace,
+        timeout_seconds=config.timeout_seconds,
+    )
     if not mode_transcript.exists():
         raise typer.BadParameter(f"Missing transcript output at {mode_transcript}")
     if mode_transcript.stat().st_size == 0:
         raise typer.BadParameter(f"Transcript output is empty: {mode_transcript}")
+    if cache_dir is not None:
+        _prune_stale_podcast_transcript_caches(keep=cache_dir)
 
     mode_chapters = mode_dir / "chapters.txt"
     default_transcript = transcript_root / "transcript.txt"
@@ -121,6 +130,54 @@ def run_transcribe(
 
     typer.echo(f"Workspace: {workspace}")
     typer.echo(f"Transcript ({mode.value}): {mode_transcript}")
+
+
+def _run_transcriber_for_mode(
+    *,
+    command: str,
+    rendered_args: list[str],
+    audio_file: Path | None,
+    mode_dir: Path,
+    mode_transcript: Path,
+    workspace: Path,
+    timeout_seconds: float | None,
+) -> Path | None:
+    """Run the transcriber; for podcast-transcript, import its output from an episode-local cache.
+
+    Returns the podcast-transcript cache directory used for this run, if any.
+    """
+    cache_dir: Path | None = None
+    env: dict[str, str] | None = None
+    workspace_output_before: tuple[int, int, int] | None = None
+    if audio_file is not None and _uses_podcast_transcript(command=command, args=rendered_args):
+        cache_dir = _podcast_transcript_cache_dir(mode_dir=mode_dir, audio_file=audio_file)
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        # A plain-text file left over from an earlier run must never be imported in place of
+        # this run's output; podcast-transcript regenerates it from its cached chunks.
+        _podcast_transcript_plaintext_path(cache_dir, audio_file).unlink(missing_ok=True)
+        workspace_output_before = _file_signature(mode_transcript)
+        env = {**os.environ, "TRANSCRIPT_DIR": str(cache_dir)}
+
+    _run_transcriber(
+        command=command,
+        args=rendered_args,
+        cwd=workspace,
+        timeout_seconds=timeout_seconds,
+        env=env,
+    )
+
+    if cache_dir is not None and audio_file is not None:
+        if _file_signature(mode_transcript) == workspace_output_before:
+            # The transcriber did not write the workspace transcript itself during this run,
+            # so this run's podcast-transcript output is the only valid source. Any existing
+            # file is from an earlier run (possibly for different audio) and is discarded.
+            mode_transcript.unlink(missing_ok=True)
+            _import_podcast_transcript_output(
+                cache_dir=cache_dir,
+                audio_file=audio_file,
+                transcript_path=mode_transcript,
+            )
+    return cache_dir
 
 
 def _validate_command(command: str) -> str:
@@ -205,6 +262,7 @@ def _run_transcriber(
     args: list[str],
     cwd: Path,
     timeout_seconds: float | None,
+    env: dict[str, str] | None = None,
 ) -> None:
     try:
         result = subprocess.run(
@@ -214,6 +272,7 @@ def _run_transcriber(
             check=False,
             cwd=str(cwd),
             timeout=timeout_seconds,
+            env=env,
         )
     except FileNotFoundError as exc:
         raise typer.BadParameter(f"Transcribe command not found: {command}") from exc
@@ -396,14 +455,11 @@ def _resolve_track_audio_path(raw: str, *, base_dir: Path | None, workspace: Pat
 
 def _import_podcast_transcript_output(
     *,
-    command: str,
-    args: list[str],
+    cache_dir: Path,
     audio_file: Path,
     transcript_path: Path,
 ) -> None:
-    if not _uses_podcast_transcript(command=command, args=args):
-        return
-    source = _podcast_transcript_plaintext_path(audio_file)
+    source = _podcast_transcript_plaintext_path(cache_dir, audio_file)
     if not source.exists():
         return
     transcript_path.parent.mkdir(parents=True, exist_ok=True)
@@ -415,15 +471,47 @@ def _uses_podcast_transcript(*, command: str, args: list[str]) -> bool:
     return Path(command).name in _PODCAST_TRANSCRIPT_COMMAND_NAMES
 
 
-def _podcast_transcript_plaintext_path(audio_file: Path) -> Path:
-    transcript_dir = os.environ.get("TRANSCRIPT_DIR")
-    if transcript_dir:
-        base_dir = Path(transcript_dir).expanduser()
-    else:
-        transcript_home = Path(os.environ.get("TRANSCRIPT_HOME", "~/.podcast-transcripts")).expanduser()
-        base_dir = transcript_home / "transcripts"
+def _podcast_transcript_cache_root(mode_dir: Path) -> Path:
+    return mode_dir / _PODCAST_TRANSCRIPT_CACHE_DIRNAME
+
+
+def _podcast_transcript_cache_dir(*, mode_dir: Path, audio_file: Path) -> Path:
+    """Return the episode-local ``TRANSCRIPT_DIR`` for this audio content."""
+    return _podcast_transcript_cache_root(mode_dir) / _audio_content_key(audio_file)
+
+
+def _audio_content_key(audio_file: Path) -> str:
+    digest = hashlib.sha256()
+    try:
+        with audio_file.open("rb") as handle:
+            while chunk := handle.read(_HASH_READ_CHUNK_BYTES):
+                digest.update(chunk)
+    except OSError as exc:
+        raise typer.BadParameter(f"Could not read audio file {audio_file}: {exc}") from exc
+    return digest.hexdigest()[:_AUDIO_HASH_PREFIX_LENGTH]
+
+
+def _podcast_transcript_plaintext_path(cache_dir: Path, audio_file: Path) -> Path:
+    """Mirror podcast-transcript's ``$TRANSCRIPT_DIR/<stem>/<stem>.txt`` output layout."""
     prefix = audio_file.stem
-    return base_dir / prefix / f"{prefix}.txt"
+    return cache_dir / prefix / f"{prefix}.txt"
+
+
+def _file_signature(path: Path) -> tuple[int, int, int] | None:
+    try:
+        stat = path.stat()
+    except FileNotFoundError:
+        return None
+    return (stat.st_ino, stat.st_size, stat.st_mtime_ns)
+
+
+def _prune_stale_podcast_transcript_caches(*, keep: Path) -> None:
+    """Drop cache directories for audio content this mode no longer uses."""
+    for entry in keep.parent.iterdir():
+        if entry == keep or not entry.is_dir() or entry.is_symlink():
+            continue
+        if _AUDIO_HASH_DIR_PATTERN.match(entry.name):
+            shutil.rmtree(entry, ignore_errors=True)
 
 
 def _update_episode_inputs(

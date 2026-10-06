@@ -42,7 +42,9 @@ Notes:
 
 - Voxhelm requires a reachable service instance and a valid API key.
 - `podcast transcribe` imports the generated plain-text transcript into `transcript/<mode>/transcript.txt` inside the workspace.
-- `podcast-transcript` still keeps its own artifacts under `TRANSCRIPT_DIR` (default `~/.podcast-transcripts/transcripts/`).
+- `podcast-transcript` keeps its artifacts (audio copy, chunks, chunk transcripts) in an episode-local cache under
+  `transcript/<mode>/.podcast-transcript/<audio-hash>/`, so episodes with the same audio file name never share a
+  transcript. Re-running on unchanged audio reuses that cache; see the `auphonic` notes in the episode.yaml reference.
 - If the workspace has multiple possible audio inputs, set `auphonic.input_file` explicitly before running the command.
 - If you want to override the backend or pass extra transcription flags, add more `--arg` entries; for example
   `--arg=--language --arg=de`.

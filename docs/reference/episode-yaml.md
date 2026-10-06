@@ -111,3 +111,13 @@ If metadata fields are missing, the payload builder falls back to selected copy 
 
 For `podcast transcribe`, if `auphonic.input_file` is not set, the command falls back to `tracks` and uses a single
 preferred mix/master/final track. If multiple possible inputs exist, set `auphonic.input_file` explicitly.
+
+When the transcriber is `podcast-transcript` (`--command transcribe` or `--command podcast-transcript`), the pipeline
+runs it with `TRANSCRIPT_DIR` set to `transcript/<mode>/.podcast-transcript/<hash>/` inside the workspace, where
+`<hash>` is the first 16 hex characters of the SHA-256 of the source audio. Episodes whose audio files share a name
+(for example two `final_mix.wav` masters) therefore never share podcast-transcript's cache, and changed audio is
+transcribed afresh. The cache holds a copy of the audio, so the workspace grows by roughly its size. Only this run's output is imported: if the command writes no transcript, `podcast transcribe`
+fails with "Missing transcript output" instead of keeping an older one. A `TRANSCRIPT_DIR` in your environment is
+ignored for these runs, and the shared `~/.podcast-transcripts/transcripts/` cache is no longer read (it is left in
+place; delete it yourself if you no longer need it). Cache directories for older audio of the same mode are removed
+after a successful run. `TRANSCRIPT_HOME` (and its `.env`) is still honored.
