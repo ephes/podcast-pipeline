@@ -1,10 +1,9 @@
 from __future__ import annotations
 
-import subprocess
 from typing import Any, Protocol, runtime_checkable
 
-from podcast_pipeline.agent_cli_config import AgentCliConfig
-from podcast_pipeline.agent_runners import AgentRunnerError, extract_json_payload
+from podcast_pipeline.agent_cli_config import AgentCliConfig, resolve_agent_timeout
+from podcast_pipeline.agent_runners import extract_json_payload, run_agent_cli
 
 
 @runtime_checkable
@@ -30,7 +29,7 @@ class DrafterCliRunner:
         cwd: str | None = None,
     ) -> None:
         self._config = config
-        self._timeout_seconds = timeout_seconds
+        self._timeout_seconds = resolve_agent_timeout(timeout_seconds, config)
         self._cwd = cwd
 
     def run(self, prompt_text: str) -> dict[str, Any]:
@@ -39,21 +38,10 @@ class DrafterCliRunner:
         return extract_json_payload(raw, label="Drafter")
 
     def _run_cli(self, prompt_text: str) -> str:
-        command = [self._config.command, *self._config.args]
-        result = subprocess.run(
-            command,
-            input=prompt_text,
-            text=True,
-            capture_output=True,
-            check=False,
+        return run_agent_cli(
+            config=self._config,
+            prompt_text=prompt_text,
             cwd=self._cwd,
-            timeout=self._timeout_seconds,
+            timeout_seconds=self._timeout_seconds,
+            label="Drafter",
         )
-        if result.returncode != 0:
-            detail = (result.stderr or "").strip()
-            if detail:
-                detail = f" {detail}"
-            raise AgentRunnerError(f"Drafter CLI failed with exit code {result.returncode}.{detail}")
-        if not (result.stdout or "").strip():
-            raise AgentRunnerError("Drafter CLI returned empty output")
-        return result.stdout or ""

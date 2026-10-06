@@ -43,6 +43,14 @@ Credentials: `AUPHONIC_API_KEY`, or `AUPHONIC_USER` + `AUPHONIC_PASSWORD`. Detai
 hostnames, and state-changing requests without `Content-Type: application/json`. Dashboard jobs such as Auphonic
 production run single-flight per episode. Details: `docs/tutorials/episode-workflow.md` ("Local web UIs").
 
+## Agent CLI timeout
+
+Every agent CLI call (drafter, creator, reviewer) is killed after 15 minutes by default, so a CLI that hangs on a
+login prompt, network stall or rate limit fails its dashboard job (which can then be retried) instead of keeping the
+stage "running" until the dashboard restarts. Raise or lower it with `PODCAST_PIPELINE_AGENT_TIMEOUT=<seconds>` or
+`agents.<role>.timeout_seconds` in the agent config; `podcast draft --timeout <seconds>` overrides both for one run.
+Details: `docs/reference/configuration.md`.
+
 ## Domain models
 
 Core Pydantic models live in `podcast_pipeline.domain` and are intended to back `episode.yaml` + `state.json`.

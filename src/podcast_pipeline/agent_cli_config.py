@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import os
 import shutil
 from collections.abc import Mapping
@@ -14,6 +15,12 @@ class AgentCliConfigError(RuntimeError):
     pass
 
 
+DEFAULT_AGENT_TIMEOUT_SECONDS = 15 * 60
+"""Per-call timeout for agent CLI subprocesses when nothing else is configured."""
+
+AGENT_TIMEOUT_ENV = "PODCAST_PIPELINE_AGENT_TIMEOUT"
+
+
 @dataclass(frozen=True)
 class AgentCliConfig:
     role: str
@@ -23,6 +30,7 @@ class AgentCliConfig:
     install_hint: str | None = None
     check_command: str | None = None
     source: str | None = None
+    timeout_seconds: float | None = None
 
 
 @dataclass(frozen=True)
@@ -210,6 +218,12 @@ def _parse_agent_cli_config(
         source=source,
         key=f"agents.{role}.check_command",
     )
+    timeout_seconds = _parse_timeout_seconds(
+        raw.get("timeout_seconds"),
+        fallback.timeout_seconds,
+        source=source,
+        key=f"agents.{role}.timeout_seconds",
+    )
     return AgentCliConfig(
         role=role,
         command=command,
@@ -218,7 +232,46 @@ def _parse_agent_cli_config(
         install_hint=install_hint,
         check_command=check_command,
         source=source,
+        timeout_seconds=timeout_seconds,
     )
+
+
+def _parse_timeout_seconds(
+    value: object,
+    fallback: float | None,
+    *,
+    source: str,
+    key: str,
+) -> float | None:
+    if value is None:
+        return fallback
+    if isinstance(value, bool) or not isinstance(value, int | float) or not math.isfinite(value) or value <= 0:
+        raise AgentCliConfigError(f"{key} must be a positive number of seconds in {source}")
+    return float(value)
+
+
+def resolve_agent_timeout(explicit: float | None, config: AgentCliConfig | None = None) -> float:
+    """Return the per-call agent CLI timeout in seconds.
+
+    Precedence: an explicit positive value (for example ``draft --timeout``), then the
+    ``PODCAST_PIPELINE_AGENT_TIMEOUT`` environment variable, then
+    ``agents.<role>.timeout_seconds`` from the agent config, then
+    :data:`DEFAULT_AGENT_TIMEOUT_SECONDS`.
+    """
+    if explicit is not None and explicit > 0:
+        return float(explicit)
+    raw_env = os.environ.get(AGENT_TIMEOUT_ENV, "").strip()
+    if raw_env:
+        try:
+            env_value = float(raw_env)
+        except ValueError:
+            env_value = math.nan
+        if not math.isfinite(env_value) or env_value <= 0:
+            raise AgentCliConfigError(f"{AGENT_TIMEOUT_ENV} must be a positive number of seconds, got {raw_env!r}")
+        return env_value
+    if config is not None and config.timeout_seconds is not None:
+        return config.timeout_seconds
+    return float(DEFAULT_AGENT_TIMEOUT_SECONDS)
 
 
 def _parse_optional_str(

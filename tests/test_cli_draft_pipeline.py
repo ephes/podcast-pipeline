@@ -2,8 +2,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 from typer.testing import CliRunner
 
+from podcast_pipeline.agent_runners import AgentRunnerError
 from podcast_pipeline.domain.models import AssetKind
 from podcast_pipeline.entrypoints.cli import app
 
@@ -51,3 +53,30 @@ def test_cli_draft_dry_run_writes_pipeline_artifacts(tmp_path: Path) -> None:
         assert len(list(asset_dir.glob("candidate_*.json"))) == 2
         assert len(list(asset_dir.glob("candidate_*.md"))) == 2
         assert len(list(asset_dir.glob("candidate_*.html"))) == 2
+
+
+def test_cli_draft_reports_agent_cli_timeout_without_traceback(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("agents:\n  drafter:\n    command: sleep\n    args: ['30']\n", encoding="utf-8")
+    monkeypatch.setenv("PODCAST_PIPELINE_CONFIG", str(config_path))
+    monkeypatch.delenv("PODCAST_PIPELINE_AGENT_TIMEOUT", raising=False)
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "draft",
+            "--workspace",
+            str(tmp_path / "workspace"),
+            "--transcript",
+            str(_fixture_dir() / "transcript.txt"),
+            "--timeout",
+            "0.3",
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "Drafter CLI timed out after 0.3 s" in result.output
+    assert not isinstance(result.exception, AgentRunnerError)
