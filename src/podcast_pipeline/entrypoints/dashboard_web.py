@@ -13,14 +13,56 @@ from typing import Any
 
 import uvicorn
 from starlette.applications import Starlette
+from starlette.datastructures import Headers
+from starlette.middleware import Middleware
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse, PlainTextResponse, Response, StreamingResponse
 from starlette.routing import Route
+from starlette.types import ASGIApp, Receive, Scope, Send
 
 from podcast_pipeline.dashboard_context import BackgroundJob, DashboardContext
+from podcast_pipeline.local_web_guard import check_request
 
 _SHUTDOWN_TIMEOUT_SECONDS = 60 * 60  # 1 hour
 _DASHBOARD_HTML_PATH = Path(__file__).parent.parent / "static" / "dashboard.html"
+_DEFAULT_CANDIDATES = 3
+MAX_CANDIDATES = 10
+_DEFAULT_REVIEW_ITERATIONS = 3
+MAX_REVIEW_ITERATIONS = 10
+
+
+def _bounded_int(value: Any, *, default: int, maximum: int) -> int:
+    """Coerce a client-supplied count into ``1..maximum`` (``default`` when missing or invalid)."""
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        return default
+    return min(int(value), maximum)
+
+
+class _LocalRequestGuardMiddleware:
+    """Reject DNS-rebinding, cross-origin and non-JSON state-changing requests."""
+
+    def __init__(self, app: ASGIApp, *, expected_port: int | None) -> None:
+        self.app = app
+        self.expected_port = expected_port
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        headers = Headers(scope=scope)
+        rejection = check_request(
+            method=scope["method"],
+            host=headers.get("host"),
+            origin=headers.get("origin"),
+            sec_fetch_site=headers.get("sec-fetch-site"),
+            content_type=headers.get("content-type"),
+            expected_port=self.expected_port,
+        )
+        if rejection is not None:
+            response = JSONResponse({"error": rejection.message}, status_code=rejection.status)
+            await response(scope, receive, send)
+            return
+        await self.app(scope, receive, send)
 
 
 def _to_text(value: Any) -> str:
@@ -53,6 +95,20 @@ class _DashboardApi:
         if not isinstance(payload, dict):
             return None, JSONResponse({"error": "Expected JSON object"}, status_code=400)
         return payload, None
+
+    def _start_job(self, stage: str, target: Callable[..., Any], *args: Any) -> Response:
+        """Start ``target`` as a background job unless a job for ``stage`` is already running."""
+        with self.ctx.lock:
+            running = self.ctx.running_job(stage)
+            if running is not None:
+                return JSONResponse(
+                    {"error": f"A {stage} job is already running", "job_id": running.job_id},
+                    status_code=409,
+                )
+            job = self.ctx.create_job(stage)
+
+        _start_daemon_thread(target, self.ctx, job, *args)
+        return JSONResponse({"ok": True, "job_id": job.job_id})
 
     async def serve_html(self, _request: Request) -> Response:
         try:
@@ -179,15 +235,8 @@ class _DashboardApi:
             return error_response
         assert payload is not None
 
-        candidates_count = payload.get("candidates", 3)
-        if not isinstance(candidates_count, int) or candidates_count < 1:
-            candidates_count = 3
-
-        with self.ctx.lock:
-            job = self.ctx.create_job(f"regenerate:{asset_id}")
-
-        _start_daemon_thread(_run_regenerate_job, self.ctx, job, asset_id, candidates_count)
-        return JSONResponse({"ok": True, "job_id": job.job_id})
+        candidates_count = _bounded_int(payload.get("candidates"), default=_DEFAULT_CANDIDATES, maximum=MAX_CANDIDATES)
+        return self._start_job(f"regenerate:{asset_id}", _run_regenerate_job, asset_id, candidates_count)
 
     async def handle_draft(self, request: Request) -> Response:
         payload, error_response = await self._parse_json_object(request)
@@ -195,25 +244,19 @@ class _DashboardApi:
             return error_response
         assert payload is not None
 
-        candidates_count = payload.get("candidates", 3)
+        candidates_count = _bounded_int(payload.get("candidates"), default=_DEFAULT_CANDIDATES, maximum=MAX_CANDIDATES)
         timeout = payload.get("timeout")
+        if isinstance(timeout, bool) or not isinstance(timeout, int | float) or timeout <= 0:
+            timeout = None
 
-        with self.ctx.lock:
-            job = self.ctx.create_job("draft")
-
-        _start_daemon_thread(_run_draft_job, self.ctx, job, candidates_count, timeout)
-        return JSONResponse({"ok": True, "job_id": job.job_id})
+        return self._start_job("draft", _run_draft_job, candidates_count, timeout)
 
     async def handle_draft_summarize(self, request: Request) -> Response:
         _payload, error_response = await self._parse_json_object(request)
         if error_response is not None:
             return error_response
 
-        with self.ctx.lock:
-            job = self.ctx.create_job("summarize")
-
-        _start_daemon_thread(_run_summarize_job, self.ctx, job)
-        return JSONResponse({"ok": True, "job_id": job.job_id})
+        return self._start_job("summarize", _run_summarize_job)
 
     async def handle_draft_candidates(self, request: Request) -> Response:
         payload, error_response = await self._parse_json_object(request)
@@ -221,13 +264,8 @@ class _DashboardApi:
             return error_response
         assert payload is not None
 
-        candidates_count = payload.get("candidates", 3)
-
-        with self.ctx.lock:
-            job = self.ctx.create_job("candidates")
-
-        _start_daemon_thread(_run_candidates_job, self.ctx, job, candidates_count)
-        return JSONResponse({"ok": True, "job_id": job.job_id})
+        candidates_count = _bounded_int(payload.get("candidates"), default=_DEFAULT_CANDIDATES, maximum=MAX_CANDIDATES)
+        return self._start_job("candidates", _run_candidates_job, candidates_count)
 
     async def handle_review(self, request: Request) -> Response:
         payload, error_response = await self._parse_json_object(request)
@@ -236,15 +274,12 @@ class _DashboardApi:
         assert payload is not None
 
         asset_id = payload.get("asset_id")
-        max_iterations = payload.get("max_iterations", 3)
         if not isinstance(asset_id, str):
             return JSONResponse({"error": "Missing asset_id"}, status_code=400)
-
-        with self.ctx.lock:
-            job = self.ctx.create_job(f"review:{asset_id}")
-
-        _start_daemon_thread(_run_review_job, self.ctx, job, asset_id, max_iterations)
-        return JSONResponse({"ok": True, "job_id": job.job_id})
+        max_iterations = _bounded_int(
+            payload.get("max_iterations"), default=_DEFAULT_REVIEW_ITERATIONS, maximum=MAX_REVIEW_ITERATIONS
+        )
+        return self._start_job(f"review:{asset_id}", _run_review_job, asset_id, max_iterations)
 
     async def handle_produce_preview(self, _request: Request) -> Response:
         try:
@@ -265,11 +300,9 @@ class _DashboardApi:
         if error_response is not None:
             return error_response
 
-        with self.ctx.lock:
-            job = self.ctx.create_job("produce")
-
-        _start_daemon_thread(_run_produce_job, self.ctx, job)
-        return JSONResponse({"ok": True, "job_id": job.job_id})
+        # Single flight: a second click while a production job runs gets 409
+        # instead of starting (and paying for) a second Auphonic production.
+        return self._start_job("produce", _run_produce_job)
 
     async def handle_init(self, request: Request) -> Response:
         payload, error_response = await self._parse_json_object(request)
@@ -323,12 +356,10 @@ class _DashboardApi:
         assert payload is not None
 
         mode = payload.get("mode", "draft")
+        if not isinstance(mode, str):
+            return JSONResponse({"error": "mode must be a string"}, status_code=400)
 
-        with self.ctx.lock:
-            job = self.ctx.create_job("transcribe")
-
-        _start_daemon_thread(_run_transcribe_job, self.ctx, job, mode)
-        return JSONResponse({"ok": True, "job_id": job.job_id})
+        return self._start_job("transcribe", _run_transcribe_job, mode)
 
     async def serve_jobs(self, _request: Request) -> Response:
         with self.ctx.lock:
@@ -411,7 +442,13 @@ def create_dashboard_app(
     *,
     ctx: DashboardContext,
     on_done: Callable[[], None] | None = None,
+    port: int | None = None,
 ) -> Starlette:
+    """Build the dashboard app.
+
+    ``port`` is the port the server listens on; when given, requests whose
+    ``Host`` header names another port are rejected.
+    """
     api = _DashboardApi(ctx=ctx, on_done=on_done)
 
     routes = [
@@ -447,7 +484,10 @@ def create_dashboard_app(
         Route("/api/done", api.handle_done, methods=["POST"]),
     ]
 
-    return Starlette(routes=routes)
+    return Starlette(
+        routes=routes,
+        middleware=[Middleware(_LocalRequestGuardMiddleware, expected_port=port)],
+    )
 
 
 def _run_uvicorn_server(server: uvicorn.Server, sock: socket.socket) -> None:
@@ -478,7 +518,7 @@ def run_dashboard(*, workspace: Path) -> None:
             if server is not None:
                 server.should_exit = True
 
-        app = create_dashboard_app(ctx=ctx, on_done=request_shutdown)
+        app = create_dashboard_app(ctx=ctx, on_done=request_shutdown, port=port)
         config = uvicorn.Config(
             app=app,
             host=host,

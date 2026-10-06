@@ -334,6 +334,7 @@ def test_delete_candidate_removes_it_from_assets(dashboard_server: _DashboardSer
 
     req = urllib.request.Request(
         f"{base_url}/api/assets/description/candidates/{removed_id}",
+        headers={"Content-Type": "application/json"},
         method="DELETE",
     )
     resp = urllib.request.urlopen(req)
@@ -357,6 +358,7 @@ def test_delete_last_candidate_removes_asset_from_assets_list(dashboard_server: 
 
     req = urllib.request.Request(
         f"{base_url}/api/assets/shownotes/candidates/{candidate_id}",
+        headers={"Content-Type": "application/json"},
         method="DELETE",
     )
     resp = urllib.request.urlopen(req)
@@ -396,6 +398,7 @@ def test_delete_selected_candidate_clears_selection(
 
     delete_req = urllib.request.Request(
         f"{base_url}/api/assets/description/candidates/{selected_id}",
+        headers={"Content-Type": "application/json"},
         method="DELETE",
     )
     delete_resp = urllib.request.urlopen(delete_req)
@@ -415,6 +418,7 @@ def test_delete_unknown_candidate_returns_400(dashboard_server: _DashboardServer
 
     req = urllib.request.Request(
         f"{base_url}/api/assets/description/candidates/00000000-0000-0000-0000-000000000000",
+        headers={"Content-Type": "application/json"},
         method="DELETE",
     )
     try:
@@ -453,6 +457,7 @@ def test_editorial_notes_crud(dashboard_server: _DashboardServerTuple) -> None:
     # Delete
     req = urllib.request.Request(
         f"{base_url}/api/assets/description/notes",
+        headers={"Content-Type": "application/json"},
         method="DELETE",
     )
     resp = urllib.request.urlopen(req)
@@ -607,6 +612,7 @@ def test_manual_tag_edits_survive_deleting_previously_selected_candidate(
 
     delete_req = urllib.request.Request(
         f"{base_url}/api/assets/cms_tags/candidates/{candidate_id}",
+        headers={"Content-Type": "application/json"},
         method="DELETE",
     )
     delete_resp = urllib.request.urlopen(delete_req)
@@ -800,6 +806,7 @@ def test_delete_unknown_route_returns_404(
     _server, base_url, _ctx = dashboard_server
     req = urllib.request.Request(
         f"{base_url}/nonexistent",
+        headers={"Content-Type": "application/json"},
         method="DELETE",
     )
     try:

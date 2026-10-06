@@ -292,7 +292,9 @@ def test_post_api_select_without_content_length(
 
     host, port = base_url.replace("http://", "").split(":")
     sock = socket.create_connection((host, int(port)))
-    sock.sendall(b"POST /api/select HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
+    sock.sendall(
+        f"POST /api/select HTTP/1.1\r\nHost: {host}:{port}\r\nContent-Type: application/json\r\n\r\n".encode()
+    )
     resp = sock.recv(4096).decode()
     sock.close()
     assert "411" in resp.split("\r\n")[0]

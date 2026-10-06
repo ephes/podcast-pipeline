@@ -402,8 +402,11 @@ async function parseErrorResponse(resp) {
 
 async function apiJson(method, path, body) {
   const options = { method, headers: {} };
-  if (body !== undefined) {
+  if (method !== "GET") {
+    // The server rejects state-changing requests without a JSON content type.
     options.headers["Content-Type"] = "application/json";
+  }
+  if (body !== undefined) {
     options.body = JSON.stringify(body);
   }
 

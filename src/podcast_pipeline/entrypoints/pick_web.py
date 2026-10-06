@@ -10,6 +10,7 @@ from pathlib import Path
 from uuid import UUID
 
 from podcast_pipeline.domain.models import Candidate, EpisodeWorkspace
+from podcast_pipeline.local_web_guard import check_request
 from podcast_pipeline.markdown_html import markdown_to_deterministic_html
 from podcast_pipeline.pick_core import (
     build_asset,
@@ -158,7 +159,26 @@ class _PickWebHandler(BaseHTTPRequestHandler):
         # Suppress default stderr logging
         pass
 
+    def _reject_unsafe_request(self) -> bool:
+        """Apply the Host/Origin/Content-Type guards; respond and return True when rejected."""
+        address = self.server.server_address
+        rejection = check_request(
+            method=self.command,
+            host=self.headers.get("Host"),
+            origin=self.headers.get("Origin"),
+            sec_fetch_site=self.headers.get("Sec-Fetch-Site"),
+            content_type=self.headers.get("Content-Type"),
+            expected_port=int(address[1]) if isinstance(address, tuple) else None,
+        )
+        if rejection is None:
+            return False
+        self.close_connection = True
+        self._respond(rejection.status, "application/json", json.dumps({"error": rejection.message}).encode())
+        return True
+
     def do_GET(self) -> None:
+        if self._reject_unsafe_request():
+            return
         if self.path == "/":
             self._serve_html()
         elif self.path == "/api/assets":
@@ -167,6 +187,8 @@ class _PickWebHandler(BaseHTTPRequestHandler):
             self._respond(404, "text/plain", b"Not found")
 
     def do_POST(self) -> None:
+        if self._reject_unsafe_request():
+            return
         if self.path == "/api/select":
             self._handle_select()
         elif self.path == "/api/done":
@@ -399,7 +421,7 @@ function updateProgress() {
 }
 
 async function handleDone() {
-  await fetch("/api/done", {method: "POST"});
+  await fetch("/api/done", {method: "POST", headers: {"Content-Type": "application/json"}, body: "{}"});
   const s = "display:flex;align-items:center;justify-content:center;";
   document.body.innerHTML = `<div style='${s}height:100vh;font-size:1.5rem;color:#16a34a'>All done!</div>`;
 }

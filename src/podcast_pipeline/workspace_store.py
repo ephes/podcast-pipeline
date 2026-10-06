@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import re
 import tempfile
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -296,12 +298,55 @@ class EpisodeWorkspaceStore:
         except Exception as exc:
             raise WorkspaceStoreError(f"Invalid state.json at {self.layout.state_json}: {exc}") from exc
 
-    def write_state(self, workspace: EpisodeWorkspace) -> None:
+    @contextmanager
+    def _state_lock(self) -> Iterator[None]:
+        """Serialize read-modify-write cycles on ``state.json`` across threads and processes."""
+        # Lock the workspace directory itself so no lock file shows up in the workspace.
+        self.layout.root.mkdir(parents=True, exist_ok=True)
+        fd = os.open(self.layout.root, os.O_RDONLY)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            yield
+        finally:
+            os.close(fd)  # closing the descriptor releases the lock
+
+    def _stored_auphonic_production_uuid(self) -> str | None:
+        if not self.layout.state_json.exists():
+            return None
+        try:
+            return self.read_state().auphonic_production_uuid
+        except WorkspaceStoreError:
+            return None
+
+    def _write_state_unlocked(self, workspace: EpisodeWorkspace) -> None:
         payload = workspace.model_dump(mode="json")
         if payload.get("auphonic_production_uuid") is None:
             payload.pop("auphonic_production_uuid", None)
         dumped = json.dumps(payload, indent=2, sort_keys=True) + "\n"
         _atomic_write_text(self.layout.state_json, dumped)
+
+    def write_state(self, workspace: EpisodeWorkspace) -> None:
+        """Write ``state.json``.
+
+        A stored ``auphonic_production_uuid`` is never cleared: writers holding an
+        older in-memory copy (dashboard, pick UI, review loop) would otherwise
+        drop the UUID of a paid production that ``podcast produce`` saved in the
+        meantime, and the next produce run would start a second production.
+        """
+        with self._state_lock():
+            if workspace.auphonic_production_uuid is None:
+                stored = self._stored_auphonic_production_uuid()
+                if stored is not None:
+                    workspace = workspace.model_copy(update={"auphonic_production_uuid": stored})
+            self._write_state_unlocked(workspace)
+
+    def set_auphonic_production_uuid(self, production_uuid: str, *, default: EpisodeWorkspace) -> EpisodeWorkspace:
+        """Record ``production_uuid`` on the current on-disk state (``default`` when none exists)."""
+        with self._state_lock():
+            current = self.read_state() if self.layout.state_json.exists() else default
+            updated = current.model_copy(update={"auphonic_production_uuid": production_uuid})
+            self._write_state_unlocked(updated)
+            return updated
 
     def write_candidate(self, candidate: Candidate) -> Path:
         path = self.layout.candidate_json_path(

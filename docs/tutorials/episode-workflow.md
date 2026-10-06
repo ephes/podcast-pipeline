@@ -107,6 +107,30 @@ Notes:
 - Without `--web`, the CLI prompts when multiple candidates exist and writes the selection to `copy/selected/`.
 - Use `--asset-id` and `--candidate-id` to pick a specific candidate non-interactively (CLI only).
 
+## Local web UIs (pick --web, dashboard)
+
+`podcast pick --web` and `podcast dashboard` serve a local UI on `http://127.0.0.1:<random port>/`. Both accept only
+requests meant for themselves, so other web pages open in the browser cannot drive them (for example to start a paid
+Auphonic production):
+
+- The `Host` header must be `127.0.0.1`, `localhost` or `[::1]` with the server's own port; anything else gets `403`.
+  This also blocks DNS-rebinding attacks.
+- State-changing requests (`POST`, `PUT`, `PATCH`, `DELETE`) must be same-origin: an `Origin` header must equal the
+  UI's own origin and `Sec-Fetch-Site`, when sent, must be `same-origin` or `none` (otherwise `403`).
+- State-changing requests must send `Content-Type: application/json` (otherwise `415`), including body-less `DELETE`s.
+  Scripts calling the API directly (for example with `curl`) need `-H 'Content-Type: application/json'`.
+
+The dashboard also runs each long job single-flight:
+
+- While a `produce`, `transcribe`, `draft`, `summarize` or `candidates` job, a `regenerate` job for the same asset, or a
+  `review` job for the same asset is running, starting another one returns `409` with the running job's `job_id`.
+- `podcast produce` itself holds an exclusive lock (`auphonic/.produce.lock`) for the whole Auphonic run. A second run
+  for the same workspace, from the CLI or a dashboard, fails instead of starting a second production. A rerun after a
+  failure reuses the production UUID stored in `state.json` rather than starting a new one.
+  Other `state.json` writers (pick, dashboard, review loop) never clear that stored UUID, and all `state.json` updates
+  are serialized with a lock on the workspace directory.
+- Candidate counts (`candidates`) are clamped to 1-10 and review `max_iterations` to 1-10.
+
 ## Episode workspace layout
 
 ```

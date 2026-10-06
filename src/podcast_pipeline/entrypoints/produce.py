@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import fcntl
 import json
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 import typer
@@ -25,19 +28,21 @@ def run_produce(*, workspace: Path, dry_run: bool) -> None:
         typer.echo(json.dumps(payload, indent=2, sort_keys=True))
         return
 
-    workspace_state = _load_workspace_state(store, episode_yaml)
-    production_uuid = workspace_state.auphonic_production_uuid
-
     try:
         credentials = load_auphonic_credentials()
-        with AuphonicClient(credentials) as client:
+        # Single flight per episode: hold an exclusive lock for the whole
+        # start/wait/download cycle and read the stored production UUID only
+        # after acquiring it, so a concurrent run cannot start a second paid
+        # production for the same workspace.
+        with _produce_lock(store), AuphonicClient(credentials) as client:
+            workspace_state = _load_workspace_state(store, episode_yaml)
+            production_uuid = workspace_state.auphonic_production_uuid
             if production_uuid is None:
                 production = client.start_production(payload)
                 production_uuid = production.uuid
-                workspace_state = workspace_state.model_copy(
-                    update={"auphonic_production_uuid": production_uuid},
-                )
-                store.write_state(workspace_state)
+                # Re-read state.json under its lock so selections written while
+                # this run was starting are kept.
+                store.set_auphonic_production_uuid(production_uuid, default=workspace_state)
 
             production = client.wait_for_production(
                 production_uuid,
@@ -55,6 +60,27 @@ def run_produce(*, workspace: Path, dry_run: bool) -> None:
 
     typer.echo(f"Auphonic production complete: {production_uuid}")
     typer.echo(f"Auphonic outputs: {store.layout.auphonic_outputs_dir}")
+
+
+class ProduceInProgressError(AuphonicApiError):
+    """Another ``produce`` run holds the workspace's production lock."""
+
+
+@contextmanager
+def _produce_lock(store: EpisodeWorkspaceStore) -> Iterator[None]:
+    lock_path = store.layout.auphonic_dir / ".produce.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("a") as handle:
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            raise ProduceInProgressError(
+                f"Another Auphonic production is already running for {store.layout.root}"
+            ) from exc
+        try:
+            yield
+        finally:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
 def _load_workspace_state(store: EpisodeWorkspaceStore, episode_yaml: dict[str, object]) -> EpisodeWorkspace:

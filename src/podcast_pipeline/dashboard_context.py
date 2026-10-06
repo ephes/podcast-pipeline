@@ -341,6 +341,13 @@ class DashboardContext:
             self.store.write_state(self._workspace_state)
         return None
 
+    def running_job(self, stage: str) -> BackgroundJob | None:
+        """Return a still-running job for ``stage``, if any. Call with ``lock`` held."""
+        for job in self.jobs.values():
+            if job.stage == stage and job.status == "running":
+                return job
+        return None
+
     def create_job(self, stage: str) -> BackgroundJob:
         job_id = str(uuid.uuid4())[:8]
         job = BackgroundJob(job_id=job_id, stage=stage)
