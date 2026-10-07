@@ -682,6 +682,8 @@ def _run_summarize_job(
         try:
             bundle = load_agent_cli_bundle(workspace=ctx.workspace)
             renderer = PromptRenderer(default_prompt_registry())
+            # timeout_seconds=None resolves to the default agent CLI timeout, so a hung
+            # CLI fails the job instead of pinning the stage to "running".
             runner = DrafterCliRunner(
                 config=bundle.drafter,
                 timeout_seconds=None,

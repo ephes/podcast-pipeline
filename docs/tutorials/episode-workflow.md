@@ -162,6 +162,9 @@ The dashboard also runs each long job single-flight:
 
 - While a `produce`, `transcribe`, `draft`, `summarize` or `candidates` job, a `regenerate` job for the same asset, or a
   `review` job for the same asset is running, starting another one returns `409` with the running job's `job_id`.
+- Agent CLI calls inside these jobs time out after 15 minutes by default (`PODCAST_PIPELINE_AGENT_TIMEOUT` or
+  `agents.<role>.timeout_seconds` change it; see `reference/configuration.md`). A timed-out call ends the job as
+  `failed` with `<Role> CLI timed out after N s`, and the stage accepts a new request.
 - `podcast produce` itself holds an exclusive lock (`auphonic/.produce.lock`) for the whole Auphonic run. A second run
   for the same workspace, from the CLI or a dashboard, fails instead of starting a second production. A rerun after a
   failure reuses the production UUID stored in `state.json` rather than starting a new one; only

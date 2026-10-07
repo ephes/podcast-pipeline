@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import os
+import signal
 import subprocess
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -8,7 +10,7 @@ from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid5
 
-from podcast_pipeline.agent_cli_config import AgentCliBundle, AgentCliConfig
+from podcast_pipeline.agent_cli_config import AgentCliBundle, AgentCliConfig, resolve_agent_timeout
 from podcast_pipeline.domain.models import Candidate, ProvenanceRef, ReviewIteration
 from podcast_pipeline.prompting import (
     FewShotExample,
@@ -35,6 +37,73 @@ ScriptedReplyInput = Sequence[ScriptedReplyValue] | Mapping[str, Sequence[Script
 
 class AgentRunnerError(RuntimeError):
     pass
+
+
+def run_cli_process(
+    command: list[str],
+    *,
+    input: str,
+    cwd: str | None,
+    timeout: float,
+) -> subprocess.CompletedProcess[str]:
+    """Run *command* with *input* on stdin in its own process group.
+
+    On timeout the whole process group is killed (not just the direct child), so
+    helpers the CLI spawned cannot keep writing to the workspace after the caller
+    has reported the step as failed. Re-raises :class:`subprocess.TimeoutExpired`.
+    """
+    with subprocess.Popen(
+        command,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        cwd=cwd,
+        start_new_session=True,
+    ) as process:
+        try:
+            stdout, stderr = process.communicate(input, timeout=timeout)
+        except BaseException:  # TimeoutExpired, KeyboardInterrupt, ...
+            _kill_process_group(process)
+            raise
+        return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
+
+
+def _kill_process_group(process: subprocess.Popen[str]) -> None:
+    try:
+        os.killpg(process.pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        process.kill()
+    # Do not wait on the pipes: a descendant that escaped the group could hold them open.
+    process.wait()
+
+
+def run_agent_cli(
+    *,
+    config: AgentCliConfig,
+    prompt_text: str,
+    cwd: str | None,
+    timeout_seconds: float,
+    label: str,
+) -> str:
+    """Pipe *prompt_text* to the configured agent CLI and return its stdout.
+
+    Raises :class:`AgentRunnerError` on a non-zero exit, empty output, or when the
+    call exceeds *timeout_seconds* (the CLI's process group is killed first).
+    """
+    command = [config.command, *config.args]
+    try:
+        result = run_cli_process(command, input=prompt_text, cwd=cwd, timeout=timeout_seconds)
+    except subprocess.TimeoutExpired as exc:
+        raise AgentRunnerError(f"{label} CLI timed out after {timeout_seconds:g} s") from exc
+    if result.returncode != 0:
+        detail = (result.stderr or "").strip()
+        if detail:
+            detail = f" {detail}"
+        raise AgentRunnerError(f"{label} CLI failed with exit code {result.returncode}.{detail}")
+    if not (result.stdout or "").strip():
+        raise AgentRunnerError(f"{label} CLI returned empty output")
+    return result.stdout or ""
 
 
 @dataclass(frozen=True)
@@ -404,7 +473,7 @@ class CodexCliCreatorRunner:
     ) -> None:
         self._layout = layout
         self._config = config
-        self._timeout_seconds = timeout_seconds
+        self._timeout_seconds = resolve_agent_timeout(timeout_seconds, config)
 
     def run_prompt(
         self,
@@ -455,24 +524,13 @@ class CodexCliCreatorRunner:
         )
 
     def _run_cli(self, prompt_text: str) -> str:
-        command = [self._config.command, *self._config.args]
-        result = subprocess.run(
-            command,
-            input=prompt_text,
-            text=True,
-            capture_output=True,
-            check=False,
+        return run_agent_cli(
+            config=self._config,
+            prompt_text=prompt_text,
             cwd=str(self._layout.root),
-            timeout=self._timeout_seconds,
+            timeout_seconds=self._timeout_seconds,
+            label="Creator",
         )
-        if result.returncode != 0:
-            detail = (result.stderr or "").strip()
-            if detail:
-                detail = f" {detail}"
-            raise AgentRunnerError(f"Creator CLI failed with exit code {result.returncode}.{detail}")
-        if not (result.stdout or "").strip():
-            raise AgentRunnerError("Creator CLI returned empty output")
-        return result.stdout or ""
 
 
 class ClaudeCodeReviewerRunner:
@@ -487,7 +545,7 @@ class ClaudeCodeReviewerRunner:
         self._layout = layout
         self._config = config
         self._reviewer = reviewer or config.role
-        self._timeout_seconds = timeout_seconds
+        self._timeout_seconds = resolve_agent_timeout(timeout_seconds, config)
 
     def run_prompt(
         self,
@@ -534,24 +592,13 @@ class ClaudeCodeReviewerRunner:
         )
 
     def _run_cli(self, prompt_text: str) -> str:
-        command = [self._config.command, *self._config.args]
-        result = subprocess.run(
-            command,
-            input=prompt_text,
-            text=True,
-            capture_output=True,
-            check=False,
+        return run_agent_cli(
+            config=self._config,
+            prompt_text=prompt_text,
             cwd=str(self._layout.root),
-            timeout=self._timeout_seconds,
+            timeout_seconds=self._timeout_seconds,
+            label="Reviewer",
         )
-        if result.returncode != 0:
-            detail = (result.stderr or "").strip()
-            if detail:
-                detail = f" {detail}"
-            raise AgentRunnerError(f"Reviewer CLI failed with exit code {result.returncode}.{detail}")
-        if not (result.stdout or "").strip():
-            raise AgentRunnerError("Reviewer CLI returned empty output")
-        return result.stdout or ""
 
 
 def _read_episode_summary(layout: EpisodeWorkspaceLayout) -> tuple[str | None, list[str] | None]:

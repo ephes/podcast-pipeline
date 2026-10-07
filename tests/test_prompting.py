@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from podcast_pipeline import agent_runners
 from podcast_pipeline.agent_cli_config import AgentCliConfig
 from podcast_pipeline.agent_runners import ClaudeCodeReviewerRunner, load_episode_context_from_workspace
 from podcast_pipeline.domain.models import Candidate
@@ -94,7 +95,7 @@ def test_reviewer_runner_attaches_prompt_provenance(
     def fake_run(args: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
         return subprocess.CompletedProcess(args=args, returncode=0, stdout=output, stderr="")
 
-    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr(agent_runners, "run_cli_process", fake_run)
 
     runner = ClaudeCodeReviewerRunner(layout=layout, config=config)
     review = runner.run_with_prompt(prompt=prompt, asset_id="description", iteration=1)

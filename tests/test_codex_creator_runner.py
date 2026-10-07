@@ -7,8 +7,9 @@ from uuid import UUID
 
 import pytest
 
+from podcast_pipeline import agent_runners
 from podcast_pipeline.agent_cli_config import AgentCliConfig
-from podcast_pipeline.agent_runners import CodexCliCreatorRunner
+from podcast_pipeline.agent_runners import AgentRunnerError, CodexCliCreatorRunner
 from podcast_pipeline.workspace_store import EpisodeWorkspaceLayout
 
 
@@ -47,7 +48,8 @@ def test_codex_creator_runner_writes_creator_iteration_and_candidate(
         calls.append({"args": args, **kwargs})
         return subprocess.CompletedProcess(args=args, returncode=0, stdout=output, stderr="")
 
-    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr(agent_runners, "run_cli_process", fake_run)
+    monkeypatch.delenv("PODCAST_PIPELINE_AGENT_TIMEOUT", raising=False)
 
     runner = CodexCliCreatorRunner(layout=layout, config=config)
     out = runner.run_prompt(prompt_path=prompt_path, asset_id="description", iteration=2)
@@ -72,7 +74,22 @@ def test_codex_creator_runner_writes_creator_iteration_and_candidate(
     call = calls[0]
     assert call["args"] == ["codex", "--format", "json"]
     assert call["input"] == "Update description"
-    assert call["text"] is True
-    assert call["capture_output"] is True
-    assert call["check"] is False
+    assert call["timeout"] == 900.0
     assert call["cwd"] == str(tmp_path)
+
+
+def test_codex_creator_runner_wraps_timeout(tmp_path: Path) -> None:
+    layout = EpisodeWorkspaceLayout(root=tmp_path)
+    config = AgentCliConfig(role="creator", command="sleep", args=("5",))
+    runner = CodexCliCreatorRunner(layout=layout, config=config, timeout_seconds=0.2)
+    with pytest.raises(AgentRunnerError, match=r"Creator CLI timed out after 0\.2 s"):
+        runner.run_prompt(prompt_text="Update description", asset_id="description", iteration=1)
+
+
+def test_codex_creator_runner_uses_config_timeout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("PODCAST_PIPELINE_AGENT_TIMEOUT", raising=False)
+    layout = EpisodeWorkspaceLayout(root=tmp_path)
+    config = AgentCliConfig(role="creator", command="sleep", args=("5",), timeout_seconds=0.2)
+    runner = CodexCliCreatorRunner(layout=layout, config=config)
+    with pytest.raises(AgentRunnerError, match=r"Creator CLI timed out after 0\.2 s"):
+        runner.run_prompt(prompt_text="Update description", asset_id="description", iteration=1)

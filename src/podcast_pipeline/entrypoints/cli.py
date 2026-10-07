@@ -154,7 +154,13 @@ def draft(
     ] = "demo_ep_001",
     timeout: Annotated[
         float | None,
-        typer.Option(min=0, help="Timeout in seconds for each LLM CLI call."),
+        typer.Option(
+            min=0,
+            help=(
+                "Timeout in seconds for each LLM CLI call. Defaults to $PODCAST_PIPELINE_AGENT_TIMEOUT, "
+                "agents.<role>.timeout_seconds, or 900 (15 min); 0 also means the default."
+            ),
+        ),
     ] = None,
     host: Annotated[
         list[str] | None,
@@ -165,22 +171,28 @@ def draft(
     ] = None,
 ) -> None:
     """Create draft candidates by running the text pipeline."""
+    from podcast_pipeline.agent_cli_config import AgentCliConfigError
+    from podcast_pipeline.agent_runners import AgentRunnerError
     from podcast_pipeline.entrypoints.draft_pipeline import run_draft_pipeline
     from podcast_pipeline.summarization_stub import StubSummarizerConfig
     from podcast_pipeline.transcript_chunker import ChunkerConfig
 
-    run_draft_pipeline(
-        dry_run=dry_run,
-        workspace=workspace,
-        episode_id=episode_id,
-        transcript=transcript,
-        chapters=chapters,
-        candidates_per_asset=candidates_per_asset,
-        chunker_config=ChunkerConfig(),
-        summarizer_config=StubSummarizerConfig(),
-        timeout_seconds=timeout,
-        hosts=host if host else None,
-    )
+    try:
+        run_draft_pipeline(
+            dry_run=dry_run,
+            workspace=workspace,
+            episode_id=episode_id,
+            transcript=transcript,
+            chapters=chapters,
+            candidates_per_asset=candidates_per_asset,
+            chunker_config=ChunkerConfig(),
+            summarizer_config=StubSummarizerConfig(),
+            timeout_seconds=timeout,
+            hosts=host if host else None,
+        )
+    except (AgentRunnerError, AgentCliConfigError) as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
 
 
 @app.command()

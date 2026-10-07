@@ -8,6 +8,7 @@ from __future__ import annotations
 import http.client
 import json
 import threading
+import time
 from collections.abc import Generator
 from functools import partial
 from http.server import HTTPServer
@@ -476,3 +477,46 @@ def test_stale_dashboard_state_does_not_roll_back_restarted_production_uuid(
     state = store.read_state()
     assert state.auphonic_production_uuid == "prod-1"
     assert any(asset.selected_candidate_id == candidate.candidate_id for asset in state.assets)
+
+
+# --- agent CLI timeout ---------------------------------------------------------
+
+
+def test_timed_out_summarize_job_fails_and_frees_the_stage(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A hung drafter CLI must end the summarize job as failed so a retry is accepted (200, not 409)."""
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    store = EpisodeWorkspaceStore(workspace)
+    store.write_episode_yaml({"episode_id": "ep1"})
+    chunk_path = store.layout.transcript_chunk_text_path(1)
+    chunk_path.parent.mkdir(parents=True, exist_ok=True)
+    chunk_path.write_text("Hello world transcript chunk.", encoding="utf-8")
+
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("agents:\n  drafter:\n    command: sleep\n    args: ['30']\n", encoding="utf-8")
+    monkeypatch.setenv("PODCAST_PIPELINE_CONFIG", str(config_path))
+    monkeypatch.setenv("PODCAST_PIPELINE_AGENT_TIMEOUT", "0.3")
+
+    ctx = DashboardContext(workspace=workspace)
+    client = TestClient(dashboard_web.create_dashboard_app(ctx=ctx, port=_PORT), base_url=_BASE)
+
+    first = client.post("/api/draft/summarize", json={})
+    assert first.status_code == 200
+    job_id = first.json()["job_id"]
+
+    deadline = time.monotonic() + 15
+    while time.monotonic() < deadline:
+        with ctx.lock:
+            job = ctx.jobs[job_id]
+            if job.status != "running":
+                break
+        time.sleep(0.05)
+    with ctx.lock:
+        job = ctx.jobs[job_id]
+        assert job.status == "failed"
+        assert job.error == "Drafter CLI timed out after 0.3 s"
+
+    monkeypatch.setattr(dashboard_web, "_start_daemon_thread", lambda target, *args: None)
+    second = client.post("/api/draft/summarize", json={})
+    assert second.status_code == 200
+    assert second.json()["job_id"] != job_id
