@@ -212,3 +212,8 @@ fields.
 
 The HTML is generated deterministically from Markdown and supports headings, paragraphs, lists, links, inline code, and
 emphasis. If you need plain text, use the `.txt` output instead.
+
+Link URLs may contain balanced parentheses, so links such as
+`[Python](https://en.wikipedia.org/wiki/Python_(programming_language))` stay whole. A single `*` only starts emphasis
+before non-whitespace and not between two letters or digits, so `2*3*4` and `a * b * c` stay literal; intraword
+emphasis such as `foo*bar*` is not supported.
