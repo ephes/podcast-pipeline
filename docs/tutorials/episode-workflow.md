@@ -145,6 +145,9 @@ Notes:
   the same status; fix the cause, then use `--restart` to start a new production on purpose. The dashboard's produce
   button always resumes; use the CLI for `--restart`.
 
+Interrupted output downloads remove partial temporary files and preserve an existing destination.
+Stream and filesystem failures surface as `AuphonicApiError`, so the production can be retried.
+
 ## Local web UIs (pick --web, dashboard)
 
 `podcast pick --web` and `podcast dashboard` serve a local UI on `http://127.0.0.1:<random port>/`. Both accept only
