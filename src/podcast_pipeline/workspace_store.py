@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 import re
+import stat
 import tempfile
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
@@ -66,26 +67,34 @@ def _fsync_dir(path: Path) -> None:
 
 def _atomic_write_bytes(path: Path, data: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.NamedTemporaryFile(
-        mode="wb",
-        delete=False,
-        dir=str(path.parent),
-        prefix=f".{path.name}.",
-        suffix=".tmp",
-    ) as tmp:
-        tmp.write(data)
-        tmp.flush()
-        os.fsync(tmp.fileno())
-        tmp_path = Path(tmp.name)
-
     try:
+        output_mode = stat.S_IMODE(path.stat().st_mode)
+    except FileNotFoundError:
+        output_mode = None
+    tmp_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="wb",
+            delete=False,
+            dir=str(path.parent),
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+        ) as tmp:
+            tmp_path = Path(tmp.name)
+            if output_mode is not None:
+                os.fchmod(tmp.fileno(), output_mode)
+            tmp.write(data)
+            tmp.flush()
+            os.fsync(tmp.fileno())
+
         os.replace(tmp_path, path)
         _fsync_dir(path.parent)
     finally:
-        try:
-            tmp_path.unlink(missing_ok=True)
-        except OSError:
-            pass
+        if tmp_path is not None:
+            try:
+                tmp_path.unlink(missing_ok=True)
+            except OSError:
+                pass
 
 
 def _atomic_write_text(path: Path, text: str) -> None:
