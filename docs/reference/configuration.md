@@ -81,3 +81,15 @@ Use `preset_id` in `episode.yaml` to skip mapping and set the preset id directly
 
 `episode.yaml` also stores per-episode inputs, sources, and track metadata. See `reference/episode-yaml.md` for the full
 schema and details on `podcast ingest`.
+
+## Concurrent episode edits
+
+Episode YAML updates from the dashboard, ingest, drafting and transcription hold the
+workspace lock across reading the latest document and atomically saving changes.
+Independent note and track updates therefore survive concurrent operations.
+Programmatic read-modify-write callers should use `store.update_episode_yaml()` as
+a context manager. For an edit prepared outside the lock, obtain data and its
+revision with `read_episode_yaml_with_revision()` and pass `expected_revision` to
+`write_episode_yaml()`. A changed or missing document raises `WorkspaceStoreError`;
+reload and reapply the edit. Writing without a revision only creates a new file.
+Manual editors do not participate in the workspace lock.
