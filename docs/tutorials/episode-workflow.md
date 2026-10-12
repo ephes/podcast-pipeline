@@ -3,6 +3,11 @@
 This guide ties together the MVP pipeline steps for a single episode and shows where each step writes in the
 workspace.
 
+## Ingest tracks
+
+Ingest refuses a glob that matches no files and reports the resolved media directory and glob.
+The existing `episode.yaml` remains byte-for-byte unchanged; clearing tracks requires an explicit edit.
+
 ## 1. Initialize a workspace (init)
 
 ```bash
