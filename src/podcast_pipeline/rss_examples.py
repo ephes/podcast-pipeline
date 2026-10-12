@@ -12,6 +12,8 @@ from xml.etree import ElementTree
 
 import httpx
 
+from podcast_pipeline.workspace_store import atomic_write_text
+
 
 class RssExamplesError(RuntimeError):
     pass
@@ -108,11 +110,10 @@ def write_rss_examples_jsonl(
     output_path: Path,
 ) -> None:
     output_path = output_path.expanduser()
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    with output_path.open("w", encoding="utf-8") as handle:
-        for example in examples:
-            dumped = json.dumps(example.to_record(), ensure_ascii=False, sort_keys=True)
-            handle.write(f"{dumped}\n")
+    content = "".join(
+        json.dumps(example.to_record(), ensure_ascii=False, sort_keys=True) + "\n" for example in examples
+    )
+    atomic_write_text(output_path, content)
 
 
 def _fetch_rss_xml(*, feed_url: str, timeout_seconds: float) -> str:

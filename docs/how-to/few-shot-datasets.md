@@ -67,3 +67,17 @@ The CMS command supports these field options:
 
 Each line in the JSONL file is a single JSON object. See
 `reference/few-shot-dataset-jsonl.md` for the full field list.
+
+## Output preservation
+
+Both `podcast rss-examples` and `podcast cms-examples` serialize the complete dataset
+before writing a unique temporary file beside the requested output. They flush and
+sync that file before atomically replacing the output. Serialization, temporary-file
+write, or replacement failures preserve an existing corpus unchanged and remove the
+temporary file. Successful exports use UTF-8, sorted JSON keys, and one newline per
+record; an empty dataset produces an empty file.
+
+Existing output permission bits are preserved. New exports are owner-only (0600),
+matching workspace atomic writes; use `chmod` to grant access when sharing a corpus.
+Replacement creates a file owned by the exporting user. An output path that is a
+symlink is replaced with a regular file; the symlink target is not modified.
