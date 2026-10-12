@@ -26,7 +26,7 @@ from podcast_pipeline.pick_core import (
     validate_asset_id,
 )
 from podcast_pipeline.tag_parsing import normalize_tag_values, parse_tag_list
-from podcast_pipeline.workspace_store import EpisodeWorkspaceStore
+from podcast_pipeline.workspace_store import EpisodeWorkspaceStore, WorkspaceStoreError
 
 
 @dataclass
@@ -121,27 +121,33 @@ class DashboardContext:
 
     def update_episode(self, updates: dict[str, Any]) -> str | None:
         """Apply updates to episode YAML. Returns error message on failure, None on success."""
-        data = self._read_episode_yaml_safe()
-        if "episode_id" in updates and isinstance(updates["episode_id"], str) and updates["episode_id"].strip():
-            data["episode_id"] = updates["episode_id"]
-        if "hosts" in updates and isinstance(updates["hosts"], list):
-            hosts = [h for h in updates["hosts"] if isinstance(h, str)]
-            data["hosts"] = hosts
-        if "editorial_notes" in updates and isinstance(updates["editorial_notes"], dict):
-            existing_notes = data.get("editorial_notes") or {}
-            if not isinstance(existing_notes, dict):
-                existing_notes = {}
-            for k, v in updates["editorial_notes"].items():
-                if isinstance(k, str) and isinstance(v, str):
-                    existing_notes[k] = v
-            # Remove empty notes
-            existing_notes = {k: v for k, v in existing_notes.items() if v}
-            data["editorial_notes"] = existing_notes or None
-        # episode_id is required by the schema — refuse to write without one
-        eid = data.get("episode_id")
-        if not isinstance(eid, str) or not eid.strip():
-            return "episode_id is required"
-        self.store.write_episode_yaml(data)
+        try:
+            with self.store.update_episode_yaml(create_if_missing=True) as data:
+                if (
+                    "episode_id" in updates
+                    and isinstance(updates["episode_id"], str)
+                    and updates["episode_id"].strip()
+                ):
+                    data["episode_id"] = updates["episode_id"]
+                if "hosts" in updates and isinstance(updates["hosts"], list):
+                    hosts = [h for h in updates["hosts"] if isinstance(h, str)]
+                    data["hosts"] = hosts
+                if "editorial_notes" in updates and isinstance(updates["editorial_notes"], dict):
+                    existing_notes = data.get("editorial_notes") or {}
+                    if not isinstance(existing_notes, dict):
+                        existing_notes = {}
+                    for k, v in updates["editorial_notes"].items():
+                        if isinstance(k, str) and isinstance(v, str):
+                            existing_notes[k] = v
+                    # Remove empty notes
+                    existing_notes = {k: v for k, v in existing_notes.items() if v}
+                    data["editorial_notes"] = existing_notes or None
+                # episode_id is required by the schema — refuse to write without one
+                eid = data.get("episode_id")
+                if not isinstance(eid, str) or not eid.strip():
+                    raise WorkspaceStoreError("episode_id is required")
+        except WorkspaceStoreError as exc:
+            return str(exc)
         return None
 
     def get_assets_json(self) -> list[dict[str, Any]]:
@@ -297,16 +303,15 @@ class DashboardContext:
         return AssetNotesOut(asset_id=asset_id, notes=self.get_editorial_notes(asset_id)).model_dump(mode="json")
 
     def set_editorial_notes(self, asset_id: str, notes: str) -> None:
-        data = self._read_episode_yaml_safe()
-        editorial = data.get("editorial_notes") or {}
-        if not isinstance(editorial, dict):
-            editorial = {}
-        if notes:
-            editorial[asset_id] = notes
-        else:
-            editorial.pop(asset_id, None)
-        data["editorial_notes"] = editorial or None
-        self.store.write_episode_yaml(data)
+        with self.store.update_episode_yaml() as data:
+            editorial = data.get("editorial_notes") or {}
+            if not isinstance(editorial, dict):
+                editorial = {}
+            if notes:
+                editorial[asset_id] = notes
+            else:
+                editorial.pop(asset_id, None)
+            data["editorial_notes"] = editorial or None
 
     def clear_editorial_notes(self, asset_id: str) -> None:
         self.set_editorial_notes(asset_id, "")

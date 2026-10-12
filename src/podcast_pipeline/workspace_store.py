@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import fcntl
+import hashlib
 import json
 import os
 import re
@@ -284,7 +285,40 @@ class EpisodeWorkspaceStore:
         assert episode is not None
         return episode.to_mapping(exclude_unset=True)
 
-    def write_episode_yaml(self, data: Mapping[str, Any] | EpisodeYaml) -> None:
+    def read_episode_yaml_with_revision(self) -> tuple[dict[str, Any], str]:
+        with self._state_lock():
+            data = self.read_episode_yaml()
+            return data, self._episode_yaml_revision()
+
+    def _episode_yaml_revision(self) -> str:
+        return hashlib.sha256(self.layout.episode_yaml.read_bytes()).hexdigest()
+
+    @contextmanager
+    def update_episode_yaml(self, *, create_if_missing: bool = False) -> Iterator[dict[str, Any]]:
+        """Lock, read the latest YAML, and publish only on successful exit."""
+        with self._state_lock():
+            try:
+                data = self.read_episode_yaml()
+            except FileNotFoundError:
+                if not create_if_missing:
+                    raise
+                data = {}
+            yield data
+            self._write_episode_yaml_unlocked(data)
+
+    def write_episode_yaml(
+        self, data: Mapping[str, Any] | EpisodeYaml, *, expected_revision: str | None = None
+    ) -> None:
+        """Create YAML, or replace it only if the caller's revision still matches."""
+        with self._state_lock():
+            if self.layout.episode_yaml.exists():
+                if expected_revision is None or expected_revision != self._episode_yaml_revision():
+                    raise WorkspaceStoreError("episode.yaml changed; reload it before saving")
+            elif expected_revision is not None:
+                raise WorkspaceStoreError("episode.yaml disappeared; reload it before saving")
+            self._write_episode_yaml_unlocked(data)
+
+    def _write_episode_yaml_unlocked(self, data: Mapping[str, Any] | EpisodeYaml) -> None:
         episode = data if isinstance(data, EpisodeYaml) else EpisodeYaml.model_validate(dict(data))
         dumped = yaml.safe_dump(episode.to_mapping(exclude_unset=True), sort_keys=True)
         if not dumped.endswith("\n"):
