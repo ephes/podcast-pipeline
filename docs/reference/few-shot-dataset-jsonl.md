@@ -35,3 +35,14 @@
 ```json
 {"api_url":"https://example.com/api/v2/pages/?type=podcast.EpisodePage","description_html":null,"example_id":"cms_ab12cd34ef56","input":"Title: Episode Title\nSummary: Short summary.","link":"https://example.com/episodes/episode-title/","output":"<p>Show notes</p>","page_id":"123","published":"2024-05-01T10:00:00Z","shownotes_html":"<p>Show notes</p>","slug":"episode-title","source":"cms","summary":"Short summary.","tags":["automation","podcasting"],"title":"Episode Title","version":1}
 ```
+
+## Selection identity and matching
+
+Examples are unique by a non-blank string `example_id`/`id` (compared exactly, including whitespace),
+or by the generated input/output hash. A truthy `example_id` takes precedence over `id`;
+if that chosen value is not a non-blank string, the input/output hash is used.
+With empty or blank topics, the first record for each id wins in dataset order; later unique
+records fill the limit. With topics, positive scores retain their weighted, stable ordering.
+Matching uses Unicode words (underscores separate words), casefolding and NFC normalization,
+so Latin accented words with precomposable characters and decomposed umlauts match consistently
+without single-letter fragments. Combining marks that NFC cannot compose remain word separators.

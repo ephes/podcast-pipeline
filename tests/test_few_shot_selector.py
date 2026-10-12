@@ -39,3 +39,38 @@ def test_select_few_shot_examples_deduplicates_ids() -> None:
     selected = select_few_shot_examples(examples=examples, topics={"ai"}, limit=2)
 
     assert [example.input_text for example in selected] == ["Input A", "Input C"]
+
+
+def test_empty_topics_fill_limit_with_unique_ids() -> None:
+    for topics in ([], ["", "   "]):
+        examples = [
+            {"id": "dup", "input": "first", "output": "one"},
+            {"id": "dup", "input": "second", "output": "two"},
+            {"input": "generated", "output": "three"},
+            {"input": "generated", "output": "three"},
+            {"id": "last", "input": "last", "output": "four"},
+        ]
+        selected = select_few_shot_examples(examples=examples, topics=topics, limit=3)
+        assert [example.input_text for example in selected] == ["first", "generated", "last"]
+
+
+def test_unicode_words_match_without_fragments() -> None:
+    from podcast_pipeline.few_shot_selector import FewShotExampleRecord, _tokens_from_values
+
+    for word in ("für", "Überprüfung", "Möglichkeiten", "fu\u0308r", "ÜBERPRÜFUNG"):
+        tokens = _tokens_from_values([word])
+        assert len(tokens) == 1
+        unrelated = FewShotExampleRecord("fragment", "r", "output")
+        assert unrelated.match_score(tokens) == 0
+        matching = FewShotExampleRecord("match", "für Überprüfung Möglichkeiten", "output")
+        assert matching.match_score(tokens) == 1
+        tagged = FewShotExampleRecord("tag", "unrelated", "output", tags=(word,))
+        assert tagged.match_score(tokens) == 3
+        selected = select_few_shot_examples(examples=[unrelated, matching], topics=[word], limit=1)
+        assert selected[0].input_text == matching.input_text
+
+
+def test_english_numeric_words_and_casefolding() -> None:
+    from podcast_pipeline.few_shot_selector import _tokens_from_values
+
+    assert _tokens_from_values(["AI Python_3 123 STRASSE Straße"]) == {"ai", "python", "3", "123", "strasse"}

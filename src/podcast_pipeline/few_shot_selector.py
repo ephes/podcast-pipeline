@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import unicodedata
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from hashlib import sha256
@@ -10,7 +11,7 @@ from typing import Any
 
 from podcast_pipeline.prompting import FewShotExample
 
-_TOKEN_RE = re.compile(r"[a-z0-9]+")
+_TOKEN_RE = re.compile(r"[^\W_]+")
 _TAG_SPLIT_RE = re.compile(r"[;,]")
 
 
@@ -97,7 +98,8 @@ def select_few_shot_examples(
 
     topic_tokens = _tokens_from_values(topics)
     if not topic_tokens:
-        return tuple(record.to_few_shot() for record in records[:limit])
+        selected = _fill_remaining([], [(0, idx, record) for idx, record in enumerate(records)], limit)
+        return tuple(record.to_few_shot() for record in selected)
 
     scored = _score_records(records, topic_tokens)
     selected = _select_scored(scored, limit)
@@ -193,5 +195,5 @@ def _tokens_from_values(values: Iterable[object]) -> set[str]:
     for value in values:
         if value is None:
             continue
-        tokens.update(_TOKEN_RE.findall(str(value).lower()))
+        tokens.update(_TOKEN_RE.findall(unicodedata.normalize("NFC", str(value).casefold())))
     return tokens
