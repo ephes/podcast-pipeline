@@ -140,10 +140,14 @@ def collect_agent_cli_issues(
 
 
 def _load_yaml_mapping(path: Path) -> dict[str, Any]:
-    if not path.exists():
-        return {}
     try:
-        loaded = yaml.safe_load(path.read_text(encoding="utf-8"))
+        text = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return {}
+    except (OSError, UnicodeError) as exc:
+        raise AgentCliConfigError(f"Cannot read UTF-8 configuration at {path}: {type(exc).__name__}") from exc
+    try:
+        loaded = yaml.safe_load(text)
     except yaml.YAMLError as exc:
         raise AgentCliConfigError(f"Invalid YAML at {path}: {exc}") from exc
 
@@ -246,29 +250,31 @@ def _parse_timeout_seconds(
     if value is None:
         return fallback
     if isinstance(value, bool) or not isinstance(value, int | float) or not math.isfinite(value) or value <= 0:
-        raise AgentCliConfigError(f"{key} must be a positive number of seconds in {source}")
+        raise AgentCliConfigError(f"{key} must be a finite positive number of seconds in {source}")
     return float(value)
 
 
 def resolve_agent_timeout(explicit: float | None, config: AgentCliConfig | None = None) -> float:
     """Return the per-call agent CLI timeout in seconds.
 
-    Precedence: an explicit positive value (for example ``draft --timeout``), then the
+    Precedence: an explicit finite positive value (for example ``draft --timeout``), then the
     ``PODCAST_PIPELINE_AGENT_TIMEOUT`` environment variable, then
     ``agents.<role>.timeout_seconds`` from the agent config, then
     :data:`DEFAULT_AGENT_TIMEOUT_SECONDS`.
     """
-    if explicit is not None and explicit > 0:
-        return float(explicit)
+    if explicit is not None:
+        validated = _parse_timeout_seconds(explicit, None, source="explicit timeout argument", key="--timeout")
+        assert validated is not None
+        return validated
     raw_env = os.environ.get(AGENT_TIMEOUT_ENV, "").strip()
     if raw_env:
         try:
             env_value = float(raw_env)
         except ValueError:
             env_value = math.nan
-        if not math.isfinite(env_value) or env_value <= 0:
-            raise AgentCliConfigError(f"{AGENT_TIMEOUT_ENV} must be a positive number of seconds, got {raw_env!r}")
-        return env_value
+        validated = _parse_timeout_seconds(env_value, None, source="environment", key=AGENT_TIMEOUT_ENV)
+        assert validated is not None
+        return validated
     if config is not None and config.timeout_seconds is not None:
         return config.timeout_seconds
     return float(DEFAULT_AGENT_TIMEOUT_SECONDS)
@@ -330,7 +336,7 @@ def _find_missing_cli_issues(
 def _resolve_executable(command: str) -> Path | None:
     path = Path(command).expanduser()
     if path.parent != Path(".") or path.is_absolute():
-        if path.exists() and os.access(path, os.X_OK):
+        if path.is_file() and os.access(path, os.X_OK):
             return path
         return None
 

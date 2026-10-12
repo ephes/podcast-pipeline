@@ -70,7 +70,6 @@ def test_resolve_agent_timeout_defaults_to_fifteen_minutes(monkeypatch: pytest.M
     monkeypatch.delenv(AGENT_TIMEOUT_ENV, raising=False)
     assert DEFAULT_AGENT_TIMEOUT_SECONDS == 900
     assert resolve_agent_timeout(None) == 900.0
-    assert resolve_agent_timeout(0) == 900.0
 
 
 def test_resolve_agent_timeout_precedence(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -110,3 +109,54 @@ def test_load_bundle_rejects_invalid_timeout_seconds(
     monkeypatch.setenv("PODCAST_PIPELINE_CONFIG", str(global_path))
     with pytest.raises(AgentCliConfigError, match="agents.creator.timeout_seconds"):
         load_agent_cli_bundle(workspace=None)
+
+
+@pytest.mark.parametrize("fault", ["directory", "permission", "utf8"])
+def test_config_read_failures_become_issues(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fault: str) -> None:
+    from podcast_pipeline.agent_cli_config import collect_agent_cli_issues
+
+    path = tmp_path / "config.yaml"
+    monkeypatch.setenv("PODCAST_PIPELINE_CONFIG", str(path))
+    if fault == "directory":
+        path.mkdir()
+    elif fault == "utf8":
+        path.write_bytes(b"secret-config-content\xff")
+    else:
+        path.touch()
+
+        def denied(self: Path, *args: object, **kwargs: object) -> str:
+            raise PermissionError("secret-config-content")
+
+        monkeypatch.setattr(Path, "read_text", denied)
+    issues = collect_agent_cli_issues(workspace=None)
+    assert len(issues) == 1
+    assert str(path) in issues[0]
+    assert "secret-config-content" not in issues[0]
+
+
+def test_absent_config_uses_defaults(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PODCAST_PIPELINE_CONFIG", str(tmp_path / "absent.yaml"))
+    assert load_agent_cli_bundle(workspace=None).creator.command == "codex"
+
+
+@pytest.mark.parametrize("kind", ["directory", "file", "symlink", "nonexecutable"])
+def test_explicit_executable_preflight(tmp_path: Path, kind: str) -> None:
+    path = tmp_path / "agent"
+    if kind == "directory":
+        path.mkdir()
+    else:
+        path.write_text("#!/bin/sh\nexit 0\n")
+        path.chmod(0o644 if kind == "nonexecutable" else 0o755)
+        if kind == "symlink":
+            link = tmp_path / "agent-link"
+            link.symlink_to(path)
+            path = link
+    issues = _find_missing_cli_issues(_bundle_with_commands(creator=str(path)), roles=("creator",))
+    assert bool(issues) == (kind in {"directory", "nonexecutable"})
+
+
+@pytest.mark.parametrize("value", [float("inf"), float("nan"), 0.0, -1.0])
+def test_explicit_timeout_rejects_invalid(value: float, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv(AGENT_TIMEOUT_ENV, "60")
+    with pytest.raises(AgentCliConfigError, match="explicit timeout"):
+        resolve_agent_timeout(value)

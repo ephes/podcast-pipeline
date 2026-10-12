@@ -31,6 +31,10 @@ agents:
 Notes:
 
 - `command` must be a single executable (no whitespace). Put extra flags in `args`.
+- Explicit command paths must be executable regular files; symlinks to such files are supported.
+  Bare command names are resolved on PATH. Directories and nonexecutable files fail preflight.
+- Missing agent configuration files use defaults. For agent settings, directories, unreadable files
+  and invalid UTF-8 produce controlled diagnostics naming the path without exposing file contents.
 - `episode.yaml` overrides the global config when both are present.
 - This configuration is for local CLI runners only; do not store secrets here.
 
@@ -41,8 +45,10 @@ and any processes it started (its process group) are killed and the step fails w
 `<Role> CLI timed out after N s`; a dashboard job then ends as `failed` and the stage accepts a new request. The
 timeout is resolved in this order:
 
-1. `podcast draft --timeout <seconds>` (or a positive `timeout` in the dashboard's `/api/draft` request body);
-   `0` falls through to the next source.
+1. `podcast draft --timeout <seconds>`. Explicit CLI values must be finite and positive;
+   infinity, NaN, zero and negatives fail before workspace changes or agent launch, including dry runs.
+   Omit the option to use the next source. The dashboard also uses a positive `/api/draft` body `timeout`;
+   omitted, zero and negative body values use the next source. NaN and positive infinity body values fail the job before agent launch.
 2. The `PODCAST_PIPELINE_AGENT_TIMEOUT` environment variable (positive seconds).
 3. `agents.<role>.timeout_seconds` in `episode.yaml` or the global config (positive seconds).
 4. The default of 900 seconds (15 minutes).
