@@ -562,3 +562,91 @@ def test_default_client_keeps_environment_proxy_support(monkeypatch: pytest.Monk
     with AuphonicClient(CREDS) as client:
         mounts = client._client._mounts
         assert any(pattern.matches(httpx.URL("https://auphonic.com/api")) for pattern in mounts)
+
+
+class _InterruptedDownload(httpx.SyncByteStream):
+    def __iter__(self) -> Iterator[bytes]:
+        yield b"partial"
+        raise httpx.ReadError("stream interrupted")
+
+
+def test_interrupted_download_cleans_temp_and_preserves_destination(tmp_path: Path) -> None:
+    dest = tmp_path / "ep.mp3"
+    dest.write_bytes(b"old")
+    transport = httpx.MockTransport(lambda request: httpx.Response(200, stream=_InterruptedDownload()))
+    with AuphonicClient(CREDS, transport=transport) as client:
+        with pytest.raises(AuphonicApiError, match="download") as error:
+            client.download_outputs(
+                [auphonic_api.AuphonicOutputFile(url=f"{BASE}/audio", filename="ep.mp3")], tmp_path
+            )
+    assert isinstance(error.value.__cause__, httpx.ReadError)
+    assert dest.read_bytes() == b"old"
+    assert list(tmp_path.iterdir()) == [dest]
+
+
+@pytest.mark.parametrize("operation", ["write", "flush", "fsync", "replace"])
+def test_download_disk_failure_cleans_temp(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, operation: str) -> None:
+    dest = tmp_path / "ep.mp3"
+    dest.write_bytes(b"old")
+    called = False
+
+    def fail(*args: Any, **kwargs: Any) -> None:
+        nonlocal called
+        called = True
+        raise OSError("disk failure")
+
+    if operation in {"fsync", "replace"}:
+        monkeypatch.setattr(auphonic_api.os, operation, fail)
+    else:
+        original = auphonic_api.tempfile.NamedTemporaryFile
+
+        def failing_temp(*args: Any, **kwargs: Any) -> Any:
+            handle = original(*args, **kwargs)
+            monkeypatch.setattr(handle, operation, fail)
+            return handle
+
+        monkeypatch.setattr(auphonic_api.tempfile, "NamedTemporaryFile", failing_temp)
+    transport = httpx.MockTransport(lambda request: httpx.Response(200, content=b"new"))
+    with AuphonicClient(CREDS, transport=transport) as client:
+        with pytest.raises(AuphonicApiError, match="download") as error:
+            client.download_outputs(
+                [auphonic_api.AuphonicOutputFile(url=f"{BASE}/audio", filename="ep.mp3")], tmp_path
+            )
+    assert called
+    assert isinstance(error.value.__cause__, OSError)
+    assert dest.read_bytes() == b"old"
+    assert list(tmp_path.iterdir()) == [dest]
+
+
+def test_successful_download_replaces_once(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    dest = tmp_path / "ep.mp3"
+    dest.write_bytes(b"old")
+    replacements: list[Path] = []
+    original = auphonic_api.os.replace
+
+    def replace(source: Path, target: Path) -> None:
+        replacements.append(target)
+        original(source, target)
+
+    monkeypatch.setattr(auphonic_api.os, "replace", replace)
+    transport = httpx.MockTransport(lambda request: httpx.Response(200, content=b"new"))
+    with AuphonicClient(CREDS, transport=transport) as client:
+        assert client.download_outputs(
+            [auphonic_api.AuphonicOutputFile(url=f"{BASE}/audio", filename="ep.mp3")], tmp_path
+        ) == (dest,)
+    assert replacements == [dest]
+    assert dest.read_bytes() == b"new"
+    assert list(tmp_path.iterdir()) == [dest]
+
+
+def test_download_directory_failure_uses_api_error(tmp_path: Path) -> None:
+    output_dir = tmp_path / "not_a_directory"
+    output_dir.write_bytes(b"existing")
+    transport = httpx.MockTransport(lambda request: httpx.Response(200, content=b"new"))
+    with AuphonicClient(CREDS, transport=transport) as client:
+        with pytest.raises(AuphonicApiError, match="download directory") as error:
+            client.download_outputs(
+                [auphonic_api.AuphonicOutputFile(url=f"{BASE}/audio", filename="ep.mp3")], output_dir
+            )
+    assert isinstance(error.value.__cause__, OSError)
+    assert output_dir.read_bytes() == b"existing"

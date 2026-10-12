@@ -243,7 +243,10 @@ class AuphonicClient:
         return ()
 
     def download_outputs(self, outputs: Sequence[AuphonicOutputFile], output_dir: Path) -> tuple[Path, ...]:
-        output_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            output_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            raise AuphonicApiError(f"Failed to prepare download directory {output_dir}: {exc}") from exc
         used: set[str] = set()
         downloaded: list[Path] = []
         for idx, output in enumerate(outputs, start=1):
@@ -454,32 +457,37 @@ def _unique_filename(filename: str, used: set[str], idx: int) -> str:
 
 
 def _download_file(client: httpx.Client, url: str, dest: Path) -> None:
-    with client.stream("GET", url) as response:
-        if response.status_code >= 400:
-            raise AuphonicApiError(f"Failed to download {url} (status {response.status_code}).")
-        _atomic_write_stream(dest, response.iter_bytes())
+    try:
+        with client.stream("GET", url) as response:
+            if response.status_code >= 400:
+                raise AuphonicApiError(f"Failed to download {url} (status {response.status_code}).")
+            _atomic_write_stream(dest, response.iter_bytes())
+    except (httpx.HTTPError, OSError) as exc:
+        raise AuphonicApiError(f"Failed to download {url}: {exc}") from exc
 
 
 def _atomic_write_stream(path: Path, chunks: Iterable[bytes]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.NamedTemporaryFile(
-        mode="wb",
-        delete=False,
-        dir=str(path.parent),
-        prefix=f".{path.name}.",
-        suffix=".tmp",
-    ) as tmp:
-        for chunk in chunks:
-            if not chunk:
-                continue
-            tmp.write(chunk)
-        tmp.flush()
-        os.fsync(tmp.fileno())
-        tmp_path = Path(tmp.name)
+    tmp_path: Path | None = None
     try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(
+            mode="wb",
+            delete=False,
+            dir=str(path.parent),
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+        ) as tmp:
+            tmp_path = Path(tmp.name)
+            for chunk in chunks:
+                if not chunk:
+                    continue
+                tmp.write(chunk)
+            tmp.flush()
+            os.fsync(tmp.fileno())
         os.replace(tmp_path, path)
     finally:
-        try:
-            tmp_path.unlink(missing_ok=True)
-        except OSError:
-            pass
+        if tmp_path is not None:
+            try:
+                tmp_path.unlink(missing_ok=True)
+            except OSError:
+                pass
