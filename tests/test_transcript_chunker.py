@@ -72,19 +72,37 @@ def test_chunker_prefers_paragraph_boundaries_near_end() -> None:
     assert _tokens(chunks[1].text) == [f"b{i}" for i in range(1, 11)]
 
 
-def test_chunker_prefers_sentence_boundaries_when_available() -> None:
-    transcript = "one two three. four five six. seven eight nine ten"
-    config = ChunkerConfig(
-        max_tokens=6,
-        overlap_tokens=0,
-        boundary_lookback_tokens=6,
-        min_tokens=5,
-    )
+@pytest.mark.parametrize("punctuation", [".", "!", "?"])
+@pytest.mark.parametrize("closers", ["", '"', "'", ")", "]", '")]'])
+def test_chunker_prefers_sentence_boundaries_when_available(punctuation: str, closers: str) -> None:
+    ending = f"three{punctuation}{closers}"
+    transcript = f"one two {ending} four five six seven eight nine"
+    config = ChunkerConfig(max_tokens=5, overlap_tokens=1, boundary_lookback_tokens=5, min_tokens=2)
+
     chunks = chunk_transcript_text(transcript, config=config)
 
-    assert len(chunks) == 2
-    assert _tokens(chunks[0].text) == ["one", "two", "three.", "four", "five", "six."]
-    assert _tokens(chunks[1].text) == ["seven", "eight", "nine", "ten"]
+    assert chunks[0].end_token == 3
+    assert _tokens(chunks[0].text) == ["one", "two", ending]
+    assert chunks[1].start_token == 2
+    assert all(c.end_token - c.start_token <= config.max_tokens for c in chunks)
+    assert chunks[-1].end_token == 9
+
+
+@pytest.mark.parametrize(
+    ("transcript", "expected_end"),
+    [
+        ("one two\n\nthree. four\nfive six seven eight nine", 2),
+        ("one two three. four\nfive six seven eight nine", 3),
+        ("one two three four\nfive six seven eight nine", 4),
+        ("one two three.x four five six seven eight nine", 5),
+    ],
+)
+def test_chunker_boundary_precedence(transcript: str, expected_end: int) -> None:
+    config = ChunkerConfig(max_tokens=5, overlap_tokens=0, boundary_lookback_tokens=5, min_tokens=2)
+
+    chunks = chunk_transcript_text(transcript, config=config)
+
+    assert chunks[0].end_token == expected_end
 
 
 def test_write_transcript_chunks_creates_deterministic_chunk_files(tmp_path: Path) -> None:

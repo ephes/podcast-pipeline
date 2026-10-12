@@ -26,6 +26,8 @@ Chunking is implemented in `podcast_pipeline.transcript_chunker` and writes a `.
 - Effective minimum size: when `min_tokens` is `None`, `effective_min_tokens` is 60 percent of `max_tokens`.
 - Boundary selection:
   - Prefer paragraph boundaries (`\n\n`), then sentence boundaries (`.`/`!`/`?` followed by whitespace), then line boundaries (`\n`).
+  - Sentence punctuation may be followed by any combination of ASCII closing quotes (`"`, `'`), parentheses (`)`),
+    or square brackets (`]`) before the whitespace. Bare punctuation also counts.
   - Search backward up to `boundary_lookback_tokens` from the desired end.
   - If no boundary is found, cut at `max_tokens`.
 - Overlap: next chunk starts at `end_token - overlap_tokens` (unless that would go backwards).
