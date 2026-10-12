@@ -8,13 +8,12 @@ import pytest
 
 from podcast_pipeline.domain.models import AssetKind
 from podcast_pipeline.entrypoints.draft_pipeline import (
-    _clear_stale_artifacts,
     _discover_chunk_ids,
-    _ingest_transcript,
     run_draft_pipeline,
 )
 from podcast_pipeline.summarization_stub import StubSummarizerConfig
 from podcast_pipeline.transcript_chunker import ChunkerConfig
+from podcast_pipeline.transcript_ingest import _clear_stale_artifacts, prepare_transcript
 from podcast_pipeline.workspace_store import EpisodeWorkspaceStore
 
 
@@ -74,7 +73,7 @@ def test_ingest_transcript_clears_stale_and_copies(tmp_path: Path) -> None:
     source = tmp_path / "source_transcript.txt"
     source.write_text("new transcript content\n")
 
-    _ingest_transcript(store=store, transcript=source)
+    prepare_transcript(store=store, transcript=source)
 
     # Old chunks should be gone
     assert not chunks_dir.exists()

@@ -644,10 +644,12 @@ def _run_draft_job(
     try:
         from podcast_pipeline.entrypoints.draft_pipeline import _run_llm_pipeline
         from podcast_pipeline.transcript_chunker import ChunkerConfig
+        from podcast_pipeline.transcript_ingest import prepare_transcript
 
         capture = _ProgressCapture(ctx, job)
         _thread_local.capture = capture
         try:
+            prepare_transcript(store=ctx.store)
             _run_llm_pipeline(
                 store=ctx.store,
                 candidates_per_asset=candidates_count,
@@ -676,10 +678,12 @@ def _run_summarize_job(
         from podcast_pipeline.entrypoints.draft_pipeline import _discover_chunk_ids
         from podcast_pipeline.prompting import PromptRenderer, default_prompt_registry
         from podcast_pipeline.summarization_llm import run_llm_summarization
+        from podcast_pipeline.transcript_ingest import prepare_transcript
 
         capture = _ProgressCapture(ctx, job)
         _thread_local.capture = capture
         try:
+            prepare_transcript(store=ctx.store)
             bundle = load_agent_cli_bundle(workspace=ctx.workspace)
             renderer = PromptRenderer(default_prompt_registry())
             # timeout_seconds=None resolves to the default agent CLI timeout, so a hung
@@ -716,10 +720,12 @@ def _run_candidates_job(
 ) -> None:
     try:
         from podcast_pipeline.entrypoints.draft_candidates import run_draft_candidates
+        from podcast_pipeline.transcript_ingest import prepare_transcript
 
         capture = _ProgressCapture(ctx, job)
         _thread_local.capture = capture
         try:
+            prepare_transcript(store=ctx.store)
             run_draft_candidates(
                 workspace=ctx.workspace,
                 chapters=None,

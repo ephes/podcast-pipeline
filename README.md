@@ -75,6 +75,11 @@ replacing `transcript.txt`. Missing/unreadable sources and copy/replace failures
 chunks, summaries and episode metadata. Self paths, hard-link aliases and identical bytes are no-ops unless an earlier
 ingest still needs invalidation. A `.ingest-pending` marker is published before replacement: chunks and summaries are
 then removed, `episode.yaml` is updated, and the marker is removed last. If interrupted during invalidation or metadata
-publication, rerunning `podcast draft` (with or without `--transcript`) completes those steps before drafting, including
+publication, rerunning `podcast draft` (with or without `--transcript`) or the dashboard draft job completes those steps
+before drafting, including
 when the supplied transcript has identical bytes or is the workspace file itself. Fix an invalid `episode.yaml` before
 retrying. This ordering is recoverable rather than a transaction across all files.
+
+Dashboard summarize and candidate jobs also finish pending invalidation before using derived artifacts; if those
+artifacts were removed, run draft to rebuild them first. Marker-publication failures preserve the old transcript and
+derived artifacts and remove a newly created pending marker, including failures flushing its directory.

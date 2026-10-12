@@ -81,6 +81,14 @@ Outputs:
 - `summaries/` contains chunk summaries and the episode summary.
 - `copy/candidates/<asset_id>/` contains candidate JSON + Markdown + HTML files.
 
+### Transcript replacement and retries
+
+A replacement transcript is staged and atomically published before old chunks and summaries are removed. Missing,
+unreadable or failed-copy inputs preserve existing artifacts. Identical bytes, self paths and hard-link aliases are
+no-ops after a completed ingest. Interrupted invalidation leaves `transcript/.ingest-pending`; rerun `podcast draft`
+with or without `--transcript`, or retry the dashboard draft job, to finish invalidation and update `inputs.transcript` before drafting. If episode metadata
+is invalid, correct `episode.yaml` first. Do not remove the pending marker manually while stale artifacts remain.
+
 ## 4. Run the review loop (review)
 
 ```bash
@@ -228,12 +236,3 @@ Link URLs may contain balanced parentheses, so links such as
 `[Python](https://en.wikipedia.org/wiki/Python_(programming_language))` stay whole. A single `*` only starts emphasis
 before non-whitespace and not between two letters or digits, so `2*3*4` and `a * b * c` stay literal; intraword
 emphasis such as `foo*bar*` is not supported.
-
-
-### Transcript replacement and retries
-
-A replacement transcript is staged and atomically published before old chunks and summaries are removed. Missing,
-unreadable or failed-copy inputs preserve existing artifacts. Identical bytes, self paths and hard-link aliases are
-no-ops after a completed ingest. Interrupted invalidation leaves `transcript/.ingest-pending`; rerun `podcast draft`
-with or without `--transcript` to finish invalidation and update `inputs.transcript` before drafting. If episode metadata
-is invalid, correct `episode.yaml` first. Do not remove the pending marker manually while stale artifacts remain.

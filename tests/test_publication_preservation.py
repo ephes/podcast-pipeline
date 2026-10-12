@@ -7,7 +7,7 @@ from typing import IO, Any, cast
 
 import pytest
 
-from podcast_pipeline import workspace_store
+from podcast_pipeline import transcript_ingest, workspace_store
 from podcast_pipeline.agent_runners import FakeCreatorRunner, FakeReviewerRunner
 from podcast_pipeline.domain.models import Candidate, EpisodeWorkspace, TextFormat
 from podcast_pipeline.entrypoints import draft_pipeline
@@ -148,9 +148,9 @@ def test_transcript_missing_or_unchanged_ingest_preserves_current(tmp_path: Path
         source.write_bytes(destination.read_bytes())
     if source_kind == "missing":
         with pytest.raises(OSError):
-            draft_pipeline._ingest_transcript(store=store, transcript=source)
+            transcript_ingest.prepare_transcript(store=store, transcript=source)
     else:
-        draft_pipeline._ingest_transcript(store=store, transcript=source)
+        transcript_ingest.prepare_transcript(store=store, transcript=source)
     assert {path: path.read_bytes() for path in before} == before
     assert not list(destination.parent.glob(".transcript-*"))
 
@@ -171,7 +171,7 @@ def test_transcript_io_failure_preserves_current(
             dst.write_bytes(b"partial")
             raise OSError("injected copy failure")
 
-        monkeypatch.setattr(draft_pipeline.shutil, "copyfile", fail_copy)
+        monkeypatch.setattr(transcript_ingest.shutil, "copyfile", fail_copy)
     elif source_kind == "replace":
         original_replace = os.replace
 
@@ -182,7 +182,7 @@ def test_transcript_io_failure_preserves_current(
                 raise OSError("injected replace failure")
             original_replace(src, dst)
 
-        monkeypatch.setattr(draft_pipeline.os, "replace", fail_replace)
+        monkeypatch.setattr(transcript_ingest.os, "replace", fail_replace)
     elif source_kind == "unreadable":
         original_open = Path.open
 
@@ -195,7 +195,7 @@ def test_transcript_io_failure_preserves_current(
 
         monkeypatch.setattr(Path, "open", fail_open)
     with pytest.raises(OSError):
-        draft_pipeline._ingest_transcript(store=store, transcript=source)
+        transcript_ingest.prepare_transcript(store=store, transcript=source)
     assert called
     assert {path: path.read_bytes() for path in before} == before
     assert not list(destination.parent.glob(".transcript-*"))
@@ -207,7 +207,7 @@ def test_transcript_success_invalidates_only_after_publication(
     store, destination, _ = _transcript_workspace(tmp_path)
     source = tmp_path / "source.txt"
     source.write_bytes(b"new transcript\n")
-    original_clear = draft_pipeline._clear_stale_artifacts
+    original_clear = transcript_ingest._clear_stale_artifacts
     called = False
 
     def verify_clear(store: EpisodeWorkspaceStore) -> None:
@@ -216,8 +216,8 @@ def test_transcript_success_invalidates_only_after_publication(
         assert destination.read_bytes() == b"new transcript\n"
         original_clear(store)
 
-    monkeypatch.setattr(draft_pipeline, "_clear_stale_artifacts", verify_clear)
-    draft_pipeline._ingest_transcript(store=store, transcript=source)
+    monkeypatch.setattr(transcript_ingest, "_clear_stale_artifacts", verify_clear)
+    transcript_ingest.prepare_transcript(store=store, transcript=source)
     assert called
     assert not store.layout.transcript_chunks_dir.exists()
     assert not store.layout.summaries_dir.exists()
@@ -329,11 +329,11 @@ def test_transcript_retry_finishes_pending_before_drafting(
 
     with monkeypatch.context() as patch:
         if failure == "invalidation":
-            patch.setattr(draft_pipeline, "_clear_stale_artifacts", fail_clear)
+            patch.setattr(transcript_ingest, "_clear_stale_artifacts", fail_clear)
         else:
             patch.setattr(workspace_store.os, "replace", fail_metadata)
         with pytest.raises(OSError):
-            draft_pipeline._ingest_transcript(store=store, transcript=source)
+            transcript_ingest.prepare_transcript(store=store, transcript=source)
     assert called
     assert destination.read_bytes() == b"new transcript\n"
     assert pending.exists()
@@ -429,3 +429,93 @@ def test_plain_to_markdown_failure_removes_new_canonical(tmp_path: Path, monkeyp
     assert plain.read_text() == "A\n"
     assert not store.layout.selected_text_path("description", TextFormat.markdown).exists()
     assert not html.exists()
+
+
+@pytest.mark.parametrize("failure", ["invalidation", "metadata"])
+def test_dashboard_draft_recovers_pending_ingest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str
+) -> None:
+    from podcast_pipeline.dashboard_context import BackgroundJob, DashboardContext
+    from podcast_pipeline.entrypoints.dashboard_web import _run_draft_job
+
+    store, destination, _ = _transcript_workspace(tmp_path)
+    source = tmp_path / "source.txt"
+    source.write_bytes(b"new transcript\n")
+    called = False
+    original_replace = os.replace
+
+    def fail_clear(store: EpisodeWorkspaceStore) -> None:
+        nonlocal called
+        called = True
+        raise OSError("injected invalidation failure")
+
+    def fail_metadata(src: str | Path, dst: str | Path) -> None:
+        nonlocal called
+        if Path(dst) == store.layout.episode_yaml:
+            called = True
+            raise OSError("injected metadata failure")
+        original_replace(src, dst)
+
+    with monkeypatch.context() as patch:
+        if failure == "invalidation":
+            patch.setattr(transcript_ingest, "_clear_stale_artifacts", fail_clear)
+        else:
+            patch.setattr(workspace_store.os, "replace", fail_metadata)
+        with pytest.raises(OSError):
+            transcript_ingest.prepare_transcript(store=store, transcript=source)
+    assert called
+    drafted = False
+
+    def verify_draft(**kwargs: Any) -> None:
+        nonlocal drafted
+        drafted = True
+        assert destination.read_bytes() == b"new transcript\n"
+        assert not store.layout.transcript_chunks_dir.exists()
+        assert not store.layout.summaries_dir.exists()
+        assert not (destination.parent / ".ingest-pending").exists()
+        assert store.read_episode_yaml()["inputs"]["transcript"] == str(destination.relative_to(store.layout.root))
+
+    monkeypatch.setattr(draft_pipeline, "_run_llm_pipeline", verify_draft)
+    job = BackgroundJob(job_id="test", stage="draft")
+    _run_draft_job(DashboardContext(workspace=store.layout.root), job, 1, None)
+    assert drafted
+    assert job.status == "completed", job.error
+
+
+@pytest.mark.parametrize("already_pending", [False, True])
+@pytest.mark.parametrize("failure", ["replace", "directory_flush"])
+def test_ingest_marker_publication_failure_preserves_current(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, already_pending: bool, failure: str
+) -> None:
+    store, destination, before = _transcript_workspace(tmp_path)
+    pending = destination.parent / ".ingest-pending"
+    if already_pending:
+        pending.write_text("pending\n")
+    source = tmp_path / "source.txt"
+    source.write_bytes(b"new transcript\n")
+    called = False
+    original_replace = os.replace
+
+    def fail_replace(src: str | Path, dst: str | Path) -> None:
+        nonlocal called
+        if Path(dst) == pending:
+            called = True
+            raise OSError("injected marker replace failure")
+        original_replace(src, dst)
+
+    def fail_flush(path: Path) -> None:
+        nonlocal called
+        called = True
+        assert pending.exists()
+        raise OSError("injected marker directory flush failure")
+
+    if failure == "replace":
+        monkeypatch.setattr(workspace_store.os, "replace", fail_replace)
+    else:
+        monkeypatch.setattr(workspace_store, "_fsync_dir", fail_flush)
+    with pytest.raises(OSError):
+        transcript_ingest.prepare_transcript(store=store, transcript=source)
+    assert called
+    assert {path: path.read_bytes() for path in before} == before
+    assert pending.exists() == already_pending
+    assert not list(destination.parent.glob(".transcript-*"))
