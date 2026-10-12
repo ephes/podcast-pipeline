@@ -47,7 +47,7 @@ class TranscriptChunk:
 
 
 _TOKEN_RE = re.compile(r"\S+")
-_SENTENCE_END_RE = re.compile(r"[.!?][\"')\\]]*$")
+_SENTENCE_END_RE = re.compile(r"[.!?][\"')\]]*$")
 
 
 @dataclass(frozen=True)
