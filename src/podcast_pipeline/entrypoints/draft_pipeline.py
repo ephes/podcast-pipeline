@@ -19,14 +19,13 @@ def _copy_chapters_into_workspace(*, workspace: Path, chapters: Path) -> None:
     chapters_path.parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(chapters, chapters_path)
 
-    episode_yaml = store.read_episode_yaml()
-    inputs = episode_yaml.get("inputs")
-    if not isinstance(inputs, dict):
-        inputs = {}
-    inputs = dict(inputs)
-    inputs["chapters"] = str(chapters_path.relative_to(store.layout.root))
-    episode_yaml["inputs"] = inputs
-    store.write_episode_yaml(episode_yaml)
+    with store.update_episode_yaml() as episode_yaml:
+        inputs = episode_yaml.get("inputs")
+        if not isinstance(inputs, dict):
+            inputs = {}
+        inputs = dict(inputs)
+        inputs["chapters"] = str(chapters_path.relative_to(store.layout.root))
+        episode_yaml["inputs"] = inputs
 
 
 def _discover_chunk_ids(store: EpisodeWorkspaceStore) -> list[int]:
@@ -118,14 +117,13 @@ def _ingest_transcript(*, store: EpisodeWorkspaceStore, transcript: Path) -> Non
     transcript_dest = transcript_dir / "transcript.txt"
     shutil.copyfile(transcript, transcript_dest)
 
-    episode_yaml = store.read_episode_yaml()
-    inputs = episode_yaml.get("inputs")
-    if not isinstance(inputs, dict):
-        inputs = {}
-    inputs = dict(inputs)
-    inputs["transcript"] = str(transcript_dest.relative_to(store.layout.root))
-    episode_yaml["inputs"] = inputs
-    store.write_episode_yaml(episode_yaml)
+    with store.update_episode_yaml() as episode_yaml:
+        inputs = episode_yaml.get("inputs")
+        if not isinstance(inputs, dict):
+            inputs = {}
+        inputs = dict(inputs)
+        inputs["transcript"] = str(transcript_dest.relative_to(store.layout.root))
+        episode_yaml["inputs"] = inputs
 
 
 def _read_hosts_from_yaml(store: EpisodeWorkspaceStore) -> list[str] | None:
@@ -254,9 +252,8 @@ def run_draft_pipeline(
 
         if hosts:
             dry_store = EpisodeWorkspaceStore(workspace)
-            episode_yaml = dry_store.read_episode_yaml()
-            episode_yaml["hosts"] = hosts
-            dry_store.write_episode_yaml(episode_yaml)
+            with dry_store.update_episode_yaml() as episode_yaml:
+                episode_yaml["hosts"] = hosts
 
         if chapters is not None:
             _copy_chapters_into_workspace(workspace=workspace, chapters=chapters)
@@ -276,9 +273,8 @@ def run_draft_pipeline(
     )
 
     if hosts:
-        episode_yaml = store.read_episode_yaml()
-        episode_yaml["hosts"] = hosts
-        store.write_episode_yaml(episode_yaml)
+        with store.update_episode_yaml() as episode_yaml:
+            episode_yaml["hosts"] = hosts
 
     if transcript is not None:
         _ingest_transcript(store=store, transcript=transcript)

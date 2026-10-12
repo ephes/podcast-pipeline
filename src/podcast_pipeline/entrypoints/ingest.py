@@ -30,30 +30,27 @@ def run_ingest(
         raise typer.BadParameter(f"reaper media dir is not a directory: {media_dir}")
     media_dir = media_dir.resolve()
 
+    track_paths = _collect_track_paths(media_dir, tracks_glob)
+    if not track_paths:
+        raise typer.BadParameter(f"No tracks found in {media_dir} matching {tracks_glob!r}")
+
     store = EpisodeWorkspaceStore(workspace)
     try:
-        episode_yaml = store.read_episode_yaml()
+        with store.update_episode_yaml() as episode_yaml:
+            sources = episode_yaml.get("sources")
+            if not isinstance(sources, dict):
+                sources = {}
+            sources = dict(sources)
+            sources["reaper_media_dir"] = str(media_dir)
+            sources["tracks_glob"] = tracks_glob
+            episode_yaml["sources"] = sources
+            existing_tracks = _index_existing_tracks(episode_yaml.get("tracks"), media_dir)
+            episode_yaml["tracks"] = _build_tracks(track_paths, existing_tracks, media_dir)
     except FileNotFoundError as exc:
         raise typer.BadParameter(f"episode.yaml not found in {workspace}") from exc
     except WorkspaceStoreError as exc:
         raise typer.BadParameter(str(exc)) from exc
 
-    track_paths = _collect_track_paths(media_dir, tracks_glob)
-    if not track_paths:
-        raise typer.BadParameter(f"No tracks found in {media_dir} matching {tracks_glob!r}")
-
-    sources = episode_yaml.get("sources")
-    if not isinstance(sources, dict):
-        sources = {}
-    sources = dict(sources)
-    sources["reaper_media_dir"] = str(media_dir)
-    sources["tracks_glob"] = tracks_glob
-    episode_yaml["sources"] = sources
-
-    existing_tracks = _index_existing_tracks(episode_yaml.get("tracks"), media_dir)
-    episode_yaml["tracks"] = _build_tracks(track_paths, existing_tracks, media_dir)
-
-    store.write_episode_yaml(episode_yaml)
     typer.echo(f"Workspace: {workspace}")
     typer.echo(f"Tracks: {len(episode_yaml['tracks'])}")
 

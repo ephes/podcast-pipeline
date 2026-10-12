@@ -524,21 +524,21 @@ def _update_episode_inputs(
     default_transcript: Path,
     default_chapters: Path | None,
 ) -> None:
-    inputs = episode_yaml.get("inputs")
-    if not isinstance(inputs, dict):
-        inputs = {}
-    inputs = dict(inputs)
+    with store.update_episode_yaml() as current:
+        inputs = current.get("inputs")
+        if not isinstance(inputs, dict):
+            inputs = {}
+        inputs = dict(inputs)
 
-    inputs[f"transcript_{mode}"] = _relpath(mode_transcript, store.layout.root)
-    inputs["transcript"] = _relpath(default_transcript, store.layout.root)
+        inputs[f"transcript_{mode}"] = _relpath(mode_transcript, store.layout.root)
+        inputs["transcript"] = _relpath(default_transcript, store.layout.root)
 
-    if mode_chapters is not None:
-        inputs[f"chapters_{mode}"] = _relpath(mode_chapters, store.layout.root)
-        if default_chapters is not None:
-            inputs["chapters"] = _relpath(default_chapters, store.layout.root)
+        if mode_chapters is not None:
+            inputs[f"chapters_{mode}"] = _relpath(mode_chapters, store.layout.root)
+            if default_chapters is not None:
+                inputs["chapters"] = _relpath(default_chapters, store.layout.root)
 
-    episode_yaml["inputs"] = inputs
-    store.write_episode_yaml(episode_yaml)
+        current["inputs"] = inputs
 
 
 def _write_transcribe_provenance(

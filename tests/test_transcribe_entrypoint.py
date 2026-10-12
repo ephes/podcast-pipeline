@@ -196,6 +196,7 @@ def test_resolve_audio_file_rejects_missing_audio_metadata(tmp_path: Path) -> No
 def test_update_episode_inputs_writes_transcript_paths(tmp_path: Path) -> None:
     store = EpisodeWorkspaceStore(tmp_path)
     episode_yaml = {"episode_id": "ep_001", "inputs": {"preexisting": "value"}}
+    store.write_episode_yaml(episode_yaml)
 
     mode_transcript = tmp_path / "transcript" / "draft" / "transcript.txt"
     mode_chapters = tmp_path / "transcript" / "draft" / "chapters.txt"
