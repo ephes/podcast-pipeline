@@ -80,3 +80,40 @@ def test_cli_draft_reports_agent_cli_timeout_without_traceback(
     assert result.exit_code == 1
     assert "Drafter CLI timed out after 0.3 s" in result.output
     assert not isinstance(result.exception, AgentRunnerError)
+
+
+@pytest.mark.parametrize("dry_run", [False, True])
+@pytest.mark.parametrize("value", ["inf", "nan", "0", "-1"])
+def test_cli_draft_rejects_invalid_timeout_before_launch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, value: str, dry_run: bool
+) -> None:
+    import subprocess
+
+    config = tmp_path / "config.yaml"
+    config.write_text("agents:\n  drafter:\n    command: sleep\n    args: ['30']\n")
+    monkeypatch.setenv("PODCAST_PIPELINE_CONFIG", str(config))
+    launched = False
+
+    def forbidden(*args: object, **kwargs: object) -> None:
+        nonlocal launched
+        launched = True
+        raise AssertionError("child launched")
+
+    monkeypatch.setattr(subprocess, "Popen", forbidden)
+    result = CliRunner().invoke(
+        app,
+        [
+            "draft",
+            "--workspace",
+            str(tmp_path / "workspace"),
+            "--transcript",
+            str(_fixture_dir() / "transcript.txt"),
+            "--timeout",
+            value,
+        ]
+        + (["--dry-run"] if dry_run else []),
+    )
+    assert result.exit_code != 0
+    assert "timeout" in result.output.lower()
+    assert not launched
+    assert not (tmp_path / "workspace").exists()
