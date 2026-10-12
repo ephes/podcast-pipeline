@@ -17,6 +17,9 @@ podcast init --episode-id ep_001 --workspace ./workspaces/ep_001
 Notes:
 
 - `--workspace` must not exist; the command creates it.
+- If initialization fails, it removes its owned partial workspace when possible so the command can be retried;
+  parent directories remain. Existing workspaces and detected replacements are preserved. The error includes
+  the failure cause. If cleanup fails or a replacement is preserved, inspect the reported workspace before retrying.
 - If you omit `--workspace`, the default is `./episodes/<episode_id>`.
 
 ## 2. Export and transcribe audio

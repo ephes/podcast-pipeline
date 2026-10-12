@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import os
 import re
+import shutil
 from pathlib import Path
 
 import typer
@@ -60,11 +62,34 @@ def run_init(
     except OSError as exc:
         raise typer.BadParameter(f"failed to create workspace: {root}") from exc
 
-    layout = EpisodeWorkspaceLayout(root=root)
-    _create_workspace_dirs(layout)
+    try:
+        directory_fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    except OSError as exc:
+        raise typer.BadParameter(f"failed to initialize workspace: {root}: {exc}; ownership unavailable") from exc
+    owned = os.fstat(directory_fd)
+    try:
+        layout = EpisodeWorkspaceLayout(root=root)
+        _create_workspace_dirs(layout)
 
-    store = EpisodeWorkspaceStore(root)
-    store.write_episode_yaml({"episode_id": episode_id, "inputs": {}})
-    store.write_state(EpisodeWorkspace(episode_id=episode_id, root_dir="."))
+        store = EpisodeWorkspaceStore(root)
+        store.write_episode_yaml({"episode_id": episode_id, "inputs": {}})
+        store.write_state(EpisodeWorkspace(episode_id=episode_id, root_dir="."))
+    except Exception as exc:
+        suffix = ""
+        try:
+            current = root.lstat()
+            if (current.st_dev, current.st_ino) == (owned.st_dev, owned.st_ino):
+                shutil.rmtree(root)
+            else:
+                suffix = "; replacement workspace preserved"
+        except FileNotFoundError:
+            pass
+        except OSError as cleanup_exc:
+            raise typer.BadParameter(
+                f"failed to initialize workspace: {root}: {exc}; cleanup failed: {cleanup_exc}"
+            ) from exc
+        raise typer.BadParameter(f"failed to initialize workspace: {root}: {exc}{suffix}") from exc
+    finally:
+        os.close(directory_fd)
 
     typer.echo(f"Workspace: {root}")
