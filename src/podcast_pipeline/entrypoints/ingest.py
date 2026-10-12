@@ -38,6 +38,10 @@ def run_ingest(
     except WorkspaceStoreError as exc:
         raise typer.BadParameter(str(exc)) from exc
 
+    track_paths = _collect_track_paths(media_dir, tracks_glob)
+    if not track_paths:
+        raise typer.BadParameter(f"No tracks found in {media_dir} matching {tracks_glob!r}")
+
     sources = episode_yaml.get("sources")
     if not isinstance(sources, dict):
         sources = {}
@@ -46,7 +50,6 @@ def run_ingest(
     sources["tracks_glob"] = tracks_glob
     episode_yaml["sources"] = sources
 
-    track_paths = _collect_track_paths(media_dir, tracks_glob)
     existing_tracks = _index_existing_tracks(episode_yaml.get("tracks"), media_dir)
     episode_yaml["tracks"] = _build_tracks(track_paths, existing_tracks, media_dir)
 
