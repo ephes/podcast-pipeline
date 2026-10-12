@@ -54,3 +54,27 @@ Details: `docs/reference/configuration.md`.
 ## Domain models
 
 Core Pydantic models live in `podcast_pipeline.domain` and are intended to back `episode.yaml` + `state.json`.
+
+## Workspace publication and recovery
+
+The review engine's planned protocol documents are all serialized before publication, then each JSON file is atomically
+replaced. Agent CLI diagnostic creator files are written separately during generation.
+`state.json` is updated only after protocol and copy artifacts have been published. A failed run may leave a mixture
+of complete old and new protocol files; this is not a transaction across the bundle. Treat workspace state as the
+last successful publication marker and rerun the review loop to rebuild a partial bundle.
+
+Selected Markdown has a canonical `.md` file and derived `.html`; plain text and HTML selections have only their
+canonical file. A successful format switch removes superseded files. New selection files are staged first; ordinary
+publication or superseded-file cleanup failures restore changed files and leave selection metadata unchanged. If
+rollback itself fails, the error names a retained `.selection-*` directory containing `.old` backups; restore those
+files before consuming outputs. These multi-file changes are not crash-atomic: after interruption, repeat the selection
+or recover retained backups before consuming outputs.
+
+Transcript ingest opens the source before touching current artifacts and copies into a sibling staging file before
+replacing `transcript.txt`. Missing/unreadable sources and copy/replace failures preserve the previous transcript,
+chunks, summaries and episode metadata. Self paths, hard-link aliases and identical bytes are no-ops unless an earlier
+ingest still needs invalidation. A `.ingest-pending` marker is published before replacement: chunks and summaries are
+then removed, `episode.yaml` is updated, and the marker is removed last. If interrupted during invalidation or metadata
+publication, rerunning `podcast draft` (with or without `--transcript`) completes those steps before drafting, including
+when the supplied transcript has identical bytes or is the workspace file itself. Fix an invalid `episode.yaml` before
+retrying. This ordering is recoverable rather than a transaction across all files.

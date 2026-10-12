@@ -26,7 +26,7 @@ from podcast_pipeline.review_loop_engine import (
     ReviewerInput,
     run_review_loop_engine,
 )
-from podcast_pipeline.workspace_store import EpisodeWorkspaceLayout, EpisodeWorkspaceStore
+from podcast_pipeline.workspace_store import EpisodeWorkspaceLayout, EpisodeWorkspaceStore, atomic_write_text
 
 
 @dataclass
@@ -172,9 +172,9 @@ def _select_seed_candidate(candidates: Sequence[Candidate]) -> Candidate | None:
 
 
 def _write_protocol_files(writes: tuple[ProtocolWrite, ...]) -> None:
-    for write in writes:
-        write.path.parent.mkdir(parents=True, exist_ok=True)
-        write.path.write_text(write.dumps(), encoding="utf-8")
+    documents = [(write.path, write.dumps()) for write in writes]
+    for path, text in documents:
+        atomic_write_text(path, text)
 
 
 def _write_loop_artifacts(

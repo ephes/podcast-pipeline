@@ -221,7 +221,6 @@ class DashboardContext:
 
         if _is_tag_asset(asset_id):
             selected_tags = parse_tag_list(match.content)
-            self.store.clear_selected_text(asset_id)
             self.store.write_selected_text(
                 asset_id,
                 TextFormat.markdown,
@@ -334,7 +333,6 @@ class DashboardContext:
 
         normalized = normalize_tag_values(tags)
         content = _render_tag_markdown(asset_id, normalized)
-        self.store.clear_selected_text(asset_id)
         self.store.write_selected_text(asset_id, TextFormat.markdown, content)
 
         ws = self._ensure_workspace_state()

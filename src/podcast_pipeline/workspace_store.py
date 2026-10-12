@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import stat
 import tempfile
 from collections.abc import Iterator, Mapping
@@ -103,6 +104,51 @@ def _atomic_write_text(path: Path, text: str) -> None:
 
 def atomic_write_text(path: Path, text: str) -> None:
     _atomic_write_text(path, text)
+
+
+def _restore_selection(changed: list[Path], backups: Mapping[Path, Path]) -> None:
+    for target in reversed(changed):
+        if target in backups:
+            os.replace(backups[target], target)
+        else:
+            target.unlink(missing_ok=True)
+
+
+def _publish_selection(documents: Mapping[Path, str], old_paths: set[Path]) -> None:
+    parent = next(iter(documents)).parent
+    parent.mkdir(parents=True, exist_ok=True)
+    staging = Path(tempfile.mkdtemp(dir=parent, prefix=".selection-"))
+    cleanup = True
+    try:
+        backups: dict[Path, Path] = {}
+        for target in old_paths:
+            if target.exists():
+                backup = staging / (target.name + ".old")
+                shutil.copy2(target, backup)
+                backups[target] = backup
+        for target, text in documents.items():
+            _atomic_write_text(staging / target.name, text)
+            if target in backups:
+                shutil.copymode(backups[target], staging / target.name)
+        changed: list[Path] = []
+        try:
+            for target in documents:
+                os.replace(staging / target.name, target)
+                changed.append(target)
+            for target in old_paths - documents.keys():
+                target.unlink(missing_ok=True)
+                changed.append(target)
+            _fsync_dir(parent)
+        except OSError:
+            try:
+                _restore_selection(changed, backups)
+            except OSError as exc:
+                cleanup = False
+                raise WorkspaceStoreError(f"Selection rollback failed; recover backups from {staging}: {exc}") from exc
+            raise
+    finally:
+        if cleanup:
+            shutil.rmtree(staging, ignore_errors=True)
 
 
 def _read_text(path: Path) -> str:
@@ -453,10 +499,12 @@ class EpisodeWorkspaceStore:
         path = self.layout.selected_text_path(asset_id, fmt)
         if not content.endswith("\n"):
             content += "\n"
-        _atomic_write_text(path, content)
+        documents = {path: content}
         if fmt == TextFormat.markdown:
             html_path = self.layout.selected_text_path(asset_id, TextFormat.html)
-            _atomic_write_text(html_path, markdown_to_deterministic_html(content))
+            documents[html_path] = markdown_to_deterministic_html(content)
+        old_paths = {self.layout.selected_text_path(asset_id, superseded) for superseded in TextFormat}
+        _publish_selection(documents, old_paths)
         return path
 
     def clear_selected_text(self, asset_id: str) -> None:

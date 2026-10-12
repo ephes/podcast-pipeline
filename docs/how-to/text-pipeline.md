@@ -72,3 +72,12 @@ Chapters are used when generating assets. Supply them using any of these sources
 - Candidate assets: `copy/candidates/<asset_id>/candidate_<uuid>.{json,md,html}`.
 
 Use `podcast pick --workspace ./workspaces/ep_001 --web` or the dashboard to select final candidates.
+
+
+### Transcript replacement and retries
+
+A replacement transcript is staged and atomically published before old chunks and summaries are removed. Missing,
+unreadable or failed-copy inputs preserve existing artifacts. Identical bytes, self paths and hard-link aliases are
+no-ops after a completed ingest. Interrupted invalidation leaves `transcript/.ingest-pending`; rerun `podcast draft`
+with or without `--transcript` to finish invalidation and update `inputs.transcript` before drafting. If episode metadata
+is invalid, correct `episode.yaml` first. Do not remove the pending marker manually while stale artifacts remain.
