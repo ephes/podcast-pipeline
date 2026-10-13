@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -93,6 +94,8 @@ class CmsEpisodeExample:
 
 
 _TAG_SPLIT_RE = re.compile(r"[;,]")
+_MAX_CMS_RESPONSE_BYTES = 8 * 1024 * 1024
+_MAX_CMS_REDIRECTS = 5
 
 
 def fetch_cms_examples(
@@ -151,17 +154,54 @@ def write_cms_examples_jsonl(
 
 
 def _fetch_cms_json(*, api_url: str, timeout_seconds: float, limit: int) -> Any:
-    params = {"limit": limit}
+    if not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
+        raise CmsExamplesError("CMS timeout must be finite and > 0.")
+    body = _read_cms_response(api_url=api_url, timeout_seconds=timeout_seconds, limit=limit)
     try:
-        response = httpx.get(api_url, timeout=timeout_seconds, follow_redirects=True, params=params)
+        return json.loads(body)
+    except (ValueError, UnicodeError) as exc:
+        raise CmsExamplesError("CMS API returned invalid JSON.") from exc
+
+
+def _read_cms_response(*, api_url: str, timeout_seconds: float, limit: int) -> bytes:
+    # The timeout applies to each connect, read, write and pool wait, not to the whole
+    # request: a response that keeps sending is bounded by the byte limit, not by time.
+    try:
+        # Redirects are followed by hand: automatic redirects read (and decompress)
+        # every intermediate response body before the byte limit can be checked.
+        with httpx.Client(follow_redirects=False, timeout=httpx.Timeout(timeout_seconds)) as client:
+            request = client.build_request(
+                "GET", api_url, params={"limit": limit}, headers={"Accept-Encoding": "identity"}
+            )
+            for _ in range(_MAX_CMS_REDIRECTS + 1):
+                response = client.send(request, stream=True)
+                try:
+                    if response.next_request is not None:
+                        request = response.next_request
+                        continue
+                    return _read_bounded_body(response)
+                finally:
+                    response.close()
+            raise CmsExamplesError(f"CMS API redirected more than {_MAX_CMS_REDIRECTS} times.")
+    except httpx.TimeoutException as exc:
+        raise CmsExamplesError("CMS API request exceeded its timeout.") from exc
     except httpx.RequestError as exc:
-        raise CmsExamplesError(f"Failed to fetch CMS API: {exc}") from exc
+        raise CmsExamplesError("Failed to fetch CMS API.") from exc
+
+
+def _read_bounded_body(response: httpx.Response) -> bytes:
     if response.status_code >= 400:
         raise CmsExamplesError(f"CMS API request failed with HTTP {response.status_code}.")
-    try:
-        return response.json()
-    except ValueError as exc:
-        raise CmsExamplesError("CMS API returned invalid JSON.") from exc
+    # Refuse unsolicited compression instead of expanding an unbounded
+    # compressed chunk before the byte limit can be checked.
+    if response.headers.get("content-encoding", "identity").strip().lower() != "identity":
+        raise CmsExamplesError("CMS API returned unsupported Content-Encoding; request uncompressed JSON.")
+    body = bytearray()
+    for chunk in response.iter_raw(chunk_size=64 * 1024):
+        if len(body) + len(chunk) > _MAX_CMS_RESPONSE_BYTES:
+            raise CmsExamplesError("CMS API response exceeds the 8 MiB byte limit.")
+        body.extend(chunk)
+    return bytes(body)
 
 
 def _extract_items(payload: Any) -> list[Any]:
