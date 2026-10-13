@@ -23,6 +23,9 @@ Notes:
   appears at the workspace path while init runs, is preserved and reported, and the partial staging directory
   is left in place. The error includes the failure cause and the staging path; inspect that directory and
   remove it yourself once you no longer need it.
+- These guarantees cover failures and interruptions of init itself. Another process running as the same user
+  with write access to the parent directory that replaces the workspace or staging directory while init runs
+  is outside the threat model: such a process can delete or overwrite the workspace directly.
 - If you omit `--workspace`, the default is `./episodes/<episode_id>`.
 
 ## 2. Export and transcribe audio

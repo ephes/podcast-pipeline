@@ -101,6 +101,14 @@ def run_init(
     except OSError as exc:
         raise typer.BadParameter(f"failed to create workspace: {root}") from exc
 
+    # Guarantees: no partial workspace is left at ``root``, so a retry works;
+    # an existing workspace and content that appears at ``root`` while init runs
+    # are preserved; nothing is deleted on failure or interruption.
+    # Outside the threat model: another process running as the same user with
+    # write access to the parent directory replacing the claim or the staging
+    # directory while init runs. Such a process can delete or overwrite the
+    # workspace directly, so the checks below are hardening, not a boundary.
+    #
     # The exclusive mkdir above only claims the name. Everything is built in a
     # private sibling directory and moved over the still-empty claim in one
     # rename. A failure deletes nothing: the claim is released with rmdir, which
