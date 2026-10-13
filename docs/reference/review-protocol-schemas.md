@@ -51,3 +51,9 @@ Issue entry fields:
 Constraints:
 
 - `verdict=ok` cannot include issues with `severity=error`.
+
+## Drafter alternatives
+
+Drafting and dashboard regeneration allocate fresh candidate UUIDs in the application, ignoring any
+`candidate_id` returned by the drafter. Regeneration appends distinct alternatives and preserves existing
+candidates, selections and reviews. The complete candidate response is validated before it is written.

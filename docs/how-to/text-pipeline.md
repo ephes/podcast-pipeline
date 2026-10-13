@@ -64,8 +64,12 @@ podcast draft-candidates --workspace ./workspaces/ep_001 --candidates 3
 Chapters are used when generating assets. Supply them using any of these sources (first match wins):
 
 - Put `transcript/chapters.txt` inside the workspace.
-- Set `inputs.chapters` in `episode.yaml`.
+- Set `inputs.chapters` in `episode.yaml`. For dashboard regeneration, use a workspace-relative path
+  such as `transcript/chapters.txt` to an existing regular file. Absolute paths, `..` components and
+  symlinks escaping the workspace are rejected before the agent starts.
 - Pass `--chapters /path/to/chapters.txt` to the next step.
+
+Dashboard regeneration reads only `inputs.chapters`; without it, no chapters are passed.
 
 ## 5. Inspect outputs
 
