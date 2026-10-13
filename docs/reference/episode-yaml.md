@@ -18,7 +18,7 @@ hosts:
   - Dominik
 inputs:
   transcript: /path/to/transcript.txt
-  chapters: /path/to/chapters.txt
+  chapters: transcript/chapters.txt
 sources:
   reaper_media_dir: /path/to/ReaperMedia
   tracks_glob: "*.flac"
@@ -65,7 +65,10 @@ auphonic:
 - `transcript` (string or null): path to a transcript text file.
 - `transcript_draft` (string or null): path to the draft transcript text file (if available).
 - `transcript_final` (string or null): path to the final transcript text file (if available).
-- `chapters` (string or null): path to a chapters text file.
+- `chapters` (string or null): path to a chapters text file. For dashboard regeneration, this must be a
+  relative path to an existing regular file inside the episode workspace. Absolute paths, `..` components,
+  and symlinks escaping the workspace are rejected before the agent starts. Null omits chapter context during regeneration. This containment rule applies to dashboard regeneration;
+  the draft, draft-candidates and creator/reviewer input readers retain their existing path and fallback behavior.
 - `chapters_draft` (string or null): path to draft chapters text file (if available).
 - `chapters_final` (string or null): path to final chapters text file (if available).
 - Extra keys are allowed and preserved.

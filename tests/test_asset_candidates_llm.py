@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Any
+from uuid import uuid4
 
 import pytest
 
@@ -214,3 +215,28 @@ def test_generate_draft_candidates_llm_shownotes_prompt_requires_links() -> None
     assert "link-first shownotes" in shownotes_prompt
     assert "section '## Links'" in shownotes_prompt
     assert "many concrete markdown links" in shownotes_prompt
+
+
+def test_drafting_ignores_model_candidate_identity() -> None:
+    existing_id = uuid4()
+    responses = {
+        kind.value: {
+            "candidates": [
+                {"candidate_id": str(existing_id), "content": "Alternative A"},
+                {"candidate_id": str(existing_id), "content": "Alternative B"},
+            ]
+        }
+        for kind in AssetKind
+    }
+    assets = generate_draft_candidates_llm(
+        episode_summary=_make_episode_summary(),
+        chapters=[],
+        candidates_per_asset=2,
+        runner=FakeDrafterRunner(responses),
+        renderer=PromptRenderer(default_prompt_registry()),
+    )
+    candidates = [c for alternatives in assets.values() for c in alternatives]
+    assert existing_id not in {c.candidate_id for c in candidates}
+    assert len({c.candidate_id for c in candidates}) == 2 * len(AssetKind)
+    for alternatives in assets.values():
+        assert [c.content for c in alternatives] == ["Alternative A", "Alternative B"]

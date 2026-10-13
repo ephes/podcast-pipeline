@@ -87,6 +87,8 @@ def _parse_raw_candidates(
     for idx, raw in enumerate(raw_candidates):
         if not isinstance(raw, dict):
             raise RuntimeError(f"Drafter candidate {idx} for {asset_id} is not an object")
+        raw = dict(raw)
+        raw.pop("candidate_id", None)
         raw.setdefault("asset_id", asset_id)
         if raw.get("asset_id") != asset_id:
             raise RuntimeError(
@@ -129,11 +131,23 @@ def _load_workspace_context(
     if isinstance(raw_inputs, dict):
         raw_chapters = raw_inputs.get("chapters")
         if isinstance(raw_chapters, str):
-            chapters_path = layout.root / raw_chapters
-            if chapters_path.exists():
-                chapters = [
-                    line.strip() for line in chapters_path.read_text(encoding="utf-8").splitlines() if line.strip()
-                ][:200]
+            reference = Path(raw_chapters)
+            error = (
+                "Invalid chapters input (inputs.chapters in episode.yaml): "
+                "expected a relative regular file inside the episode workspace"
+            )
+            if reference.is_absolute() or ".." in reference.parts:
+                raise RuntimeError(error)
+            try:
+                root = layout.root.resolve(strict=True)
+                chapters_path = (root / reference).resolve(strict=True)
+                if not chapters_path.is_relative_to(root) or not chapters_path.is_file():
+                    raise RuntimeError(error)
+            except (OSError, ValueError, RuntimeError) as exc:
+                raise RuntimeError(error) from exc
+            chapters = [
+                line.strip() for line in chapters_path.read_text(encoding="utf-8").splitlines() if line.strip()
+            ][:200]
 
     hosts: Sequence[str] | None = None
     raw_hosts = episode_yaml.get("hosts")
