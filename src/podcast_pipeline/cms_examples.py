@@ -45,7 +45,17 @@ class CmsEpisodeExample:
     api_url: str
 
     def example_id(self) -> str:
-        seed = self.page_id or self.link or self.title
+        url = httpx.URL(self.api_url)
+        source = str(
+            url.copy_with(
+                username="",
+                password="",
+                query=None,
+                fragment=None,
+                raw_path=url.raw_path.split(b"?", 1)[0].rstrip(b"/"),
+            )
+        )
+        seed = json.dumps([source, self.page_id or self.link or self.title], ensure_ascii=False)
         digest = sha256(seed.encode()).hexdigest()[:12]
         return f"cms_{digest}"
 
