@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+import stat
 from pathlib import Path
 
 import pytest
@@ -349,3 +351,35 @@ def test_init_interrupt_releases_claim_and_allows_retry(tmp_path: Path, monkeypa
     assert "left in staging directory" in _output(result)
     assert not workspace.exists()
     assert CliRunner().invoke(app, _init_args(workspace)).exit_code == 0
+
+
+def test_staging_directory_with_inherited_setgid_bit_is_accepted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from podcast_pipeline.entrypoints import init
+
+    staging = tmp_path / "staging"
+    staging.mkdir(mode=0o700)
+    real_fstat = os.fstat
+
+    def fstat_with_setgid(fd: int) -> os.stat_result:
+        # Linux mkdir beneath a setgid parent yields mode 02700. Not every
+        # filesystem lets a test set that bit, so it is added to the result.
+        info = real_fstat(fd)
+        fields = [info.st_mode | stat.S_ISGID, *tuple(info)[1:]]
+        return os.stat_result(fields)
+
+    monkeypatch.setattr(init.os, "fstat", fstat_with_setgid)
+    fd = init._open_owned_staging(staging)
+    os.close(fd)
+
+
+def test_staging_directory_with_other_access_bits_is_rejected(tmp_path: Path) -> None:
+    from podcast_pipeline.entrypoints import init
+
+    staging = tmp_path / "staging"
+    staging.mkdir()
+    os.chmod(staging, 0o750)
+
+    with pytest.raises(OSError, match="staging directory was replaced"):
+        init._open_owned_staging(staging)

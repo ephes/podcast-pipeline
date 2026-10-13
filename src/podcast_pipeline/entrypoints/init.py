@@ -58,7 +58,8 @@ def _open_owned_staging(staging: Path) -> int:
     fd = os.open(staging, _DIRECTORY_FLAGS)
     try:
         info = os.fstat(fd)
-        if info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) != 0o700 or os.listdir(fd):
+        # Only the access bits are compared: a setgid parent adds S_ISGID on Linux.
+        if info.st_uid != os.geteuid() or info.st_mode & 0o777 != 0o700 or os.listdir(fd):
             raise OSError(f"staging directory was replaced: {staging}")
     except BaseException:
         os.close(fd)
