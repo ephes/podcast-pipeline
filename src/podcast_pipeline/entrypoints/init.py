@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import os
 import re
-import shutil
 import stat
 import tempfile
 from pathlib import Path
@@ -67,33 +66,16 @@ def _open_owned_staging(staging: Path) -> int:
     return fd
 
 
-def _empty_directory(fd: int) -> None:
-    """Delete the contents of the directory ``fd`` refers to, never following its pathname."""
-    if not getattr(shutil.rmtree, "avoids_symlink_attacks", False):
-        raise OSError("descriptor-bound cleanup is not supported on this platform")
-    for name in os.listdir(fd):
-        if stat.S_ISDIR(os.stat(name, dir_fd=fd, follow_symlinks=False).st_mode):
-            shutil.rmtree(name, dir_fd=fd)
-        else:
-            os.unlink(name, dir_fd=fd)
+def _release_failed_init(*, root: Path, staging: Path | None) -> str:
+    """Release this invocation's empty claim on ``root`` after a failure.
 
-
-def _discard_failed_init(*, root: Path, staging: Path | None, staging_fd: int | None) -> str:
-    """Empty this invocation's staging directory and release its empty claim on ``root``.
-
-    Content is only deleted through ``staging_fd``. Pathnames are only passed to
-    rmdir, which cannot remove a populated directory that replaced ours.
+    Nothing is deleted: the claim is released with rmdir, which cannot remove
+    content, and the staging directory is left in place and reported, because
+    no check can prove that a directory found under its name is still ours.
     """
     notes = ""
     if staging is not None:
-        try:
-            if staging_fd is not None:
-                _empty_directory(staging_fd)
-            os.rmdir(staging)
-        except FileNotFoundError:
-            pass
-        except OSError as cleanup_exc:
-            notes += f"; staging directory left in place: {staging}: {cleanup_exc}"
+        notes += f"; partial workspace left in staging directory: {staging}"
     try:
         os.rmdir(root)
     except FileNotFoundError:
@@ -121,10 +103,10 @@ def run_init(
 
     # The exclusive mkdir above only claims the name. Everything is built in a
     # private sibling directory and moved over the still-empty claim in one
-    # rename, so a failure never requires a recursive delete at ``root``: the
-    # claim is released with rmdir, which cannot remove a populated replacement.
-    # The staging directory is identified by an open descriptor; its contents
-    # are only ever deleted through that descriptor.
+    # rename. A failure deletes nothing: the claim is released with rmdir, which
+    # cannot remove a populated replacement, and the staging directory stays.
+    # The open descriptor identifies the staging directory for the mode change
+    # and for the check that its name still refers to it before publication.
     staging: Path | None = None
     staging_fd: int | None = None
     try:
@@ -144,7 +126,7 @@ def run_init(
             raise OSError(f"staging directory was replaced: {staging}")
         os.rename(staging, root)
     except Exception as exc:
-        notes = _discard_failed_init(root=root, staging=staging, staging_fd=staging_fd)
+        notes = _release_failed_init(root=root, staging=staging)
         raise typer.BadParameter(f"failed to initialize workspace: {root}: {exc}{notes}") from exc
     finally:
         if staging_fd is not None:
