@@ -125,8 +125,12 @@ def run_init(
         if (owned.st_dev, owned.st_ino) != (current.st_dev, current.st_ino):
             raise OSError(f"staging directory was replaced: {staging}")
         os.rename(staging, root)
-    except Exception as exc:
+    except BaseException as exc:
         notes = _release_failed_init(root=root, staging=staging)
+        if not isinstance(exc, Exception):
+            # Ctrl-C and similar: release the claim, then keep interrupt semantics.
+            typer.echo(f"initialization interrupted: {root}{notes}", err=True)
+            raise
         raise typer.BadParameter(f"failed to initialize workspace: {root}: {exc}{notes}") from exc
     finally:
         if staging_fd is not None:

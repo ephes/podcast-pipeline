@@ -18,7 +18,7 @@ Notes:
 
 - `--workspace` must not exist; the command creates it.
 - The workspace is assembled in a hidden sibling directory (`.podcast-init-*`) and moved into place in one step,
-  so a failed initialization leaves nothing at the workspace path and the command can be retried right away;
+  so a failed or interrupted initialization leaves nothing at the workspace path and the command can be retried right away;
   parent directories remain. Init never deletes anything on failure: an existing workspace, or content that
   appears at the workspace path while init runs, is preserved and reported, and the partial staging directory
   is left in place. The error includes the failure cause and the staging path; inspect that directory and

@@ -330,3 +330,22 @@ def test_init_accepts_workspace_name_at_the_filename_limit(tmp_path: Path) -> No
 
     assert CliRunner().invoke(app, _init_args(workspace)).exit_code == 0
     assert EpisodeWorkspaceStore(workspace).read_state().episode_id == "ep_001"
+
+
+def test_init_interrupt_releases_claim_and_allows_retry(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from podcast_pipeline.entrypoints import init
+
+    workspace = tmp_path / "workspace"
+
+    def interrupt(layout: object) -> None:
+        raise KeyboardInterrupt
+
+    with monkeypatch.context() as patch:
+        patch.setattr(init, "_create_workspace_dirs", interrupt)
+        result = CliRunner().invoke(app, _init_args(workspace))
+
+    assert result.exit_code != 0
+    assert "initialization interrupted" in _output(result)
+    assert "left in staging directory" in _output(result)
+    assert not workspace.exists()
+    assert CliRunner().invoke(app, _init_args(workspace)).exit_code == 0
