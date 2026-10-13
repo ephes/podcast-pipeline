@@ -171,7 +171,7 @@ def _read_cms_response(*, api_url: str, timeout_seconds: float, limit: int) -> b
         # every intermediate response body before the byte limit can be checked.
         with httpx.Client(follow_redirects=False, timeout=httpx.Timeout(timeout_seconds)) as client:
             request = client.build_request(
-                "GET", api_url, params={"limit": limit}, headers={"Accept-Encoding": "identity"}
+                "GET", httpx.URL(api_url).copy_set_param("limit", limit), headers={"Accept-Encoding": "identity"}
             )
             for _ in range(_MAX_CMS_REDIRECTS + 1):
                 response = client.send(request, stream=True)

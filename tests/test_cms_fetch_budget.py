@@ -191,3 +191,38 @@ def test_cms_fetch_timeout_is_per_read_not_whole_request(cms_server: tuple[str, 
     url, _ = cms_server
     examples = cms_examples.fetch_cms_examples(api_url=f"{url}/drip", limit=1, timeout_seconds=0.3)
     assert len(examples) == 1
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "",
+        "?limit=99",
+        "?type=podcast.EpisodePage&tag=AI&tag=Tech&search=C%2B%2B&empty=",
+        "?type=podcast.EpisodePage&limit=99&limit=100",
+    ],
+)
+def test_cms_fetch_preserves_query_and_overrides_url_limit(monkeypatch: pytest.MonkeyPatch, query: str) -> None:
+    requests: list[httpx.Request] = []
+    item = {"id": 42, "title": "Episode", "description": "<p>Notes</p>"}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, stream=httpx.ByteStream(json.dumps([item, item]).encode()))
+
+    client_class = httpx.Client
+
+    def client(*, follow_redirects: bool, timeout: httpx.Timeout) -> httpx.Client:
+        return client_class(follow_redirects=follow_redirects, timeout=timeout, transport=httpx.MockTransport(handler))
+
+    monkeypatch.setattr(cms_examples.httpx, "Client", client)
+    api_url = f"https://cms.example/api/{query}"
+    examples = cms_examples.fetch_cms_examples(api_url=api_url, limit=1)
+
+    assert len(requests) == 1
+    expected_filters = [(key, value) for key, value in httpx.URL(api_url).params.multi_items() if key != "limit"]
+    actual_filters = [(key, value) for key, value in requests[0].url.params.multi_items() if key != "limit"]
+    assert actual_filters == expected_filters
+    assert requests[0].url.params.get_list("limit") == ["1"]
+    assert len(examples) == 1
+    assert examples[0].api_url == api_url

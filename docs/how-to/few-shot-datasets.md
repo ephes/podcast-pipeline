@@ -38,7 +38,8 @@ Notes:
 
 - The command skips items that do not have a title plus description or shownotes HTML.
 - Field names support dot-notation for nested payloads (for example, `meta.html_url`).
-- The CLI always sends a `limit` query param; include any other filters in the `--api-url`.
+- The CLI preserves filters in `--api-url` and sets the `limit` query param to `--limit`
+  (default `25`), replacing any existing `limit` values in the URL. Repeated filters are preserved.
   It caps usable exported episodes locally even if the server ignores the requested count.
 - CMS responses are streamed with an 8 MiB body limit, independent of `--limit`.
   JSON decoding follows the bounded read.
