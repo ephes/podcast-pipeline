@@ -41,10 +41,12 @@ Notes:
 - The CLI always sends a `limit` query param; include any other filters in the `--api-url`.
   It caps usable exported episodes locally even if the server ignores the requested count.
 - CMS responses are streamed with an 8 MiB body limit, independent of `--limit`.
-  `--timeout-seconds` (default 20) is a finite whole-request deadline covering name
-  resolution, connection, redirects, headers and body, as well as the per-operation timeout.
-  Slow drip responses and slow DNS lookups cannot extend that deadline. JSON decoding
-  follows the bounded read.
+  JSON decoding follows the bounded read.
+- `--timeout-seconds` (default 20, finite and above 0) is a per-operation timeout: it applies
+  to each connection attempt, each read and each write separately. It is not a deadline
+  for the whole request. A server that keeps sending slowly is stopped by the body limit,
+  not by a wall-clock limit, so such an export can take much longer than the timeout;
+  interrupt it by hand if needed.
 - At most 5 redirects are followed, and redirect bodies are never read, so they cannot
   bypass the body limit.
 - The request asks for uncompressed JSON (`Accept-Encoding: identity`); unsolicited

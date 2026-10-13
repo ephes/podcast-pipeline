@@ -3,17 +3,12 @@ from __future__ import annotations
 import json
 import math
 import re
-import socket
-import ssl
-import threading
-import time
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
 from typing import Any
 
-import httpcore
 import httpx
 
 from podcast_pipeline.rss_examples import normalize_html, normalize_text
@@ -101,8 +96,6 @@ class CmsEpisodeExample:
 _TAG_SPLIT_RE = re.compile(r"[;,]")
 _MAX_CMS_RESPONSE_BYTES = 8 * 1024 * 1024
 _MAX_CMS_REDIRECTS = 5
-_CMS_FETCH_THREAD_NAME = "cms-examples-fetch"
-_CMS_TIMEOUT_MESSAGE = "CMS API request exceeded its timeout."
 
 
 def fetch_cms_examples(
@@ -163,246 +156,52 @@ def write_cms_examples_jsonl(
 def _fetch_cms_json(*, api_url: str, timeout_seconds: float, limit: int) -> Any:
     if not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
         raise CmsExamplesError("CMS timeout must be finite and > 0.")
-    body = _read_cms_response_within_deadline(api_url=api_url, timeout_seconds=timeout_seconds, limit=limit)
+    body = _read_cms_response(api_url=api_url, timeout_seconds=timeout_seconds, limit=limit)
     try:
         return json.loads(body)
     except (ValueError, UnicodeError) as exc:
         raise CmsExamplesError("CMS API returned invalid JSON.") from exc
 
 
-class _DeadlineStream(httpcore.NetworkStream):
-    """Network stream whose every read, write and TLS handshake ends at one deadline."""
-
-    def __init__(self, stream: httpcore.NetworkStream, deadline: float, release: Callable[[], None]) -> None:
-        self._stream = stream
-        self._deadline = deadline
-        self._release = release
-
-    def _timeout(self, timeout: float | None, error: type[Exception]) -> float:
-        remaining = self._deadline - time.monotonic()
-        if remaining <= 0:
-            raise error(_CMS_TIMEOUT_MESSAGE)
-        return remaining if timeout is None else min(timeout, remaining)
-
-    def read(self, max_bytes: int, timeout: float | None = None) -> bytes:
-        return self._stream.read(max_bytes, self._timeout(timeout, httpcore.ReadTimeout))
-
-    def write(self, buffer: bytes, timeout: float | None = None) -> None:
-        self._stream.write(buffer, self._timeout(timeout, httpcore.WriteTimeout))
-
-    def close(self) -> None:
-        try:
-            self._stream.close()
-        finally:
-            self._release()
-
-    def start_tls(
-        self,
-        ssl_context: ssl.SSLContext,
-        server_hostname: str | None = None,
-        timeout: float | None = None,
-    ) -> httpcore.NetworkStream:
-        stream = self._stream.start_tls(ssl_context, server_hostname, self._timeout(timeout, httpcore.ConnectTimeout))
-        return _DeadlineStream(stream, self._deadline, self._release)
-
-    def get_extra_info(self, info: str) -> Any:
-        return self._stream.get_extra_info(info)
-
-
-class _DeadlineBackend(httpcore.NetworkBackend):
-    """
-    Network backend that keeps every connection of one fetch inside its deadline.
-
-    Reads and writes get at most the remaining time, so header or body bytes that
-    keep arriving cannot reset the timeout. ``abort()`` shuts down the connections
-    that are still open (also one inside a TLS handshake) and refuses later ones,
-    so a fetch that was given up does not keep a socket.
-    """
-
-    def __init__(self, backend: httpcore.NetworkBackend, deadline: float) -> None:
-        self._backend = backend
-        self._deadline = deadline
-        self._lock = threading.Lock()
-        self._aborted = False
-        # Duplicates of the connected sockets: wrapping a socket for TLS detaches
-        # the original object, a duplicate still reaches the connection.
-        self._sockets: list[socket.socket] = []
-
-    def _track(self, stream: httpcore.NetworkStream) -> httpcore.NetworkStream:
-        try:
-            sock = stream.get_extra_info("socket")
-            if not isinstance(sock, socket.socket):
-                raise httpcore.ConnectError("CMS fetch connection cannot be bounded.")
-            with self._lock:
-                if self._aborted or time.monotonic() >= self._deadline:
-                    raise httpcore.ConnectTimeout(_CMS_TIMEOUT_MESSAGE)
-                duplicate = sock.dup()
-                self._sockets.append(duplicate)
-        except BaseException:
-            stream.close()
-            raise
-        return _DeadlineStream(stream, self._deadline, lambda: self._release(duplicate))
-
-    def _release(self, duplicate: socket.socket) -> None:
-        with self._lock:
-            if duplicate not in self._sockets:
-                return
-            self._sockets.remove(duplicate)
-        duplicate.close()
-
-    def _connect_timeout(self, timeout: float | None) -> float:
-        remaining = self._deadline - time.monotonic()
-        if self._aborted or remaining <= 0:
-            raise httpcore.ConnectTimeout(_CMS_TIMEOUT_MESSAGE)
-        return remaining if timeout is None else min(timeout, remaining)
-
-    def connect_tcp(
-        self,
-        host: str,
-        port: int,
-        timeout: float | None = None,
-        local_address: str | None = None,
-        socket_options: Iterable[Any] | None = None,
-    ) -> httpcore.NetworkStream:
-        return self._track(
-            self._backend.connect_tcp(
-                host,
-                port,
-                timeout=self._connect_timeout(timeout),
-                local_address=local_address,
-                socket_options=socket_options,
-            )
-        )
-
-    def connect_unix_socket(
-        self,
-        path: str,
-        timeout: float | None = None,
-        socket_options: Iterable[Any] | None = None,
-    ) -> httpcore.NetworkStream:
-        return self._track(
-            self._backend.connect_unix_socket(
-                path, timeout=self._connect_timeout(timeout), socket_options=socket_options
-            )
-        )
-
-    def sleep(self, seconds: float) -> None:
-        self._backend.sleep(seconds)
-
-    def abort(self) -> None:
-        with self._lock:
-            self._aborted = True
-            sockets, self._sockets = self._sockets, []
-        for sock in sockets:
-            try:
-                sock.shutdown(socket.SHUT_RDWR)
-            except OSError:
-                pass
-            sock.close()
-
-
-def _bound_client_connections(client: httpx.Client, deadline: float) -> list[_DeadlineBackend]:
-    # httpx has no public way to choose the network backend of its default and
-    # proxy transports. Fail closed when their layout is not the expected one.
-    backends = []
-    for transport in {id(t): t for t in (client._transport, *client._mounts.values()) if t is not None}.values():
-        pool = getattr(transport, "_pool", None)
-        backend = getattr(pool, "_network_backend", None)
-        if pool is None or not isinstance(backend, httpcore.NetworkBackend):
-            raise CmsExamplesError("CMS fetch cannot bound this HTTP transport.")
-        bounded = _DeadlineBackend(backend, deadline)
-        pool._network_backend = bounded
-        backends.append(bounded)
-    return backends
-
-
-def _read_cms_response_within_deadline(*, api_url: str, timeout_seconds: float, limit: int) -> bytes:
-    # One deadline includes name resolution, connection, redirects, headers and body;
-    # per-operation timeouts alone allow an endlessly dripping response and do not
-    # cover a blocking DNS lookup. The request runs in a daemon thread, so neither
-    # this call nor interpreter exit waits for a lookup that is still in flight.
-    deadline = time.monotonic() + timeout_seconds
-    done = threading.Event()
-    outcome: list[bytes | BaseException] = []
-    client = httpx.Client(follow_redirects=False)
-    try:
-        backends = _bound_client_connections(client, deadline)
-    except BaseException:
-        client.close()
-        raise
-
-    def abort() -> None:
-        for backend in backends:
-            backend.abort()
-
-    def read() -> None:
-        try:
-            with client:
-                outcome.append(_read_cms_response(client, api_url=api_url, deadline=deadline, limit=limit))
-        except BaseException as exc:  # noqa: BLE001 - re-raised in the calling thread
-            outcome.append(exc)
-        finally:
-            abort()
-            done.set()
-
-    threading.Thread(target=read, name=_CMS_FETCH_THREAD_NAME, daemon=True).start()
-    if not done.wait(timeout_seconds):
-        # Give up the worker: its open connections are shut down and it gets no new
-        # one, so it ends as soon as the operation it is blocked in returns.
-        abort()
-        raise CmsExamplesError(_CMS_TIMEOUT_MESSAGE)
-    result = outcome[0]
-    if isinstance(result, BaseException):
-        raise result
-    return result
-
-
-def _remaining_seconds(deadline: float) -> float:
-    remaining = deadline - time.monotonic()
-    if remaining <= 0:
-        raise CmsExamplesError(_CMS_TIMEOUT_MESSAGE)
-    return remaining
-
-
-def _read_cms_response(client: httpx.Client, *, api_url: str, deadline: float, limit: int) -> bytes:
+def _read_cms_response(*, api_url: str, timeout_seconds: float, limit: int) -> bytes:
+    # The timeout applies to each connect, read, write and pool wait, not to the whole
+    # request: a response that keeps sending is bounded by the byte limit, not by time.
     try:
         # Redirects are followed by hand: automatic redirects read (and decompress)
-        # every intermediate response body before the byte budget can be checked.
-        request = client.build_request(
-            "GET", api_url, params={"limit": limit}, headers={"Accept-Encoding": "identity"}
-        )
-        for _ in range(_MAX_CMS_REDIRECTS + 1):
-            request.extensions = {
-                **request.extensions,
-                "timeout": httpx.Timeout(_remaining_seconds(deadline)).as_dict(),
-            }
-            response = client.send(request, stream=True)
-            try:
-                if response.next_request is not None:
-                    request = response.next_request
-                    continue
-                if response.status_code >= 400:
-                    raise CmsExamplesError(f"CMS API request failed with HTTP {response.status_code}.")
-                # Refuse unsolicited compression instead of expanding an unbounded
-                # compressed chunk before the byte budget can be checked.
-                if response.headers.get("content-encoding", "identity").strip().lower() != "identity":
-                    raise CmsExamplesError("CMS API returned unsupported Content-Encoding; request uncompressed JSON.")
-                body = bytearray()
-                # No chunk_size: chunks arrive as they are received, so a drip of tiny
-                # chunks reaches the deadline check instead of filling a buffer first.
-                for chunk in response.iter_raw():
-                    _remaining_seconds(deadline)
-                    if len(body) + len(chunk) > _MAX_CMS_RESPONSE_BYTES:
-                        raise CmsExamplesError("CMS API response exceeds the 8 MiB byte limit.")
-                    body.extend(chunk)
-                return bytes(body)
-            finally:
-                response.close()
-        raise CmsExamplesError(f"CMS API redirected more than {_MAX_CMS_REDIRECTS} times.")
+        # every intermediate response body before the byte limit can be checked.
+        with httpx.Client(follow_redirects=False, timeout=httpx.Timeout(timeout_seconds)) as client:
+            request = client.build_request(
+                "GET", api_url, params={"limit": limit}, headers={"Accept-Encoding": "identity"}
+            )
+            for _ in range(_MAX_CMS_REDIRECTS + 1):
+                response = client.send(request, stream=True)
+                try:
+                    if response.next_request is not None:
+                        request = response.next_request
+                        continue
+                    return _read_bounded_body(response)
+                finally:
+                    response.close()
+            raise CmsExamplesError(f"CMS API redirected more than {_MAX_CMS_REDIRECTS} times.")
     except httpx.TimeoutException as exc:
-        raise CmsExamplesError(_CMS_TIMEOUT_MESSAGE) from exc
+        raise CmsExamplesError("CMS API request exceeded its timeout.") from exc
     except httpx.RequestError as exc:
         raise CmsExamplesError("Failed to fetch CMS API.") from exc
+
+
+def _read_bounded_body(response: httpx.Response) -> bytes:
+    if response.status_code >= 400:
+        raise CmsExamplesError(f"CMS API request failed with HTTP {response.status_code}.")
+    # Refuse unsolicited compression instead of expanding an unbounded
+    # compressed chunk before the byte limit can be checked.
+    if response.headers.get("content-encoding", "identity").strip().lower() != "identity":
+        raise CmsExamplesError("CMS API returned unsupported Content-Encoding; request uncompressed JSON.")
+    body = bytearray()
+    for chunk in response.iter_raw(chunk_size=64 * 1024):
+        if len(body) + len(chunk) > _MAX_CMS_RESPONSE_BYTES:
+            raise CmsExamplesError("CMS API response exceeds the 8 MiB byte limit.")
+        body.extend(chunk)
+    return bytes(body)
 
 
 def _extract_items(payload: Any) -> list[Any]:

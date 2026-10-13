@@ -9,7 +9,6 @@ description = "Local-first automation pipeline for podcast episode production"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-  "httpcore>=1.0",
   "httpx>=0.27",
   "pydantic>=2.7",
   "pyyaml>=6.0",
