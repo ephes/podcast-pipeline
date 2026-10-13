@@ -109,3 +109,40 @@ def test_chapters_must_be_increasing() -> None:
                 Chapter(title="B", start_sec=10.0),
             ],
         )
+
+
+@pytest.mark.parametrize("field", ["start_sec", "end_sec"])
+@pytest.mark.parametrize("value", [float("inf"), float("-inf"), float("nan")])
+def test_chapter_rejects_nonfinite_times(field: str, value: float) -> None:
+    import json
+
+    data: dict[str, str | float] = {"title": "Intro", "start_sec": 0.0}
+    if field == "end_sec":
+        data["end_sec"] = 1.0
+    data[field] = value
+    with pytest.raises(ValidationError):
+        if field == "start_sec":
+            Chapter(title="Intro", start_sec=value)
+        else:
+            Chapter(title="Intro", start_sec=0.0, end_sec=value)
+    with pytest.raises(ValidationError):
+        Chapter.model_validate(data)
+    with pytest.raises(ValidationError):
+        Chapter.model_validate_json(json.dumps(data))
+    chapter = Chapter(title="Intro", start_sec=0.0, end_sec=1.0)
+    before = chapter.model_dump_json()
+    with pytest.raises(ValidationError):
+        setattr(chapter, field, value)
+    assert chapter.model_dump_json() == before
+    with pytest.raises(ValidationError):
+        EpisodeWorkspace.model_validate({"episode_id": "test", "root_dir": "/tmp/test", "chapters": [data]})
+
+
+@pytest.mark.parametrize(
+    "start,end", [(0.0, None), (0.0, 5e-324), (1.0, 1.0000000000000002), (1.7976931348623157e308, None)]
+)
+def test_chapter_finite_boundaries_roundtrip(start: float, end: float | None) -> None:
+    chapter = Chapter(title="Grenze 🎙", start_sec=start, end_sec=end)
+    assert Chapter.model_validate_json(chapter.model_dump_json()) == chapter
+    workspace = EpisodeWorkspace(episode_id="test", root_dir="/tmp/test", chapters=[chapter])
+    assert EpisodeWorkspace.model_validate_json(workspace.model_dump_json()) == workspace
