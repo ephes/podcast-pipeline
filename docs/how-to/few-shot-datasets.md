@@ -39,6 +39,15 @@ Notes:
 - The command skips items that do not have a title plus description or shownotes HTML.
 - Field names support dot-notation for nested payloads (for example, `meta.html_url`).
 - The CLI always sends a `limit` query param; include any other filters in the `--api-url`.
+  It caps usable exported episodes locally even if the server ignores the requested count.
+- CMS responses are streamed with an 8 MiB body limit, independent of `--limit`.
+  `--timeout-seconds` (default 20) is a finite whole-request deadline covering connection,
+  redirects, headers and body, as well as the per-operation timeout. Slow drip responses
+  cannot extend that deadline. JSON decoding follows the bounded read.
+- The request asks for uncompressed JSON (`Accept-Encoding: identity`); unsolicited
+  compressed responses are rejected to prevent unbounded decompression.
+- HTTP errors stop before reading the body. Oversized, timed-out, invalid JSON and
+  network failures report a bounded diagnostic and leave an existing export untouched.
 
 If your Wagtail API returns metadata in `meta`, supply the field mapping explicitly:
 
