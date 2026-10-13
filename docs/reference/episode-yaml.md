@@ -107,6 +107,9 @@ Optional settings used by `podcast produce` (and `--dry-run`) to build an Auphon
 - `tags` (string or list): Tags merged into metadata.
 - `itunes_keywords` (string or list): Keywords merged into metadata.
 - `chapters` (list): Chapter objects with `title` and optional `start`/`end` (seconds).
+  Times (including `start_sec`/`end_sec` aliases) must be finite, nonnegative numbers or numeric strings,
+  never booleans. Fractional seconds are supported; when both times exist, `end` must be >= `start`.
+  Invalid times fail locally before Auphonic credentials are loaded or production is submitted.
 
 If metadata fields are missing, the payload builder falls back to selected copy in `copy/selected/` (for example
 `title_detail`, `subtitle_auphonic`, `summary_short`, `description`, `audio_tags`, and `itunes_keywords`).

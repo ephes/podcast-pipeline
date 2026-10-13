@@ -224,3 +224,72 @@ def test_payload_keeps_url_inputs(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
     ):
         payload = build_auphonic_payload(episode_yaml={"auphonic": config}, workspace=workspace)
         assert payload["input_file"] == "https://cdn.example/ep.mp3"
+
+
+@pytest.mark.parametrize("key", ["start", "end", "start_sec", "end_sec"])
+@pytest.mark.parametrize(
+    "value", [float("nan"), float("inf"), "nan", "-inf", -1, True, False, 10**400, "1e999", "bad"]
+)
+def test_produce_rejects_invalid_chapter_times_before_api(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, key: str, value: object
+) -> None:
+    import typer
+
+    from podcast_pipeline.entrypoints import produce
+
+    _set_global_config(monkeypatch, tmp_path, {})
+    (tmp_path / "episode.yaml").write_text(
+        yaml.safe_dump(
+            {"episode_id": "ep_001", "auphonic": {"preset_id": "p1", "chapters": [{"title": "A", key: value}]}}
+        )
+    )
+    calls: list[bool] = []
+
+    def credentials() -> Any:
+        calls.append(True)
+        raise AssertionError("API credentials must not be loaded")
+
+    monkeypatch.setattr(produce, "load_auphonic_credentials", credentials)
+    with pytest.raises(typer.BadParameter, match="finite nonnegative"):
+        produce.run_produce(workspace=tmp_path, dry_run=False)
+    assert calls == []
+
+
+def test_payload_rejects_reversed_chapter_range(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _set_global_config(monkeypatch, tmp_path, {})
+    with pytest.raises(AuphonicConfigError, match="end must be >= start"):
+        build_auphonic_payload(
+            episode_yaml={"auphonic": {"preset_id": "p1", "chapters": [{"title": "A", "start": 2, "end": 1}]}},
+            workspace=tmp_path,
+        )
+
+
+@pytest.mark.parametrize("time", [0, "0", 0.5, "0.5"])
+def test_payload_accepts_equal_nonnegative_chapter_range(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, time: object
+) -> None:
+    _set_global_config(monkeypatch, tmp_path, {})
+    payload = build_auphonic_payload(
+        episode_yaml={"auphonic": {"preset_id": "p1", "chapters": [{"title": "A", "start_sec": time, "end": time}]}},
+        workspace=tmp_path,
+    )
+    assert payload["chapters"] == [{"title": "A", "start": float(str(time)), "end": float(str(time))}]
+
+
+def test_store_preserves_invalid_chapters_without_widening_metadata(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import math
+
+    from podcast_pipeline.workspace_store import EpisodeWorkspaceStore
+
+    _set_global_config(monkeypatch, tmp_path, {})
+    (tmp_path / "episode.yaml").write_text(
+        "episode_id: ep_001\nauphonic:\n  preset_id: p1\n  metadata:\n    year: .nan\n"
+        "  chapters:\n    - title: A\n      start: .nan\n"
+    )
+    episode = EpisodeWorkspaceStore(tmp_path).read_episode_yaml()
+    assert math.isnan(episode["auphonic"]["chapters"][0]["start"])
+    assert episode["auphonic"]["metadata"]["year"] is None
+    episode["auphonic"]["chapters"] = []
+    assert "year" not in build_auphonic_payload(episode_yaml=episode, workspace=tmp_path)["metadata"]
