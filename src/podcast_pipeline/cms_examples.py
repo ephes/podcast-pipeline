@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-import asyncio
 import json
 import math
 import re
+import threading
+import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from hashlib import sha256
@@ -96,6 +97,9 @@ class CmsEpisodeExample:
 
 _TAG_SPLIT_RE = re.compile(r"[;,]")
 _MAX_CMS_RESPONSE_BYTES = 8 * 1024 * 1024
+_MAX_CMS_REDIRECTS = 5
+_CMS_FETCH_THREAD_NAME = "cms-examples-fetch"
+_CMS_TIMEOUT_MESSAGE = "CMS API request exceeded its timeout."
 
 
 def fetch_cms_examples(
@@ -156,22 +160,64 @@ def write_cms_examples_jsonl(
 def _fetch_cms_json(*, api_url: str, timeout_seconds: float, limit: int) -> Any:
     if not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
         raise CmsExamplesError("CMS timeout must be finite and > 0.")
-    body = asyncio.run(_read_cms_response(api_url=api_url, timeout_seconds=timeout_seconds, limit=limit))
+    body = _read_cms_response_within_deadline(api_url=api_url, timeout_seconds=timeout_seconds, limit=limit)
     try:
         return json.loads(body)
     except (ValueError, UnicodeError) as exc:
         raise CmsExamplesError("CMS API returned invalid JSON.") from exc
 
 
-async def _read_cms_response(*, api_url: str, timeout_seconds: float, limit: int) -> bytes:
+def _read_cms_response_within_deadline(*, api_url: str, timeout_seconds: float, limit: int) -> bytes:
+    # One deadline includes name resolution, connection, redirects, headers and body;
+    # per-operation timeouts alone allow an endlessly dripping response and do not
+    # cover a blocking DNS lookup. The request runs in a daemon thread, so neither
+    # this call nor interpreter exit waits for a lookup that is still in flight.
+    deadline = time.monotonic() + timeout_seconds
+    done = threading.Event()
+    outcome: list[bytes | BaseException] = []
+
+    def read() -> None:
+        try:
+            outcome.append(_read_cms_response(api_url=api_url, deadline=deadline, limit=limit))
+        except BaseException as exc:  # noqa: BLE001 - re-raised in the calling thread
+            outcome.append(exc)
+        finally:
+            done.set()
+
+    threading.Thread(target=read, name=_CMS_FETCH_THREAD_NAME, daemon=True).start()
+    if not done.wait(timeout_seconds):
+        raise CmsExamplesError(_CMS_TIMEOUT_MESSAGE)
+    result = outcome[0]
+    if isinstance(result, BaseException):
+        raise result
+    return result
+
+
+def _remaining_seconds(deadline: float) -> float:
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise CmsExamplesError(_CMS_TIMEOUT_MESSAGE)
+    return remaining
+
+
+def _read_cms_response(*, api_url: str, deadline: float, limit: int) -> bytes:
     try:
-        # One cancellation deadline includes connection, redirects, headers and body;
-        # per-read timeouts alone allow an endlessly dripping response.
-        async with asyncio.timeout(timeout_seconds):
-            async with httpx.AsyncClient(timeout=timeout_seconds, follow_redirects=True) as client:
-                async with client.stream(
-                    "GET", api_url, params={"limit": limit}, headers={"Accept-Encoding": "identity"}
-                ) as response:
+        # Redirects are followed by hand: automatic redirects read (and decompress)
+        # every intermediate response body before the byte budget can be checked.
+        with httpx.Client(follow_redirects=False) as client:
+            request = client.build_request(
+                "GET", api_url, params={"limit": limit}, headers={"Accept-Encoding": "identity"}
+            )
+            for _ in range(_MAX_CMS_REDIRECTS + 1):
+                request.extensions = {
+                    **request.extensions,
+                    "timeout": httpx.Timeout(_remaining_seconds(deadline)).as_dict(),
+                }
+                response = client.send(request, stream=True)
+                try:
+                    if response.next_request is not None:
+                        request = response.next_request
+                        continue
                     if response.status_code >= 400:
                         raise CmsExamplesError(f"CMS API request failed with HTTP {response.status_code}.")
                     # Refuse unsolicited compression instead of expanding an unbounded
@@ -181,13 +227,19 @@ async def _read_cms_response(*, api_url: str, timeout_seconds: float, limit: int
                             "CMS API returned unsupported Content-Encoding; request uncompressed JSON."
                         )
                     body = bytearray()
-                    async for chunk in response.aiter_raw(chunk_size=64 * 1024):
+                    # No chunk_size: chunks arrive as they are received, so a drip of tiny
+                    # chunks reaches the deadline check instead of filling a buffer first.
+                    for chunk in response.iter_raw():
+                        _remaining_seconds(deadline)
                         if len(body) + len(chunk) > _MAX_CMS_RESPONSE_BYTES:
                             raise CmsExamplesError("CMS API response exceeds the 8 MiB byte limit.")
                         body.extend(chunk)
                     return bytes(body)
-    except (TimeoutError, httpx.TimeoutException) as exc:
-        raise CmsExamplesError("CMS API request exceeded its timeout.") from exc
+                finally:
+                    response.close()
+            raise CmsExamplesError(f"CMS API redirected more than {_MAX_CMS_REDIRECTS} times.")
+    except httpx.TimeoutException as exc:
+        raise CmsExamplesError(_CMS_TIMEOUT_MESSAGE) from exc
     except httpx.RequestError as exc:
         raise CmsExamplesError("Failed to fetch CMS API.") from exc
 
