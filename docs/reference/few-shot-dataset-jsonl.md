@@ -46,3 +46,15 @@ records fill the limit. With topics, positive scores retain their weighted, stab
 Matching uses Unicode words (underscores separate words), casefolding and NFC normalization,
 so Latin accented words with precomposable characters and decomposed umlauts match consistently
 without single-letter fragments. Combining marks that NFC cannot compose remain word separators.
+
+## CMS identifier migration
+
+CMS identifiers hash the canonical API source plus page ID (falling back to link,
+then title). The source uses HTTPX URL normalization (including host case and default
+ports), removes credentials, query parameters and fragments, and strips trailing
+path slashes. Different API paths or origins identify different sources; filters and
+requested counts do not change IDs. Repeat exports from one source keep stable IDs.
+
+This replaces the previous page-only digest. Regenerate existing CMS JSONL exports
+with `podcast cms-examples` and replace the old files rather than combining old and
+new identifiers. Record schema version remains 1.

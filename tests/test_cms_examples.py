@@ -147,3 +147,55 @@ def test_write_cms_examples_jsonl_writes_records(tmp_path: Path) -> None:
     payload = json.loads(lines[0])
     assert payload["source"] == "cms"
     assert payload["title"] == "Episode"
+
+
+def test_cms_source_identity_preserves_distinct_sites_in_selection() -> None:
+    from podcast_pipeline.few_shot_selector import select_few_shot_examples
+
+    payload = [{"id": 42, "title": "Episode", "description": "<p>Notes</p>"}]
+    first = parse_cms_examples(payload, api_url="https://first.example/api", limit=1)[0]
+    second = parse_cms_examples(payload, api_url="https://second.example/api", limit=1)[0]
+    assert first.example_id() != second.example_id()
+    assert len(select_few_shot_examples(examples=[first.to_record(), second.to_record()], topics=[], limit=2)) == 2
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://CMS.example:443/api/?limit=5#fragment",
+        "https://cms.example/api?limit=25",
+        "https://user:pass@cms.example/api",
+    ],
+)
+def test_cms_source_identity_is_stable_within_source(url: str) -> None:
+    payload = [{"id": 42, "title": "Episode", "description": "<p>Notes</p>"}]
+    first = parse_cms_examples(payload, api_url="https://cms.example/api", limit=1)[0]
+    repeat = parse_cms_examples(payload, api_url=url, limit=1)[0]
+    assert first.example_id() == repeat.example_id()
+
+
+@pytest.mark.parametrize(
+    ("path", "other"), [("a%3Fb", "a"), ("a%23b", "a"), ("a%0Ab", "ab"), ("a%2Fb", "a/b"), ("a%2F", "a/")]
+)
+def test_cms_source_preserves_encoded_paths(path: str, other: str) -> None:
+    payload = [{"id": 42, "title": "Episode", "description": "<p>Notes</p>"}]
+    encoded = parse_cms_examples(payload, api_url=f"https://cms.example/{path}", limit=1)[0]
+    decoded = parse_cms_examples(payload, api_url=f"https://cms.example/{other}", limit=1)[0]
+    assert encoded.example_id() != decoded.example_id()
+    assert encoded.to_record()["example_id"] == encoded.example_id()
+
+
+def test_cms_identity_distinguishes_api_paths() -> None:
+    payload = [{"id": 42, "title": "Episode", "description": "<p>Notes</p>"}]
+    first = parse_cms_examples(payload, api_url="https://cms.example/api", limit=1)[0]
+    second = parse_cms_examples(payload, api_url="https://cms.example/other", limit=1)[0]
+    assert first.example_id() != second.example_id()
+
+
+def test_cms_id_digest_is_stable() -> None:
+    example = parse_cms_examples(
+        [{"id": 42, "title": "Episode", "description": "<p>Notes</p>"}],
+        api_url="https://cms.example/api",
+        limit=1,
+    )[0]
+    assert example.example_id() == "cms_fc79d2e15716"
