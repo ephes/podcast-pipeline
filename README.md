@@ -54,3 +54,7 @@ Details: `docs/reference/configuration.md`.
 ## Domain models
 
 Core Pydantic models live in `podcast_pipeline.domain` and are intended to back `episode.yaml` + `state.json`.
+
+Chapter times are finite, nonnegative seconds. An optional `end_sec` must exceed `start_sec`.
+Infinity and NaN are rejected on construction, JSON loading and assignment, so accepted chapter times
+round-trip through JSON without becoming null.

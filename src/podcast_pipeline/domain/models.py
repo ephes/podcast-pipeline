@@ -143,8 +143,8 @@ class Asset(DomainModel):
 
 class Chapter(DomainModel):
     title: str
-    start_sec: Annotated[float, Field(ge=0)]
-    end_sec: Annotated[float, Field(ge=0)] | None = None
+    start_sec: Annotated[float, Field(ge=0, allow_inf_nan=False)]
+    end_sec: Annotated[float, Field(ge=0, allow_inf_nan=False)] | None = None
     summary: str | None = None
 
     @model_validator(mode="after")
