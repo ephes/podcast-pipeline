@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from copy import deepcopy
 from typing import Any
 
 from pydantic import ConfigDict, Field, ValidationError
@@ -56,6 +57,11 @@ class EpisodeYaml(SchemaVersioned):
 
     def to_mapping(self, *, exclude_unset: bool = False) -> dict[str, Any]:
         payload = self.model_dump(mode="json", exclude_none=True, exclude_unset=exclude_unset)
+        # JSON-mode dumping turns NaN/Infinity extras into null. Preserve only
+        # raw chapters so the Auphonic time validator can reject invalid values.
+        auphonic = (self.model_extra or {}).get("auphonic")
+        if isinstance(auphonic, Mapping) and "chapters" in auphonic:
+            payload["auphonic"]["chapters"] = deepcopy(auphonic["chapters"])
         payload["schema_version"] = self.schema_version
         return payload
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
@@ -411,6 +412,8 @@ def _normalize_chapter_item(item: object, *, source: str, idx: int) -> dict[str,
     end = _normalize_chapter_time(item, "end", source=source, idx=idx)
     if end is not None:
         entry["end"] = end
+    if start is not None and end is not None and end < start:
+        raise AuphonicConfigError(f"{source}[{idx}].end must be >= start")
     return entry
 
 
@@ -426,14 +429,16 @@ def _normalize_chapter_time(
         value = item.get(f"{key}_sec")
     if value is None:
         return None
-    if isinstance(value, (int, float)):
-        return float(value)
-    if isinstance(value, str):
-        try:
-            return float(value)
-        except ValueError as exc:
-            raise AuphonicConfigError(f"{source}[{idx}].{key} must be numeric") from exc
-    raise AuphonicConfigError(f"{source}[{idx}].{key} must be numeric")
+    message = f"{source}[{idx}].{key} must be finite nonnegative seconds (not boolean)"
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+        raise AuphonicConfigError(message)
+    try:
+        seconds = float(value)
+    except (ValueError, OverflowError) as exc:
+        raise AuphonicConfigError(message) from exc
+    if not math.isfinite(seconds) or seconds < 0:
+        raise AuphonicConfigError(message)
+    return seconds
 
 
 def _set_default(metadata: dict[str, Any], key: str, value: object) -> None:
