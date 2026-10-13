@@ -17,6 +17,12 @@ backed by different models) and then persists the results.
 5. Write protocol JSON (`copy/protocol/...`), candidates, reviews, selected text (if converged), and the updated
    `state.json` workspace snapshot.
 
+All protocol documents of a run are serialized before the first file is touched, and each file is then replaced
+atomically, so a failed rerun never truncates an existing protocol file. The files are still published one after
+another, not as one transaction: after a failure the protocol directory can hold a mix of complete old and complete new
+files. The workspace `state.json` is written last and is the marker for a fully published run; rerun the review loop to
+rebuild a partial bundle.
+
 ## Convergence rules
 
 The loop engine decides convergence per iteration:

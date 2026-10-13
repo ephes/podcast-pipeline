@@ -57,7 +57,8 @@ Notes:
 ## 3. Draft text assets (draft)
 
 `podcast draft` runs the transcript chunking + summary + candidate generation pipeline. It reuses an existing workspace
-if one is present (clearing stale chunks/summaries on re-run).
+if one is present. Supplying `--transcript` again replaces the workspace transcript and clears the chunks and summaries
+built from the previous one.
 
 ```bash
 podcast draft \
@@ -80,6 +81,18 @@ Outputs:
 - `transcript/` contains the ingested transcript + chunk files.
 - `summaries/` contains chunk summaries and the episode summary.
 - `copy/candidates/<asset_id>/` contains candidate JSON + Markdown + HTML files.
+
+### Replacing the transcript
+
+- The new transcript is copied completely into a staging file next to `transcript/transcript.txt` before anything else
+  changes. A missing or unreadable source, a failed copy or an invalid `episode.yaml` leaves the transcript, chunks and
+  summaries untouched.
+- Chunks and summaries are then removed, and only after that the staged transcript replaces the old one. Derived
+  artifacts therefore never sit next to a transcript they were not built from. If the command is interrupted in
+  between, the previous transcript is still in place without chunks and summaries; rerun `podcast draft` (with the new
+  `--transcript` to retry the replacement) and they are rebuilt.
+- Passing the workspace's own `transcript/transcript.txt` (or a hard link to it) as `--transcript` changes nothing;
+  existing chunks and summaries are reused.
 
 ## 4. Run the review loop (review)
 
@@ -113,6 +126,10 @@ Notes:
   press "Done" to shut down the server.
 - Without `--web`, the CLI prompts when multiple candidates exist and writes the selection to `copy/selected/`.
 - Use `--asset-id` and `--candidate-id` to pick a specific candidate non-interactively (CLI only).
+- A selection has one canonical file: `.md` (with a derived `.html`), `.txt` or `.html`. Selecting a candidate in
+  another format removes the files of the previous format after the new ones are written, so `copy/selected/` never
+  keeps a stale `.html` or `.md` next to a newer selection. If writing fails, the previous canonical file is unchanged;
+  if only the final removal fails, the command reports it and repeating the selection finishes the switch.
 
 ## 6. Produce with Auphonic (produce)
 

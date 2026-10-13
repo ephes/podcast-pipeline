@@ -30,6 +30,9 @@ Notes:
 - `--host` is repeatable. Stored host names are reused on later runs and included in the LLM prompts.
 - The configured drafter CLI defaults to Claude and can be overridden through the agent configuration.
 - Existing chunks and summaries are reused unless you supply a replacement transcript.
+- A replacement transcript is copied completely before anything is removed, so an unreadable source or a failed copy
+  leaves the current transcript, chunks and summaries untouched. Passing the workspace's own
+  `transcript/transcript.txt` is a no-op. See the episode workflow tutorial for the exact ordering.
 
 For a deterministic local smoke test, add `--dry-run`. The dry-run workspace must not already exist.
 

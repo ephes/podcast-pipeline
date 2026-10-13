@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import fcntl
 import hashlib
 import json
@@ -103,6 +104,35 @@ def _atomic_write_text(path: Path, text: str) -> None:
 
 def atomic_write_text(path: Path, text: str) -> None:
     _atomic_write_text(path, text)
+
+
+def _publish_markdown_selection(markdown_path: Path, html_path: Path, content: str) -> None:
+    """Publish a Markdown selection and its derived HTML without losing the previous selection."""
+    html = markdown_to_deterministic_html(content)  # rendered before anything is written
+    if markdown_path.exists():
+        # Markdown is already canonical, so the HTML is only derived: refresh it first
+        # and replace the canonical file last.
+        _atomic_write_text(html_path, html)
+        _atomic_write_text(markdown_path, content)
+        return
+    # An existing HTML file may be the canonical selection. Create the Markdown first. If
+    # the HTML then fails without having been replaced, remove the Markdown again so the
+    # previous selection stays exactly as it was; if the HTML was replaced (the error came
+    # after the rename), both new files stay.
+    _atomic_write_text(markdown_path, content)
+    try:
+        _atomic_write_text(html_path, html)
+    except BaseException:
+        try:
+            html_replaced = html_path.read_bytes() == html.encode()
+        except FileNotFoundError:
+            html_replaced = False
+        except OSError:
+            html_replaced = True  # unknown: keep the Markdown rather than delete
+        if not html_replaced:
+            with contextlib.suppress(OSError):
+                markdown_path.unlink(missing_ok=True)
+        raise
 
 
 def _read_text(path: Path) -> str:
@@ -453,10 +483,22 @@ class EpisodeWorkspaceStore:
         path = self.layout.selected_text_path(asset_id, fmt)
         if not content.endswith("\n"):
             content += "\n"
-        _atomic_write_text(path, content)
+        published = {path}
         if fmt == TextFormat.markdown:
             html_path = self.layout.selected_text_path(asset_id, TextFormat.html)
-            _atomic_write_text(html_path, markdown_to_deterministic_html(content))
+            published.add(html_path)
+            _publish_markdown_selection(path, html_path, content)
+        else:
+            _atomic_write_text(path, content)
+        # Only once the new selection is published: drop files of superseded formats.
+        for superseded in TextFormat:
+            stale = self.layout.selected_text_path(asset_id, superseded)
+            if stale in published:
+                continue
+            try:
+                stale.unlink(missing_ok=True)
+            except OSError as exc:
+                raise WorkspaceStoreError(f"Failed to remove superseded selected text at {stale}: {exc}") from exc
         return path
 
     def clear_selected_text(self, asset_id: str) -> None:
