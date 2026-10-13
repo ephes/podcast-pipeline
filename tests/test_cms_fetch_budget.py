@@ -23,6 +23,26 @@ _REDIRECTS = {
 }
 
 
+_HEADER_DRIPS = {
+    "/continue-forever": (b"", b"HTTP/1.1 100 Continue\r\n\r\n"),
+    "/header-drip": (b"HTTP/1.1 200 OK\r\n", b"X-Drip: 1\r\n"),
+}
+
+
+def _drip_headers(handler: BaseHTTPRequestHandler, path: str, sent: dict[str, int]) -> None:
+    first, repeated = _HEADER_DRIPS[path]
+    sent[path] = 0
+    try:
+        handler.wfile.write(first)
+        for _ in range(500):
+            time.sleep(0.02)
+            handler.wfile.write(repeated)
+            handler.wfile.flush()
+            sent[path] += 1
+    except (BrokenPipeError, ConnectionResetError):
+        pass
+
+
 def _send_redirect(handler: BaseHTTPRequestHandler, path: str, sent: dict[str, int]) -> None:
     handler.send_response(302)
     handler.send_header("Location", _REDIRECTS[path])
@@ -85,6 +105,9 @@ def cms_server() -> Iterator[tuple[str, dict[str, int]]]:
             path = self.path.split("?")[0]
             if path == "/headers":
                 time.sleep(0.6)
+            if path in _HEADER_DRIPS:
+                _drip_headers(self, path, sent)
+                return
             status = 500 if path == "/error" else 200
             if path in _REDIRECTS:
                 _send_redirect(self, path, sent)
@@ -214,14 +237,18 @@ def test_cms_fetch_deadline_covers_blocking_name_resolution(monkeypatch: pytest.
     assert elapsed < 2
 
 
-def test_cms_fetch_timeout_stops_worker_during_continuing_drip(cms_server: tuple[str, dict[str, int]]) -> None:
+@pytest.mark.parametrize("path", ["drip-forever", "continue-forever", "header-drip"])
+def test_cms_fetch_timeout_stops_worker_during_continuing_drip(
+    cms_server: tuple[str, dict[str, int]], path: str
+) -> None:
     url, sent = cms_server
     with pytest.raises(cms_examples.CmsExamplesError, match="timeout"):
-        cms_examples.fetch_cms_examples(api_url=f"{url}/drip-forever", limit=1, timeout_seconds=0.2)
+        cms_examples.fetch_cms_examples(api_url=f"{url}/{path}", limit=1, timeout_seconds=0.2)
     workers = [thread for thread in threading.enumerate() if thread.name == cms_examples._CMS_FETCH_THREAD_NAME]
     for worker in workers:
         worker.join(timeout=2)
     assert not any(worker.is_alive() for worker in workers)
-    received = sent["/drip-forever"]
+    received = sent[f"/{path}"]
+    assert received > 0
     time.sleep(0.3)
-    assert sent["/drip-forever"] <= received + 2
+    assert sent[f"/{path}"] <= received + 2
