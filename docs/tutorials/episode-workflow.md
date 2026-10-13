@@ -19,9 +19,10 @@ Notes:
 - `--workspace` must not exist; the command creates it.
 - The workspace is assembled in a hidden sibling directory (`.podcast-init-*`) and moved into place in one step,
   so a failed initialization leaves no partial workspace and the command can be retried; parent directories
-  remain. Init never deletes content at the workspace path: an existing workspace, or content that appears there
-  while init runs, is preserved and reported. The error includes the failure cause. If it reports preserved
-  content or a staging directory that could not be removed, inspect the named path before retrying.
+  remain. Init only deletes files it wrote into its own staging directory, never content at the workspace path:
+  an existing workspace, or content that appears there while init runs, is preserved and reported. The error
+  includes the failure cause. If it reports preserved content or a staging directory left in place, inspect the
+  named path before retrying.
 - If you omit `--workspace`, the default is `./episodes/<episode_id>`.
 
 ## 2. Export and transcribe audio

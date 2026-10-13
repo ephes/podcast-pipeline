@@ -217,7 +217,7 @@ def test_init_reports_original_and_cleanup_errors(tmp_path: Path, monkeypatch: p
         raise OSError("cleanup denied")
 
     monkeypatch.setattr(EpisodeWorkspaceStore, "write_state", fail)
-    monkeypatch.setattr(init.shutil, "rmtree", cleanup_fail)
+    monkeypatch.setattr(init, "_empty_directory", cleanup_fail)
     result = CliRunner().invoke(app, _init_args(workspace))
 
     assert result.exit_code != 0
@@ -225,9 +225,70 @@ def test_init_reports_original_and_cleanup_errors(tmp_path: Path, monkeypatch: p
     output = " ".join((result.stdout + result.stderr).replace("│", " ").split())
     assert "state write failed" in output
     assert "cleanup denied" in output
+    assert "staging directory left in place" in output
     # The empty claim is released even when the staging tree could not be removed.
     assert not workspace.exists()
-    assert [path.name for path in tmp_path.iterdir() if path.name.startswith(".podcast-init-")]
+    assert _staging_dirs(tmp_path)
+
+
+def _staging_dirs(parent: Path) -> list[Path]:
+    return [path for path in parent.iterdir() if path.name.startswith(".podcast-init-")]
+
+
+@pytest.mark.parametrize("when", ["before_failure", "before_publication"])
+def test_init_never_deletes_a_directory_swapped_into_the_staging_name(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, when: str
+) -> None:
+    workspace = tmp_path / "workspace"
+    stolen = tmp_path / "stolen"
+    original = EpisodeWorkspaceStore.write_state
+
+    def swap_staging(self: EpisodeWorkspaceStore, *args: object, **kwargs: object) -> None:
+        # Another process moves our staging directory away and puts a populated
+        # directory under the same name.
+        if when == "before_publication":
+            original(self, *args, **kwargs)  # type: ignore[arg-type]
+        (staging,) = _staging_dirs(tmp_path)
+        staging.rename(stolen)
+        staging.mkdir()
+        (staging / "keep").write_bytes(b"untouched")
+        if when == "before_failure":
+            raise OSError("injected failure")
+
+    monkeypatch.setattr(EpisodeWorkspaceStore, "write_state", swap_staging)
+    result = CliRunner().invoke(app, _init_args(workspace))
+
+    assert result.exit_code != 0
+    output = " ".join((result.stdout + result.stderr).replace("│", " ").split())
+    assert "staging directory left in place" in output
+    (replacement,) = _staging_dirs(tmp_path)
+    assert (replacement / "keep").read_bytes() == b"untouched"
+    # Only the directory this invocation created was emptied, through its descriptor.
+    assert list(stolen.iterdir()) == []
+    assert not workspace.exists()
+
+
+def test_init_does_not_adopt_a_replaced_staging_directory(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from podcast_pipeline.entrypoints import init
+
+    workspace = tmp_path / "workspace"
+    real_mkdtemp = init.tempfile.mkdtemp
+
+    def mkdtemp_then_replace(prefix: str, dir: Path) -> str:
+        created = Path(real_mkdtemp(prefix=prefix, dir=dir))
+        created.rmdir()
+        created.mkdir(mode=0o700)
+        (created / "keep").write_bytes(b"untouched")
+        return str(created)
+
+    monkeypatch.setattr(init.tempfile, "mkdtemp", mkdtemp_then_replace)
+    result = CliRunner().invoke(app, _init_args(workspace))
+
+    assert result.exit_code != 0
+    (replacement,) = _staging_dirs(tmp_path)
+    assert [path.name for path in replacement.iterdir()] == ["keep"]
+    assert (replacement / "keep").read_bytes() == b"untouched"
+    assert not workspace.exists()
 
 
 def test_init_accepts_workspace_name_at_the_filename_limit(tmp_path: Path) -> None:
