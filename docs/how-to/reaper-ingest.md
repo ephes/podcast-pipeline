@@ -49,3 +49,6 @@ Details:
 - `track_id` values are stable for a given path and must match `^[a-z][a-z0-9_]*$`.
 - The ingest heuristics convert filenames like `Ada-02.flac` into `track_id: ada_02` and `label: Ada 2`.
 - If you re-run ingest, existing `track_id`, `label`, and `role` values for matching paths are preserved.
+
+For initialization failures, cleanup and retry behavior, see
+[Initialize a workspace](../tutorials/episode-workflow.md#1-initialize-a-workspace-init).

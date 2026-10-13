@@ -75,3 +75,6 @@ Chapters are used when generating assets. Supply them using any of these sources
 - Candidate assets: `copy/candidates/<asset_id>/candidate_<uuid>.{json,md,html}`.
 
 Use `podcast pick --workspace ./workspaces/ep_001 --web` or the dashboard to select final candidates.
+
+For initialization failures, cleanup and retry behavior, see
+[Initialize a workspace](../tutorials/episode-workflow.md#1-initialize-a-workspace-init).

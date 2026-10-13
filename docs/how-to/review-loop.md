@@ -63,3 +63,6 @@ If no protocol state files exist, `podcast status` reports that no state was fou
 - `Outcome`: `in_progress`, `converged`, or `needs_human`; a decision reason appears as `Outcome: ... (reason=...)`.
 - `Blocking issues`: count of issues with `severity=error`.
 - `Outstanding issues`: total issue count plus per-issue lines with severity, message, and optional `code` or `field`.
+
+For initialization failures, cleanup and retry behavior, see
+[Initialize a workspace](../tutorials/episode-workflow.md#1-initialize-a-workspace-init).
