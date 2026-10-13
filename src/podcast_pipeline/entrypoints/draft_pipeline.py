@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
+import uuid
 from pathlib import Path
 
 import typer
@@ -109,13 +111,36 @@ def _clear_stale_artifacts(store: EpisodeWorkspaceStore) -> None:
 
 
 def _ingest_transcript(*, store: EpisodeWorkspaceStore, transcript: Path) -> None:
-    """Copy a transcript file into the workspace and invalidate stale artifacts."""
-    _clear_stale_artifacts(store)
+    """Replace the workspace transcript and invalidate chunks and summaries.
 
+    The source is copied completely into a sibling staging file before anything
+    is removed, so a missing, unreadable or partially copied source leaves the
+    workspace untouched. Chunks and summaries are removed before the staged
+    transcript is published: the pipeline reuses whatever derived artifacts it
+    finds, so they must never sit next to a transcript they were not built from.
+    Passing the workspace transcript itself (or a hard link to it) changes nothing.
+    """
     transcript_dir = store.layout.transcript_dir
-    transcript_dir.mkdir(parents=True, exist_ok=True)
     transcript_dest = transcript_dir / "transcript.txt"
-    shutil.copyfile(transcript, transcript_dest)
+    staged = transcript_dir / f".transcript.txt.{uuid.uuid4().hex}.tmp"
+
+    with transcript.open("rb") as source:
+        if transcript_dest.exists() and os.path.samestat(os.fstat(source.fileno()), transcript_dest.stat()):
+            typer.echo("Transcript is already the workspace transcript; nothing to ingest", err=True)
+            return
+        store.read_episode_yaml()  # fail on unusable metadata before changing anything
+        transcript_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            with staged.open("xb") as target:
+                shutil.copyfileobj(source, target)
+                target.flush()
+                os.fsync(target.fileno())
+            if transcript_dest.exists():
+                shutil.copymode(transcript_dest, staged)
+            _clear_stale_artifacts(store)
+            os.replace(staged, transcript_dest)
+        finally:
+            staged.unlink(missing_ok=True)
 
     with store.update_episode_yaml() as episode_yaml:
         inputs = episode_yaml.get("inputs")
