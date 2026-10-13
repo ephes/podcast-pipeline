@@ -121,7 +121,50 @@ def test_init_failure_cleans_owned_root_and_allows_retry(
     assert CliRunner().invoke(app, args).exit_code == 0
 
 
-def test_init_failure_preserves_replacement(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def _init_args(workspace: Path) -> list[str]:
+    return ["init", "--workspace", str(workspace), "--episode-id", "ep_001"]
+
+
+def test_init_leaves_no_staging_directory_and_keeps_directory_mode(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    reference = tmp_path / "reference"
+    reference.mkdir()
+
+    assert CliRunner().invoke(app, _init_args(workspace)).exit_code == 0
+
+    assert sorted(path.name for path in tmp_path.iterdir()) == ["reference", "workspace"]
+    assert workspace.stat().st_mode == reference.stat().st_mode
+
+
+@pytest.mark.parametrize("stage", ["dirs", "yaml", "state"])
+def test_init_failure_never_deletes_concurrently_added_content(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stage: str
+) -> None:
+    from podcast_pipeline.entrypoints import init
+
+    workspace = tmp_path / "workspace"
+
+    def populate_then_fail(*args: object, **kwargs: object) -> None:
+        # Another process starts using the claimed name while init is running.
+        (workspace / "keep").write_bytes(b"untouched")
+        raise OSError("injected failure")
+
+    if stage == "dirs":
+        monkeypatch.setattr(init, "_create_workspace_dirs", populate_then_fail)
+    else:
+        name = "write_episode_yaml" if stage == "yaml" else "write_state"
+        monkeypatch.setattr(EpisodeWorkspaceStore, name, populate_then_fail)
+    result = CliRunner().invoke(app, _init_args(workspace))
+
+    assert result.exit_code != 0
+    output = " ".join((result.stdout + result.stderr).replace("│", " ").split())
+    assert "injected failure" in output
+    assert "existing workspace content" in output
+    assert (workspace / "keep").read_bytes() == b"untouched"
+    assert sorted(path.name for path in tmp_path.iterdir()) == ["workspace"]
+
+
+def test_init_failure_preserves_replaced_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     from podcast_pipeline.entrypoints import init
 
     workspace = tmp_path / "workspace"
@@ -134,10 +177,32 @@ def test_init_failure_preserves_replacement(tmp_path: Path, monkeypatch: pytest.
         raise OSError("injected replacement")
 
     monkeypatch.setattr(init, "_create_workspace_dirs", replace)
-    result = CliRunner().invoke(app, ["init", "--workspace", str(workspace), "--episode-id", "ep_001"])
+    result = CliRunner().invoke(app, _init_args(workspace))
+
     assert result.exit_code != 0
     assert (workspace / "keep").read_bytes() == b"untouched"
-    assert "replacement workspace preserved" in result.stdout + result.stderr
+    assert moved.is_dir()
+    assert sorted(path.name for path in tmp_path.iterdir()) == ["moved", "workspace"]
+
+
+def test_init_does_not_overwrite_content_added_before_publication(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workspace = tmp_path / "workspace"
+    original = EpisodeWorkspaceStore.write_state
+
+    def write_then_populate(self: EpisodeWorkspaceStore, *args: object, **kwargs: object) -> None:
+        original(self, *args, **kwargs)  # type: ignore[arg-type]
+        (workspace / "keep").write_bytes(b"untouched")
+
+    monkeypatch.setattr(EpisodeWorkspaceStore, "write_state", write_then_populate)
+    result = CliRunner().invoke(app, _init_args(workspace))
+
+    assert result.exit_code != 0
+    assert "failed to initialize workspace" in result.stdout + result.stderr
+    assert [path.name for path in workspace.iterdir()] == ["keep"]
+    assert (workspace / "keep").read_bytes() == b"untouched"
+    assert sorted(path.name for path in tmp_path.iterdir()) == ["workspace"]
 
 
 def test_init_reports_original_and_cleanup_errors(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -153,9 +218,20 @@ def test_init_reports_original_and_cleanup_errors(tmp_path: Path, monkeypatch: p
 
     monkeypatch.setattr(EpisodeWorkspaceStore, "write_state", fail)
     monkeypatch.setattr(init.shutil, "rmtree", cleanup_fail)
-    result = CliRunner().invoke(app, ["init", "--workspace", str(workspace), "--episode-id", "ep_001"])
+    result = CliRunner().invoke(app, _init_args(workspace))
+
     assert result.exit_code != 0
-    output = result.stdout + result.stderr
+    # The error box wraps long lines; compare against the unwrapped text.
+    output = " ".join((result.stdout + result.stderr).replace("│", " ").split())
     assert "state write failed" in output
-    assert "cleanup failed: cleanup denied" in output
-    assert workspace.is_dir()
+    assert "cleanup denied" in output
+    # The empty claim is released even when the staging tree could not be removed.
+    assert not workspace.exists()
+    assert [path.name for path in tmp_path.iterdir() if path.name.startswith(".podcast-init-")]
+
+
+def test_init_accepts_workspace_name_at_the_filename_limit(tmp_path: Path) -> None:
+    workspace = tmp_path / ("w" * 250)
+
+    assert CliRunner().invoke(app, _init_args(workspace)).exit_code == 0
+    assert EpisodeWorkspaceStore(workspace).read_state().episode_id == "ep_001"

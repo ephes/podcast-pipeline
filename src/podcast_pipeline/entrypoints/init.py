@@ -3,6 +3,8 @@ from __future__ import annotations
 import os
 import re
 import shutil
+import stat
+import tempfile
 from pathlib import Path
 
 import typer
@@ -46,6 +48,25 @@ def _create_workspace_dirs(layout: EpisodeWorkspaceLayout) -> None:
         path.mkdir(parents=True, exist_ok=True)
 
 
+def _discard_failed_init(*, root: Path, staging: Path | None) -> str:
+    """Remove this invocation's staging tree and release its empty claim on ``root``."""
+    notes = ""
+    if staging is not None:
+        try:
+            shutil.rmtree(staging)
+        except FileNotFoundError:
+            pass
+        except OSError as cleanup_exc:
+            notes += f"; cleanup failed: {staging}: {cleanup_exc}"
+    try:
+        os.rmdir(root)
+    except FileNotFoundError:
+        pass
+    except OSError:
+        notes += "; existing workspace content preserved"
+    return notes
+
+
 def run_init(
     *,
     workspace: Path | None,
@@ -62,34 +83,25 @@ def run_init(
     except OSError as exc:
         raise typer.BadParameter(f"failed to create workspace: {root}") from exc
 
+    # The exclusive mkdir above only claims the name. Everything is built in a
+    # private sibling directory and moved over the still-empty claim in one
+    # rename, so a failure never requires a recursive delete at ``root``: the
+    # claim is released with rmdir, which cannot remove a populated replacement.
+    staging: Path | None = None
     try:
-        directory_fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
-    except OSError as exc:
-        raise typer.BadParameter(f"failed to initialize workspace: {root}: {exc}; ownership unavailable") from exc
-    owned = os.fstat(directory_fd)
-    try:
-        layout = EpisodeWorkspaceLayout(root=root)
-        _create_workspace_dirs(layout)
+        staging = Path(tempfile.mkdtemp(prefix=".podcast-init-", dir=root.parent))
+        _create_workspace_dirs(EpisodeWorkspaceLayout(root=staging))
 
-        store = EpisodeWorkspaceStore(root)
+        store = EpisodeWorkspaceStore(staging)
         store.write_episode_yaml({"episode_id": episode_id, "inputs": {}})
         store.write_state(EpisodeWorkspace(episode_id=episode_id, root_dir="."))
+
+        claimed = root.lstat()
+        if stat.S_ISDIR(claimed.st_mode):
+            os.chmod(staging, stat.S_IMODE(claimed.st_mode))
+        os.rename(staging, root)
     except Exception as exc:
-        suffix = ""
-        try:
-            current = root.lstat()
-            if (current.st_dev, current.st_ino) == (owned.st_dev, owned.st_ino):
-                shutil.rmtree(root)
-            else:
-                suffix = "; replacement workspace preserved"
-        except FileNotFoundError:
-            pass
-        except OSError as cleanup_exc:
-            raise typer.BadParameter(
-                f"failed to initialize workspace: {root}: {exc}; cleanup failed: {cleanup_exc}"
-            ) from exc
-        raise typer.BadParameter(f"failed to initialize workspace: {root}: {exc}{suffix}") from exc
-    finally:
-        os.close(directory_fd)
+        notes = _discard_failed_init(root=root, staging=staging)
+        raise typer.BadParameter(f"failed to initialize workspace: {root}: {exc}{notes}") from exc
 
     typer.echo(f"Workspace: {root}")
