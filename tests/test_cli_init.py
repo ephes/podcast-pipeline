@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import os
+import re
 import stat
 from pathlib import Path
 
 import pytest
+from click.testing import Result
 from typer.testing import CliRunner
 
 from podcast_pipeline.entrypoints.cli import app
@@ -19,9 +21,22 @@ def _visible_names(parent: Path) -> list[str]:
     return sorted(path.name for path in parent.iterdir() if not path.name.startswith(".podcast-init-"))
 
 
-def _output(result: object) -> str:
-    # The error box wraps long lines; compare against the unwrapped text.
-    return " ".join((result.stdout + result.stderr).replace("│", " ").split())  # type: ignore[attr-defined]
+_ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+_LAYOUT_RE = re.compile(r"[\s\u2500-\u257f]+")
+
+
+def _said(result: Result, text: str) -> bool:
+    """Whether the CLI output contains ``text``, independent of the terminal.
+
+    The error box is rendered with colours, borders and line wrapping that
+    depend on the environment (and can wrap inside a long path), so escape
+    sequences, box-drawing characters and all whitespace are ignored.
+    """
+
+    def plain(value: str) -> str:
+        return _LAYOUT_RE.sub("", _ANSI_ESCAPE_RE.sub("", value))
+
+    return plain(text) in plain(result.stdout + result.stderr)
 
 
 def test_cli_init_creates_workspace_tree(tmp_path: Path) -> None:
@@ -82,8 +97,7 @@ def test_cli_init_rejects_existing_workspace(tmp_path: Path) -> None:
     )
 
     assert result.exit_code != 0
-    output = result.stdout + result.stderr
-    assert "workspace already exists" in output
+    assert _said(result, "workspace already exists")
     assert (workspace / "keep").read_bytes() == b"existing workspace"
 
 
@@ -103,8 +117,7 @@ def test_cli_init_rejects_invalid_episode_id(tmp_path: Path) -> None:
     )
 
     assert result.exit_code != 0
-    output = result.stdout + result.stderr
-    assert "episode_id" in output
+    assert _said(result, "episode_id")
 
 
 @pytest.mark.parametrize("stage", ["dirs", "yaml", "state"])
@@ -130,8 +143,8 @@ def test_init_failure_releases_claim_and_allows_retry(
         result = CliRunner().invoke(app, args)
     assert called
     assert result.exit_code != 0
-    assert "failed to initialize workspace" in _output(result)
-    assert "injected failure" in _output(result)
+    assert _said(result, "failed to initialize workspace")
+    assert _said(result, "injected failure")
     assert not workspace.exists()
     assert len(_staging_dirs(tmp_path)) == 1
     assert CliRunner().invoke(app, args).exit_code == 0
@@ -174,9 +187,8 @@ def test_init_failure_never_deletes_concurrently_added_content(
     result = CliRunner().invoke(app, _init_args(workspace))
 
     assert result.exit_code != 0
-    output = _output(result)
-    assert "injected failure" in output
-    assert "existing workspace content" in output
+    assert _said(result, "injected failure")
+    assert _said(result, "existing workspace content preserved")
     assert (workspace / "keep").read_bytes() == b"untouched"
     assert _visible_names(tmp_path) == ["workspace"]
 
@@ -216,7 +228,7 @@ def test_init_does_not_overwrite_content_added_before_publication(
     result = CliRunner().invoke(app, _init_args(workspace))
 
     assert result.exit_code != 0
-    assert "failed to initialize workspace" in result.stdout + result.stderr
+    assert _said(result, "failed to initialize workspace")
     assert [path.name for path in workspace.iterdir()] == ["keep"]
     assert (workspace / "keep").read_bytes() == b"untouched"
     assert _visible_names(tmp_path) == ["workspace"]
@@ -232,10 +244,9 @@ def test_init_failure_reports_and_keeps_the_staging_directory(tmp_path: Path, mo
     result = CliRunner().invoke(app, _init_args(workspace))
 
     assert result.exit_code != 0
-    output = _output(result)
-    assert "state write failed" in output
+    assert _said(result, "state write failed")
     (staging,) = _staging_dirs(tmp_path)
-    assert f"partial workspace left in staging directory: {staging}".replace(" ", "") in output.replace(" ", "")
+    assert _said(result, f"partial workspace left in staging directory: {staging}")
     # The partial tree is left for inspection; only the empty claim is released.
     assert (staging / "episode.yaml").exists()
     assert not workspace.exists()
@@ -295,8 +306,7 @@ def test_init_never_deletes_a_directory_swapped_into_the_staging_name(
     result = CliRunner().invoke(app, _init_args(workspace))
 
     assert result.exit_code != 0
-    output = _output(result)
-    assert "left in staging directory" in output
+    assert _said(result, "left in staging directory")
     (replacement,) = _staging_dirs(tmp_path)
     assert (replacement / "keep").read_bytes() == b"untouched"
     # Nothing is deleted, not even the files this invocation wrote itself.
@@ -347,8 +357,8 @@ def test_init_interrupt_releases_claim_and_allows_retry(tmp_path: Path, monkeypa
         result = CliRunner().invoke(app, _init_args(workspace))
 
     assert result.exit_code != 0
-    assert "initialization interrupted" in _output(result)
-    assert "left in staging directory" in _output(result)
+    assert _said(result, "initialization interrupted")
+    assert _said(result, "left in staging directory")
     assert not workspace.exists()
     assert CliRunner().invoke(app, _init_args(workspace)).exit_code == 0
 
