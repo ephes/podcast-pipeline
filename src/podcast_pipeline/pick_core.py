@@ -1,13 +1,48 @@
 from __future__ import annotations
 
 import json
+import re
+import unicodedata
+from datetime import UTC, datetime
 from pathlib import Path
 from uuid import UUID
 
 from pydantic import ValidationError
 
-from podcast_pipeline.domain.models import Asset, AssetKind, Candidate, EpisodeWorkspace
+from podcast_pipeline.domain.models import (
+    Asset,
+    AssetKind,
+    Candidate,
+    EpisodeWorkspace,
+    ProvenanceRef,
+    TextFormat,
+)
 from podcast_pipeline.workspace_store import EpisodeWorkspaceLayout, EpisodeWorkspaceStore
+
+MANUAL_SELECTION_PROVENANCE_KIND = "manual_selection"
+
+# Short single-value assets are stored as plain text; everything else as markdown
+# (which also publishes the derived ``.html`` next to it).
+_PLAIN_SELECTION_ASSETS = frozenset(
+    {
+        AssetKind.slug.value,
+        AssetKind.title_detail.value,
+        AssetKind.title_seo.value,
+        AssetKind.subtitle_auphonic.value,
+        AssetKind.summary_short.value,
+    }
+)
+_SINGLE_LINE_ASSETS = frozenset(
+    {
+        AssetKind.slug.value,
+        AssetKind.title_detail.value,
+        AssetKind.title_seo.value,
+        AssetKind.subtitle_auphonic.value,
+    }
+)
+_SLUG_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
+_NON_SLUG_CHARS_RE = re.compile(r"[^a-z0-9]+")
+_GERMAN_TRANSLITERATIONS = str.maketrans({"ä": "ae", "ö": "oe", "ü": "ue", "ß": "ss"})
 
 
 def load_candidates(
@@ -81,9 +116,12 @@ def build_asset(
     asset_id: str,
     existing: Asset | None,
     candidates: list[Candidate],
-    selected_candidate_id: UUID,
+    selected_candidate_id: UUID | None,
 ) -> Asset:
-    """Build an Asset model with merged candidates and the selected candidate id."""
+    """Build an Asset model with merged candidates and the selected candidate id.
+
+    ``selected_candidate_id`` is ``None`` for a custom (manually written) selection.
+    """
     merged_candidates = _merge_candidates(existing, candidates)
     reviews = list(existing.reviews) if existing else []
     kind = existing.kind if existing and existing.kind is not None else _asset_kind(asset_id)
@@ -160,3 +198,114 @@ def _asset_kind(asset_id: str) -> AssetKind | None:
         return AssetKind(asset_id)
     except ValueError:
         return None
+
+
+def custom_selection_format(asset_id: str) -> TextFormat:
+    """Return the format a custom selection of ``asset_id`` is stored in."""
+    return TextFormat.plain if asset_id in _PLAIN_SELECTION_ASSETS else TextFormat.markdown
+
+
+def suggest_slug(text: str) -> str:
+    """Turn arbitrary text into a lowercase, hyphen-separated, URL-safe slug."""
+    lowered = text.lower().translate(_GERMAN_TRANSLITERATIONS)
+    ascii_text = unicodedata.normalize("NFKD", lowered).encode("ascii", "ignore").decode("ascii")
+    return _NON_SLUG_CHARS_RE.sub("-", ascii_text).strip("-")
+
+
+def validate_slug(slug: str) -> None:
+    """Raise ValueError unless ``slug`` is lowercase, hyphen-separated and URL-safe."""
+    if _SLUG_RE.fullmatch(slug):
+        return
+    message = f"Invalid slug {slug!r}: use lowercase letters a-z, digits and single hyphens between words"
+    suggestion = suggest_slug(slug)
+    if suggestion:
+        message += f" (e.g. {suggestion!r})"
+    raise ValueError(message)
+
+
+def normalize_custom_selection_text(asset_id: str, text: str) -> str:
+    """Validate and normalize producer-written text for ``asset_id``; raise ValueError when invalid."""
+    normalized = text.replace("\r\n", "\n").replace("\r", "\n")
+    if asset_id in _SINGLE_LINE_ASSETS:
+        normalized = normalized.strip()
+        if "\n" in normalized:
+            raise ValueError(f"{asset_id} must be a single line")
+    else:
+        normalized = normalized.strip("\n").rstrip()
+    if not normalized.strip():
+        raise ValueError(f"Custom text for {asset_id} must not be empty")
+    if asset_id == AssetKind.slug.value:
+        validate_slug(normalized)
+    return normalized
+
+
+def read_current_selection(layout: EpisodeWorkspaceLayout, asset_id: str) -> tuple[TextFormat, str] | None:
+    """Return the format and text of the published selection for ``asset_id``, if any."""
+    for fmt in (TextFormat.markdown, TextFormat.plain, TextFormat.html):
+        path = layout.selected_text_path(asset_id, fmt)
+        if path.exists():
+            return fmt, path.read_text(encoding="utf-8")
+    return None
+
+
+def clear_manual_selection_provenance(workspace: EpisodeWorkspace, asset_id: str) -> EpisodeWorkspace:
+    """Drop the manual-selection marker for ``asset_id`` (e.g. after a candidate was picked)."""
+    kept = [ref for ref in workspace.provenance if not _is_manual_selection_ref(ref, asset_id)]
+    if len(kept) == len(workspace.provenance):
+        return workspace
+    return workspace.model_copy(update={"provenance": kept})
+
+
+def has_manual_selection_provenance(workspace: EpisodeWorkspace, asset_id: str) -> bool:
+    return any(_is_manual_selection_ref(ref, asset_id) for ref in workspace.provenance)
+
+
+def _is_manual_selection_ref(ref: ProvenanceRef, asset_id: str) -> bool:
+    return ref.kind == MANUAL_SELECTION_PROVENANCE_KIND and ref.ref == asset_id
+
+
+def save_custom_selection(
+    *,
+    store: EpisodeWorkspaceStore,
+    workspace: EpisodeWorkspace,
+    asset_id: str,
+    candidates: list[Candidate],
+    text: str,
+    based_on: Candidate | None = None,
+) -> EpisodeWorkspace:
+    """Publish producer-written ``text`` as the selection for ``asset_id`` and record it in state.json.
+
+    The asset keeps its candidates but has no ``selected_candidate_id``; a
+    ``manual_selection`` provenance entry on the workspace (plus a JSON record
+    under ``copy/provenance/manual_selection/``) notes the manual edit and the
+    candidate it started from. Raises ValueError for invalid input.
+    """
+    validate_asset_id(asset_id)
+    normalized = normalize_custom_selection_text(asset_id, text)
+    fmt = custom_selection_format(asset_id)
+
+    store.write_selected_text(asset_id, fmt, normalized)
+
+    created_at = datetime.now(UTC)
+    provenance = ProvenanceRef(kind=MANUAL_SELECTION_PROVENANCE_KIND, ref=asset_id, created_at=created_at)
+    store.write_provenance_json(
+        provenance,
+        {
+            "asset_id": asset_id,
+            "format": fmt.value,
+            "based_on_candidate_id": str(based_on.candidate_id) if based_on is not None else None,
+            "edited": based_on is None or based_on.content.strip() != normalized.strip(),
+        },
+    )
+
+    assets_by_id = {asset.asset_id: asset for asset in workspace.assets}
+    assets_by_id[asset_id] = build_asset(
+        asset_id=asset_id,
+        existing=assets_by_id.get(asset_id),
+        candidates=candidates,
+        selected_candidate_id=None,
+    )
+    updated = update_workspace_assets(clear_manual_selection_provenance(workspace, asset_id), assets_by_id)
+    updated = updated.model_copy(update={"provenance": [*updated.provenance, provenance]})
+    store.write_state(updated)
+    return updated

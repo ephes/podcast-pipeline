@@ -157,6 +157,22 @@ def test_put_and_delete_require_json(client: TestClient, method: str) -> None:
     assert resp.status_code == 415
 
 
+def test_refine_requires_same_origin_json(client: TestClient, ctx: DashboardContext) -> None:
+    path = "/api/assets/description/refine"
+    body = {"instruction": "x", "text": "y"}
+    assert client.post(path, content=b"{}", headers={"Content-Type": "text/plain"}).status_code == 415
+    assert client.post(path, json=body, headers={"Origin": "http://evil.example"}).status_code == 403
+    assert not ctx.jobs
+
+
+def test_custom_selection_put_requires_same_origin_json(client: TestClient, ctx: DashboardContext) -> None:
+    path = "/api/assets/description/selection"
+    assert client.put(path, content=b'{"text": "x"}', headers={"Content-Type": "text/plain"}).status_code == 415
+    assert client.put(path, json={"text": "x"}, headers={"Origin": "http://evil.example"}).status_code == 403
+    assert client.put(path, json={"text": "x"}, headers={"Sec-Fetch-Site": "cross-site"}).status_code == 403
+    assert not ctx.layout.copy_selected_dir.exists() or not any(ctx.layout.copy_selected_dir.iterdir())
+
+
 def test_same_origin_post_is_accepted(client: TestClient, ctx: DashboardContext, no_job_threads: list[Any]) -> None:
     resp = client.post(
         "/api/produce",
@@ -445,6 +461,25 @@ def test_pick_web_rejects_text_plain(pick_port: int) -> None:
     headers = {"Host": f"127.0.0.1:{pick_port}", "Content-Type": "text/plain"}
     body = json.dumps({"asset_id": "description", "candidate_id": "x"}).encode()
     assert _pick_request(pick_port, "POST", "/api/select", headers, body) == 415
+
+
+def test_pick_web_custom_selection_requires_same_origin_json(pick_port: int) -> None:
+    body = json.dumps({"asset_id": "description", "text": "x"}).encode()
+    plain = {"Host": f"127.0.0.1:{pick_port}", "Content-Type": "text/plain"}
+    assert _pick_request(pick_port, "POST", "/api/select-custom", plain, body) == 415
+    foreign = {"Host": f"127.0.0.1:{pick_port}", "Origin": "http://evil.example", **_JSON}
+    assert _pick_request(pick_port, "POST", "/api/select-custom", foreign, body) == 403
+    same = {"Host": f"127.0.0.1:{pick_port}", "Origin": f"http://127.0.0.1:{pick_port}", **_JSON}
+    # Reaches the handler: unknown asset -> 400, not a guard rejection.
+    assert _pick_request(pick_port, "POST", "/api/select-custom", same, body) == 400
+
+
+def test_pick_web_refine_requires_same_origin_json(pick_port: int) -> None:
+    body = json.dumps({"asset_id": "description", "instruction": "x", "text": "y"}).encode()
+    plain = {"Host": f"127.0.0.1:{pick_port}", "Content-Type": "text/plain"}
+    assert _pick_request(pick_port, "POST", "/api/refine", plain, body) == 415
+    foreign = {"Host": f"127.0.0.1:{pick_port}", "Origin": "http://evil.example", **_JSON}
+    assert _pick_request(pick_port, "POST", "/api/refine", foreign, body) == 403
 
 
 def test_pick_web_accepts_same_origin_json(pick_port: int) -> None:

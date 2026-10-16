@@ -43,6 +43,15 @@ Credentials: `AUPHONIC_API_KEY`, or `AUPHONIC_USER` + `AUPHONIC_PASSWORD`. Detai
 hostnames, and state-changing requests without `Content-Type: application/json`. Dashboard jobs such as Auphonic
 production run single-flight per episode. Details: `docs/tutorials/episode-workflow.md` ("Local web UIs").
 
+## Custom selected text
+
+Besides picking a whole generated candidate, `podcast pick --web` and the dashboard let you write or edit the
+selected text of an asset (start from a candidate with "Edit", then "Use custom text"). Slugs are validated as
+lowercase, hyphen-separated and URL-safe; custom selections count as selected for "Done", `podcast status` and
+`podcast produce`. You can also refine a candidate or your own text with an instruction (`kürzer`, `ohne Emojis`):
+the drafter agent rewrites it into a new candidate that records the instruction. Details:
+`docs/tutorials/episode-workflow.md` ("Write or edit the selected text", "Refine a text with an instruction").
+
 ## Agent CLI timeout
 
 Every agent CLI call (drafter, creator, reviewer) is killed after 15 minutes by default, so a CLI that hangs on a

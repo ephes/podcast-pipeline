@@ -17,6 +17,7 @@ from podcast_pipeline.domain.models import (
     ReviewVerdict,
     TextFormat,
 )
+from podcast_pipeline.pick_core import clear_manual_selection_provenance
 from podcast_pipeline.review_loop_engine import (
     CreatorInput,
     CreatorOutput,
@@ -62,18 +63,20 @@ def _normalize_selected_text(text: str) -> str:
     return text if text.endswith("\n") else text + "\n"
 
 
-def _locked_selected_text(
+def _locked_selection_path(
     *,
     store: EpisodeWorkspaceStore,
     asset_id: str,
     fmt: TextFormat,
-) -> str | None:
+) -> Path | None:
     if asset_id not in _LOCKED_DECISION_ASSETS:
         return None
-    path = store.layout.selected_text_path(asset_id, fmt)
-    if not path.exists():
-        return None
-    return _normalize_selected_text(path.read_text(encoding="utf-8"))
+    # Prefer the candidate's own format; a custom selection may be stored in another one.
+    for candidate_fmt in (fmt, *(other for other in TextFormat if other != fmt)):
+        path = store.layout.selected_text_path(asset_id, candidate_fmt)
+        if path.exists():
+            return path
+    return None
 
 
 def _apply_locked_selection_issue(
@@ -103,13 +106,13 @@ def _wrap_reviewer_with_locked_decisions(
 ) -> Callable[[ReviewerInput], ReviewIteration]:
     def wrapped(inp: ReviewerInput) -> ReviewIteration:
         review = reviewer(inp)
-        locked = _locked_selected_text(store=store, asset_id=inp.asset_id, fmt=inp.candidate.format)
-        if locked is None:
+        selected_path = _locked_selection_path(store=store, asset_id=inp.asset_id, fmt=inp.candidate.format)
+        if selected_path is None:
             return review
+        locked = _normalize_selected_text(selected_path.read_text(encoding="utf-8"))
         candidate_text = _normalize_selected_text(inp.candidate.content)
         if candidate_text == locked:
             return review
-        selected_path = store.layout.selected_text_path(inp.asset_id, inp.candidate.format)
         return _apply_locked_selection_issue(review=review, asset_id=inp.asset_id, selected_path=selected_path)
 
     return wrapped
@@ -222,6 +225,8 @@ def _write_workspace_state(
         reviews=[it.review for it in protocol_state.iterations],
         selected_candidate_id=selected_candidate_id,
     )
+    if selected_candidate_id is not None:
+        workspace = clear_manual_selection_provenance(workspace, asset_id)
     assets = _upsert_asset(list(workspace.assets), asset)
     updated = workspace.model_copy(update={"assets": assets})
     store.write_state(updated)

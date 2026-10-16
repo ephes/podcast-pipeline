@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 from uuid import UUID
 
+from podcast_pipeline.asset_refine_llm import RefineRequest, build_refine_request, refine_instruction
 from podcast_pipeline.dashboard_api_models import (
     AssetCandidateOut,
     AssetNotesOut,
@@ -18,10 +19,15 @@ from podcast_pipeline.dashboard_api_models import (
 from podcast_pipeline.domain.models import Candidate, EpisodeWorkspace, TextFormat
 from podcast_pipeline.markdown_html import markdown_to_deterministic_html
 from podcast_pipeline.pick_core import (
+    MANUAL_SELECTION_PROVENANCE_KIND,
     build_asset,
+    clear_manual_selection_provenance,
+    custom_selection_format,
     find_candidate_by_id,
     load_candidates,
     load_workspace,
+    read_current_selection,
+    save_custom_selection,
     update_workspace_assets,
     validate_asset_id,
 )
@@ -62,6 +68,20 @@ class DashboardContext:
                 self._candidates_by_asset = {}
         return self._candidates_by_asset
 
+    def _pickable_assets(self) -> dict[str, list[Candidate]]:
+        """Assets shown in the Pick tab: those with candidates plus custom selections whose candidates are gone."""
+        candidates = self._ensure_candidates()
+        ws = self._ensure_workspace_state()
+        pickable = dict(candidates)
+        for ref in ws.provenance:
+            if (
+                ref.kind == MANUAL_SELECTION_PROVENANCE_KIND
+                and ref.ref not in pickable
+                and read_current_selection(self.layout, ref.ref) is not None
+            ):
+                pickable[ref.ref] = []
+        return pickable
+
     def _ensure_workspace_state(self) -> EpisodeWorkspace:
         if self._workspace_state is None:
             self._workspace_state = load_workspace(self.store)
@@ -81,12 +101,13 @@ class DashboardContext:
         candidates = self._ensure_candidates()
         candidate_count = sum(len(v) for v in candidates.values())
         candidate_assets = len(candidates)
+        pickable = self._pickable_assets()
 
         ws = self._ensure_workspace_state()
         assets_by_id = {asset.asset_id: asset for asset in ws.assets}
         selected_count = sum(
             1
-            for asset_id in candidates
+            for asset_id in pickable
             if self._is_asset_selected(
                 asset_id,
                 assets_by_id[asset_id].selected_candidate_id if asset_id in assets_by_id else None,
@@ -106,7 +127,7 @@ class DashboardContext:
                 candidates=candidate_count,
                 candidate_assets=candidate_assets,
                 selected=selected_count,
-                total_assets=len(candidates),
+                total_assets=len(pickable),
             ),
         )
         return payload.model_dump(mode="json")
@@ -151,7 +172,7 @@ class DashboardContext:
         return None
 
     def get_assets_json(self) -> list[dict[str, Any]]:
-        candidates = self._ensure_candidates()
+        candidates = self._pickable_assets()
         ws = self._ensure_workspace_state()
         assets_by_id = {asset.asset_id: asset for asset in ws.assets}
 
@@ -161,6 +182,8 @@ class DashboardContext:
             existing = assets_by_id.get(asset_key)
             selected_id = str(existing.selected_candidate_id) if existing and existing.selected_candidate_id else None
             has_selection = self._is_asset_selected(asset_key, existing.selected_candidate_id if existing else None)
+            current = read_current_selection(self.layout, asset_key)
+            custom_selected = selected_id is None and has_selection and current is not None
 
             candidate_items: list[AssetCandidateOut] = []
             for c in cands:
@@ -169,6 +192,7 @@ class DashboardContext:
                     content=c.content,
                     content_html=markdown_to_deterministic_html(c.content),
                     format=c.format.value,
+                    instruction=refine_instruction(c),
                 )
                 if _is_tag_asset(asset_key):
                     candidate_data = candidate_data.model_copy(update={"tags": parse_tag_list(c.content)})
@@ -178,6 +202,9 @@ class DashboardContext:
                 asset_id=asset_key,
                 selected_candidate_id=selected_id,
                 has_selection=has_selection,
+                custom_selected=custom_selected,
+                selected_text=current[1] if custom_selected and current is not None else None,
+                selection_format=custom_selection_format(asset_key).value,
                 candidates=candidate_items,
             )
             if _is_tag_asset(asset_key):
@@ -234,9 +261,78 @@ class DashboardContext:
             candidates=asset_candidates,
             selected_candidate_id=match.candidate_id,
         )
-        self._workspace_state = update_workspace_assets(ws, assets_by_id)
+        self._workspace_state = update_workspace_assets(clear_manual_selection_provenance(ws, asset_id), assets_by_id)
         self.store.write_state(self._workspace_state)
         return None
+
+    def select_custom_text(self, asset_id: str, text: str, based_on_candidate_id: str | None) -> str | None:
+        """Use producer-written text as the selection. Returns error message on failure, None on success."""
+        try:
+            validate_asset_id(asset_id)
+        except ValueError as exc:
+            return str(exc)
+
+        candidates = self._pickable_assets()
+        if asset_id not in candidates:
+            return f"Unknown asset_id: {asset_id}"
+        asset_candidates = candidates[asset_id]
+
+        based_on: Candidate | None = None
+        if based_on_candidate_id is not None:
+            try:
+                based_on_uuid = UUID(based_on_candidate_id)
+            except ValueError:
+                return f"Invalid based_on_candidate_id: {based_on_candidate_id}"
+            based_on = find_candidate_by_id(asset_candidates, based_on_uuid)
+            if based_on is None:
+                return f"candidate_id {based_on_candidate_id} not found for asset {asset_id}"
+
+        try:
+            self._workspace_state = save_custom_selection(
+                store=self.store,
+                workspace=self._ensure_workspace_state(),
+                asset_id=asset_id,
+                candidates=asset_candidates,
+                text=text,
+                based_on=based_on,
+            )
+        except ValueError as exc:
+            return str(exc)
+        return None
+
+    def prepare_refine(
+        self,
+        asset_id: str,
+        instruction: str,
+        candidate_id: str | None,
+        text: str | None,
+    ) -> RefineRequest | str:
+        """Validate a refine request. Returns the request, or an error message."""
+        try:
+            validate_asset_id(asset_id)
+        except ValueError as exc:
+            return str(exc)
+        candidates = self._pickable_assets()
+        if asset_id not in candidates:
+            return f"Unknown asset_id: {asset_id}"
+        current = read_current_selection(self.layout, asset_id)
+        try:
+            return build_refine_request(
+                asset_id=asset_id,
+                instruction=instruction,
+                candidates=candidates[asset_id],
+                candidate_id=candidate_id,
+                text=text,
+                current_selection_text=current[1] if current is not None else None,
+                editorial_notes=self.get_editorial_notes(asset_id),
+            )
+        except ValueError as exc:
+            return str(exc)
+
+    def add_candidate(self, candidate: Candidate) -> None:
+        """Publish a new candidate (e.g. a refinement) and show it in the Pick tab."""
+        self.store.write_candidate(candidate)
+        self.reload_candidates()
 
     def delete_candidate(self, asset_id: str, candidate_id_str: str) -> str | None:
         try:

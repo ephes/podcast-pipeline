@@ -140,6 +140,57 @@ Notes:
   keeps a stale `.html` or `.md` next to a newer selection. If writing fails, the previous canonical file is unchanged;
   if only the final removal fails, the command reports it and repeating the selection finishes the switch.
 
+### Write or edit the selected text
+
+When no candidate is quite right (for example you want the slug `python-315` and none of the candidates offers it),
+write the selection yourself. Both `podcast pick --web` and the dashboard's Pick tab show a "Custom text" card below
+the candidates of each asset (in the dashboard, tag assets keep their per-tag editor instead):
+
+1. Press "Edit" on a candidate to copy its text into the editor, or type from scratch.
+2. Change the text and press "Use custom text" (or "Save" once a custom text is the current selection).
+
+Notes:
+
+- The text is stored in the asset's natural format: plain text (`copy/selected/<asset_id>.txt`) for `slug`,
+  `title_detail`, `title_seo`, `subtitle_auphonic` and `summary_short`; Markdown (`.md` plus the derived `.html`) for
+  everything else, such as `description` and `shownotes`. "Edit" drops Markdown headings from a candidate when the
+  asset is stored as plain text.
+- `slug`, the titles and `subtitle_auphonic` must be a single line. Slugs must be lowercase letters, digits and single
+  hyphens (`python-315`, `python-3-15`); an invalid slug is rejected with a suggested fix. Empty text is rejected.
+- A custom selection counts as selected: it gets a check mark, counts toward "Done" in `--web`, and `podcast status`
+  and `podcast produce` read it like a picked candidate.
+- In `state.json` the asset keeps its candidates but has no `selected_candidate_id`; a `manual_selection` provenance
+  entry (`ref` = asset id) marks the manual edit, and `copy/provenance/manual_selection/<asset_id>.json` records the
+  format, the candidate the text started from (if any) and whether it was changed. Selecting a candidate again (in a UI,
+  with `podcast pick`, or by a converged review loop) replaces the custom text and drops that marker.
+- Locked assets (`slug`, titles, `subtitle_auphonic`) stay locked for the review loop: a reviewed candidate that
+  differs from the custom text is flagged as `locked_selection`.
+- The endpoints are `POST /api/select-custom` (`{"asset_id", "text", "based_on_candidate_id"?}`) for `--web` and
+  `PUT /api/assets/<asset_id>/selection` (`{"text", "based_on_candidate_id"?}`) for the dashboard; both follow the
+  local web UI rules below.
+
+### Refine a text with an instruction
+
+Typing every change by hand is tedious; you can also tell the drafter agent what to change. Below the custom-text
+editor, choose the text to refine (the editor's text or one of the candidates), type an instruction such as `kürzer`,
+`ohne Emojis` or `Slug nur python-315`, and press "Refine" (or Enter).
+
+- The drafter (the same agent CLI and timeout as `podcast draft`) rewrites only what the instruction asks for. Its
+  prompt contains the asset's guidance, the text, the instruction, the asset's editorial notes (dashboard "Editorial
+  Notes") and, when it exists, the episode summary as context.
+- The result is a new candidate, labelled `refined: <instruction>`, stored in the asset's natural format under
+  `copy/candidates/<asset_id>/`. Its provenance (`kind: llm_refine`) records the instruction and the candidate it was
+  based on. Select it, press "Edit" to tweak it by hand, or refine it again.
+- Nothing is selected automatically. Answers that are empty, or an invalid slug for `slug`, fail with an error instead
+  of creating a candidate.
+- In `--web` the request runs while the page stays usable; in the dashboard it runs as a `refine:<asset_id>` job whose
+  log appears below the candidates. One refinement per asset runs at a time (`409` otherwise).
+- Unlike "Generate More" (dashboard), which drafts new candidates from the episode summary, refining keeps the chosen
+  text and only applies the instruction.
+- Endpoints: `POST /api/refine` (`{"asset_id", "instruction", "candidate_id"? | "text"?}`) for `--web`, answering
+  with the new candidate, and `POST /api/assets/<asset_id>/refine` (`{"instruction", "candidate_id"? | "text"?}`) for
+  the dashboard, answering with a `job_id`. Without `candidate_id` and `text`, the current selection is refined.
+
 ## 6. Produce with Auphonic (produce)
 
 `podcast produce` builds the Auphonic payload from `episode.yaml`, the global config and the selected copy, starts an
@@ -194,8 +245,8 @@ Auphonic production):
 
 The dashboard also runs each long job single-flight:
 
-- While a `produce`, `transcribe`, `draft`, `summarize` or `candidates` job, a `regenerate` job for the same asset, or a
-  `review` job for the same asset is running, starting another one returns `409` with the running job's `job_id`.
+- While a `produce`, `transcribe`, `draft`, `summarize` or `candidates` job, or a `regenerate`, `refine` or `review`
+  job for the same asset is running, starting another one returns `409` with the running job's `job_id`.
 - Agent CLI calls inside these jobs time out after 15 minutes by default (`PODCAST_PIPELINE_AGENT_TIMEOUT` or
   `agents.<role>.timeout_seconds` change it; see `reference/configuration.md`). A timed-out call ends the job as
   `failed` with `<Role> CLI timed out after N s`, and the stage accepts a new request.
