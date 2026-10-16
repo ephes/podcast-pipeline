@@ -26,7 +26,7 @@ Typical production data flow:
 2. `podcast draft` chunks the transcript, creates LLM-backed summaries, and generates candidates.
 3. `podcast pick` or `podcast dashboard` selects candidates for export and downstream use.
 4. `podcast review` optionally runs the creator/reviewer loop for an asset.
-5. `podcast produce` submits the selected copy and configured audio to Auphonic.
+5. `podcast produce` submits the selected copy and the per-speaker stems to Auphonic as a multitrack production.
 
 For schema details, see:
 

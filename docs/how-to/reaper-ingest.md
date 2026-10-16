@@ -49,6 +49,10 @@ Details:
 - `track_id` values are stable for a given path and must match `^[a-z][a-z0-9_]*$`.
 - The ingest heuristics convert filenames like `Ada-02.flac` into `track_id: ada_02` and `label: Ada 2`.
 - If you re-run ingest, existing `track_id`, `label`, and `role` values for matching paths are preserved.
+- Without an explicit `auphonic.tracks` list, `podcast produce` sends these tracks to Auphonic as the stems of a
+  multitrack production (tracks with a `mix`/`master`/`final`/`mixdown` role are skipped). Auphonic needs per-speaker
+  stems that are synced, the same length and trimmed as in the project, so ingest the stems you exported from
+  Reaper/Ultraschall rather than raw recordings that were edited afterwards, or list the stems in `auphonic.tracks`.
 
 For initialization failures, cleanup and retry behavior, see
 [Initialize a workspace](../tutorials/episode-workflow.md#1-initialize-a-workspace-init).

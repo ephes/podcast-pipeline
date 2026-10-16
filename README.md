@@ -31,11 +31,19 @@ The preview runs at http://127.0.0.1:8000 and static output lands in `docs/_buil
 
 ## Auphonic production
 
-`podcast produce --workspace <ep>` creates and starts an Auphonic production (uploading a local input file), polls
-it until Auphonic reports Done or a failure status, and downloads the outputs. Reruns resume the production stored in
-`state.json`; `--restart` deliberately starts a new (paid) one after a failure, and `--dry-run` only prints the payload.
-Credentials: `AUPHONIC_API_KEY`, or `AUPHONIC_USER` + `AUPHONIC_PASSWORD`. Details:
-`docs/tutorials/episode-workflow.md` ("Produce with Auphonic").
+Auphonic gets the individual speaker tracks and mixes them itself: export one stem per speaker from
+Reaper/Ultraschall (FLAC, synced, same length, trimmed as in the project) and list them in `episode.yaml`
+(`auphonic.tracks`, or ingest them as `tracks`). A master mix is at most an input for transcription
+(`inputs.transcription_audio`), never for Auphonic. The configured preset must be an Auphonic multitrack preset.
+
+`podcast produce --workspace <ep>` creates an Auphonic multitrack production, uploads the stems (one form field per
+track), starts it, polls it until Auphonic reports Done or a failure status, and downloads the outputs. Reruns resume
+the production stored in `state.json`; `--restart` deliberately starts a new (paid) one after a failure, and
+`--dry-run` only prints the payload, including the track list. Outputs are named after the episode (`output_basename`,
+default `episode_id`). A single-file production is only available as an
+explicit opt-in (`auphonic.mode: single_track`). Credentials: `AUPHONIC_API_KEY`, or `AUPHONIC_USER` +
+`AUPHONIC_PASSWORD`. Details: `docs/tutorials/episode-workflow.md` ("Produce with Auphonic") and
+`docs/decisions/auphonic-multitrack.md`.
 
 ## Local web UIs
 

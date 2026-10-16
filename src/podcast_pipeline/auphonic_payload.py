@@ -18,7 +18,13 @@ class AuphonicConfigError(RuntimeError):
     pass
 
 
-_PREFERRED_TRACK_ROLES = {"mix", "master", "final", "mixdown"}
+# Track roles that mark a pre-mixed master. Such a file may feed transcription,
+# but it is never an Auphonic input: Auphonic mixes the per-speaker stems itself.
+MIX_TRACK_ROLES = frozenset({"mix", "master", "final", "mixdown"})
+
+PRODUCTION_MODE_MULTITRACK = "multitrack"
+PRODUCTION_MODE_SINGLE_TRACK = "single_track"
+_PRODUCTION_MODES = (PRODUCTION_MODE_MULTITRACK, PRODUCTION_MODE_SINGLE_TRACK)
 
 
 def build_auphonic_payload(
@@ -43,25 +49,28 @@ def build_auphonic_payload(
         episode_yaml=episode_yaml,
         workspace=workspace,
     )
-    input_files = _resolve_input_files(
-        config=merged,
-        episode_yaml=episode_yaml,
-        workspace=workspace,
-    )
     chapters = _normalize_chapters(merged.get("chapters"), source="auphonic.chapters")
+    inputs: dict[str, Any]
+    if _resolve_mode(merged) == PRODUCTION_MODE_MULTITRACK:
+        inputs = {
+            "is_multitrack": True,
+            "multi_input_files": _resolve_multitrack_inputs(
+                config=merged,
+                episode_yaml=episode_yaml,
+                workspace=workspace,
+            ),
+        }
+    else:
+        inputs = {"input_file": _resolve_single_input_file(config=merged, workspace=workspace)}
 
     payload: dict[str, Any] = {"preset": preset_id}
     title = metadata.get("title")
     if _has_value(title):
         payload["title"] = title
-    if len(input_files) > 1:
-        raise AuphonicConfigError(
-            "Auphonic productions take a single input file, but "
-            f"{len(input_files)} were resolved ({', '.join(input_files)}). "
-            "Multitrack productions are not supported; set auphonic.input_file to the final mix."
-        )
-    if input_files:
-        payload["input_file"] = input_files[0]
+    payload.update(inputs)
+    output_basename = _resolve_output_basename(merged, episode_yaml)
+    if output_basename is not None:
+        payload["output_basename"] = output_basename
     if metadata:
         payload["metadata"] = metadata
     if chapters:
@@ -178,12 +187,33 @@ def _resolve_metadata(
     return metadata
 
 
-def _resolve_input_files(
-    *,
-    config: Mapping[str, Any],
-    episode_yaml: Mapping[str, Any],
-    workspace: Path,
-) -> list[str]:
+def _resolve_output_basename(config: Mapping[str, Any], episode_yaml: Mapping[str, Any]) -> str | None:
+    """Name the output files after the episode; Auphonic otherwise names them after the first input track."""
+    raw = config.get("output_basename")
+    source = "auphonic.output_basename"
+    if raw is None:
+        raw = episode_yaml.get("episode_id")
+        source = "episode_id"
+        if not isinstance(raw, str) or not raw.strip():
+            return None
+    if not isinstance(raw, str) or not raw.strip():
+        raise AuphonicConfigError(f"{source} must be a non-empty string")
+    basename = raw.strip()
+    if "/" in basename or "\\" in basename or basename in {".", ".."}:
+        raise AuphonicConfigError(f"{source} must be a file name without directories, got {basename!r}")
+    return basename
+
+
+def _resolve_mode(config: Mapping[str, Any]) -> str:
+    raw = config.get("mode")
+    if raw is None:
+        return PRODUCTION_MODE_MULTITRACK
+    if not isinstance(raw, str) or raw.strip() not in _PRODUCTION_MODES:
+        raise AuphonicConfigError(f"auphonic.mode must be one of: {', '.join(_PRODUCTION_MODES)}")
+    return raw.strip()
+
+
+def _resolve_single_input_file(*, config: Mapping[str, Any], workspace: Path) -> str:
     input_files = _normalize_input_paths(
         config.get("input_files"),
         source="auphonic.input_files",
@@ -195,10 +225,116 @@ def _resolve_input_files(
             source="auphonic.input_file",
             workspace=workspace,
         )
-    if input_files:
-        return input_files
+    if not input_files:
+        raise AuphonicConfigError("auphonic.mode single_track needs auphonic.input_file (one local path or URL)")
+    if len(input_files) > 1:
+        raise AuphonicConfigError(
+            "auphonic.mode single_track takes exactly one input file, but "
+            f"{len(input_files)} were configured ({', '.join(input_files)}). "
+            "List per-speaker stems in auphonic.tracks for a multitrack production instead."
+        )
+    return input_files[0]
 
-    return _resolve_track_inputs(episode_yaml=episode_yaml, workspace=workspace)
+
+def _resolve_multitrack_inputs(
+    *,
+    config: Mapping[str, Any],
+    episode_yaml: Mapping[str, Any],
+    workspace: Path,
+) -> list[dict[str, Any]]:
+    for key in ("input_file", "input_files"):
+        if config.get(key) is not None:
+            raise AuphonicConfigError(
+                f"auphonic.{key} is set, but Auphonic productions are multitrack: Auphonic receives the "
+                "per-speaker stems and mixes them itself, never a pre-mixed master. List the exported "
+                "stems in auphonic.tracks (or ingest them as tracks), and move a master mix used for "
+                "transcription to inputs.transcription_audio. Set auphonic.mode: single_track only to "
+                "upload one file on purpose."
+            )
+
+    if config.get("tracks") is not None:
+        entries = _normalize_stem_entries(config.get("tracks"), workspace=workspace)
+        source = "auphonic.tracks"
+    else:
+        entries = _stems_from_episode_tracks(episode_yaml=episode_yaml, workspace=workspace)
+        source = "tracks"
+    if not entries:
+        raise AuphonicConfigError(
+            "No speaker stems for the Auphonic multitrack production. List the exported per-speaker "
+            "stems in auphonic.tracks, or ingest them as episode tracks (tracks with a mix/master/final/"
+            "mixdown role are master mixes and are never sent to Auphonic)."
+        )
+    seen: set[str] = set()
+    for entry in entries:
+        if entry["id"] in seen:
+            raise AuphonicConfigError(f"Duplicate Auphonic track id {entry['id']!r} in {source}")
+        seen.add(entry["id"])
+    return entries
+
+
+def _normalize_stem_entries(raw: object, *, workspace: Path) -> list[dict[str, Any]]:
+    if not isinstance(raw, list):
+        raise AuphonicConfigError("auphonic.tracks must be a list of mappings with id and path")
+    entries: list[dict[str, Any]] = []
+    for idx, item in enumerate(raw, start=1):
+        source = f"auphonic.tracks[{idx}]"
+        if not isinstance(item, Mapping):
+            raise AuphonicConfigError(f"{source} must be a mapping with id and path")
+        track_id = _required_track_str(item.get("id"), key=f"{source}.id")
+        path = _required_track_str(item.get("path"), key=f"{source}.path")
+        entry = _multitrack_entry(track_id, _resolve_path(path, workspace=workspace))
+        algorithms = item.get("algorithms")
+        if algorithms is not None:
+            if not isinstance(algorithms, Mapping):
+                raise AuphonicConfigError(f"{source}.algorithms must be a mapping")
+            entry["algorithms"] = dict(algorithms)
+        offset = item.get("offset")
+        if offset is not None:
+            entry["offset"] = _normalize_offset(offset, source=f"{source}.offset")
+        entries.append(entry)
+    return entries
+
+
+def _stems_from_episode_tracks(*, episode_yaml: Mapping[str, Any], workspace: Path) -> list[dict[str, Any]]:
+    tracks = episode_yaml.get("tracks")
+    if not isinstance(tracks, list):
+        return []
+    base_dir = _resolve_reaper_media_dir(episode_yaml)
+    entries: list[dict[str, Any]] = []
+    for idx, item in enumerate(tracks, start=1):
+        if not isinstance(item, Mapping):
+            continue
+        path_raw = item.get("path")
+        if not isinstance(path_raw, str) or not path_raw.strip():
+            continue
+        role = item.get("role")
+        if isinstance(role, str) and role.strip().lower() in MIX_TRACK_ROLES:
+            continue
+        track_id = _required_track_str(item.get("track_id"), key=f"tracks[{idx}].track_id")
+        entries.append(
+            _multitrack_entry(track_id, _resolve_track_path(path_raw, base_dir=base_dir, workspace=workspace))
+        )
+    return entries
+
+
+def _multitrack_entry(track_id: str, input_file: str) -> dict[str, Any]:
+    return {"type": "multitrack", "id": track_id, "input_file": input_file}
+
+
+def _required_track_str(value: object, *, key: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise AuphonicConfigError(f"{key} must be a non-empty string")
+    return value.strip()
+
+
+def _normalize_offset(value: object, *, source: str) -> float:
+    message = f"{source} must be finite nonnegative seconds (not boolean)"
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise AuphonicConfigError(message)
+    seconds = float(value)
+    if not math.isfinite(seconds) or seconds < 0:
+        raise AuphonicConfigError(message)
+    return seconds
 
 
 def _normalize_metadata(raw: object, *, source: str) -> dict[str, Any]:
@@ -281,33 +417,6 @@ def _resolve_path(raw: str, *, workspace: Path) -> str:
     if path.is_absolute():
         return str(path)
     return str((workspace / path).resolve())
-
-
-def _resolve_track_inputs(*, episode_yaml: Mapping[str, Any], workspace: Path) -> list[str]:
-    tracks = episode_yaml.get("tracks")
-    if not isinstance(tracks, list):
-        return []
-    base_dir = _resolve_reaper_media_dir(episode_yaml)
-    preferred: list[str] = []
-    fallback: list[str] = []
-    for item in tracks:
-        if not isinstance(item, Mapping):
-            continue
-        path_raw = item.get("path")
-        if not isinstance(path_raw, str) or not path_raw.strip():
-            continue
-        resolved = _resolve_track_path(path_raw, base_dir=base_dir, workspace=workspace)
-        role = item.get("role")
-        if isinstance(role, str) and role.strip().lower() in _PREFERRED_TRACK_ROLES:
-            preferred.append(resolved)
-        else:
-            fallback.append(resolved)
-
-    if preferred:
-        return preferred
-    if len(fallback) == 1:
-        return fallback
-    return []
 
 
 def _resolve_reaper_media_dir(episode_yaml: Mapping[str, Any]) -> Path | None:
@@ -408,13 +517,22 @@ def _normalize_chapter_item(item: object, *, source: str, idx: int) -> dict[str,
     entry: dict[str, Any] = {"title": title_value.strip()}
     start = _normalize_chapter_time(item, "start", source=source, idx=idx)
     if start is not None:
-        entry["start"] = start
+        entry["start"] = _format_chapter_time(start)
     end = _normalize_chapter_time(item, "end", source=source, idx=idx)
     if end is not None:
-        entry["end"] = end
+        entry["end"] = _format_chapter_time(end)
     if start is not None and end is not None and end < start:
         raise AuphonicConfigError(f"{source}[{idx}].end must be >= start")
     return entry
+
+
+def _format_chapter_time(seconds: float) -> str:
+    """Auphonic takes chapter times as ``HH:MM:SS.mmm`` strings; numeric seconds are rejected."""
+    total_ms = round(seconds * 1000)
+    hours, rest = divmod(total_ms, 3_600_000)
+    minutes, rest = divmod(rest, 60_000)
+    secs, millis = divmod(rest, 1000)
+    return f"{hours:02d}:{minutes:02d}:{secs:02d}.{millis:03d}"
 
 
 def _normalize_chapter_time(

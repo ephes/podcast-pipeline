@@ -5,6 +5,7 @@ import os
 import tempfile
 import time
 from collections.abc import Callable, Iterable, Mapping, Sequence
+from contextlib import ExitStack
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -69,6 +70,7 @@ class AuphonicProduction:
     status: object | None
     status_string: str | None
     output_files: tuple[AuphonicOutputFile, ...]
+    is_multitrack: bool | None = None
 
 
 def load_auphonic_credentials() -> AuphonicCredentials:
@@ -153,28 +155,24 @@ class AuphonicClient:
     ) -> AuphonicProduction:
         """Create an Auphonic production from ``payload`` and start it.
 
-        Follows the JSON API flow: create the production (which only saves it),
-        upload a local input file to ``production/{uuid}/upload.json`` (URL inputs
-        are part of the create request), then call ``production/{uuid}/start.json``.
-        ``on_created`` receives the UUID before the paid start request, so a
-        caller can persist it even when the start's outcome is unknown.
+        Follows the JSON API flow: check that the preset matches the production
+        type, create the production (which only saves it), upload local inputs
+        to ``production/{uuid}/upload.json`` (URL inputs are part of the create
+        request), then call ``production/{uuid}/start.json``. A multitrack
+        payload (``is_multitrack``) uploads every local stem in one multipart
+        request, with the track id as the form field name. ``on_created``
+        receives the UUID before the paid start request, so a caller can persist
+        it even when the start's outcome is unknown.
         """
-        input_files = _extract_input_files(payload)
-        if len(input_files) > 1:
-            raise AuphonicApiError(
-                "Auphonic single-track productions take exactly one input file "
-                f"(got {len(input_files)}); multitrack productions are not supported."
-            )
+        multitrack = payload.get("is_multitrack") is True
+        if multitrack:
+            body, uploads = _prepare_multitrack(payload)
+        else:
+            body, uploads = _prepare_single_track(payload)
 
-        body = _strip_input_files(payload)
-        local_path: Path | None = None
-        if input_files:
-            if _looks_like_url(input_files[0]):
-                body["input_file"] = input_files[0]
-            else:
-                local_path = Path(input_files[0])
-                if not local_path.is_file():
-                    raise AuphonicApiError(f"Auphonic input file not found: {local_path}")
+        preset = payload.get("preset")
+        if isinstance(preset, str) and preset.strip():
+            self._check_preset(preset.strip(), multitrack=multitrack, track_ids=_track_ids(body))
 
         created = _parse_production(
             _request_json(self._client, "POST", f"{self._base_url}/productions.json", json=body)
@@ -183,14 +181,13 @@ class AuphonicClient:
             on_created(created.uuid)
         production_url = f"{self._base_url}/production/{created.uuid}"
         try:
-            if local_path is not None:
-                with local_path.open("rb") as handle:
-                    _request_json(
-                        self._client,
-                        "POST",
-                        f"{production_url}/upload.json",
-                        files={"input_file": (local_path.name, handle, "application/octet-stream")},
-                    )
+            if uploads:
+                with ExitStack() as stack:
+                    files = [
+                        (field, (path.name, stack.enter_context(path.open("rb")), "application/octet-stream"))
+                        for field, path in uploads
+                    ]
+                    _request_json(self._client, "POST", f"{production_url}/upload.json", files=files)
             return _parse_production(_request_json(self._client, "POST", f"{production_url}/start.json"))
         except (AuphonicApiError, OSError) as exc:
             raise AuphonicApiError(
@@ -198,6 +195,41 @@ class AuphonicClient:
                 "A plain rerun follows it if Auphonic did start it; otherwise rerun with "
                 "`podcast produce --restart`."
             ) from exc
+
+    def _check_preset(self, preset: str, *, multitrack: bool, track_ids: Sequence[str]) -> None:
+        """Fail before creating a production the preset would break.
+
+        Auphonic multitrack presets (``is_multitrack``) only apply to multitrack
+        productions and single-track presets only to single-track ones. Auphonic
+        also appends a preset's own multitrack tracks to the production's, so a
+        preset that carries speaker tracks yields duplicate or extra tracks.
+        """
+        data = _extract_data(_request_json(self._client, "GET", f"{self._base_url}/preset/{preset}.json"))
+        if not isinstance(data, Mapping):
+            return
+        preset_multitrack = data.get("is_multitrack")
+        if isinstance(preset_multitrack, bool) and preset_multitrack != multitrack:
+            if multitrack:
+                raise AuphonicApiError(
+                    f"Auphonic preset {preset} is a single-track preset, but the production is multitrack. "
+                    "Create a multitrack preset in Auphonic (Multitrack mode) and set auphonic.preset to it."
+                )
+            raise AuphonicApiError(
+                f"Auphonic preset {preset} is a multitrack preset, but auphonic.mode is single_track. "
+                "Use a single-track preset, or drop auphonic.mode to produce the speaker stems as multitrack."
+            )
+        if not multitrack:
+            return
+        preset_tracks = _preset_speaker_track_ids(data.get("multi_input_files"))
+        if not preset_tracks:
+            return
+        collisions = [track_id for track_id in preset_tracks if track_id in track_ids]
+        detail = f" (colliding with auphonic.tracks: {', '.join(collisions)})" if collisions else ""
+        raise AuphonicApiError(
+            f"Auphonic preset {preset} contains multitrack tracks {', '.join(preset_tracks)}{detail}. "
+            "Auphonic adds a preset's tracks to the production's, which duplicates or adds speaker tracks. "
+            "Remove all tracks from the preset; per-track algorithms belong in auphonic.tracks[].algorithms."
+        )
 
     def fetch_production(self, uuid: str) -> AuphonicProduction:
         url = f"{self._base_url}/production/{uuid}.json"
@@ -322,11 +354,13 @@ def _parse_production(payload: Mapping[str, Any]) -> AuphonicProduction:
         data.get("status_string") or data.get("status_text") or data.get("status_label"),
     )
     output_files = _parse_output_files_raw(data.get("output_files"))
+    is_multitrack = data.get("is_multitrack")
     return AuphonicProduction(
         uuid=uuid,
         status=status,
         status_string=status_string,
         output_files=output_files,
+        is_multitrack=is_multitrack if isinstance(is_multitrack, bool) else None,
     )
 
 
@@ -353,6 +387,82 @@ def _parse_output_files_raw(raw: object) -> tuple[AuphonicOutputFile, ...]:
     return tuple(outputs)
 
 
+def _prepare_single_track(payload: Mapping[str, Any]) -> tuple[dict[str, Any], list[tuple[str, Path]]]:
+    input_files = _extract_input_files(payload)
+    if len(input_files) > 1:
+        raise AuphonicApiError(
+            f"Auphonic single-track productions take exactly one input file (got {len(input_files)}); "
+            "use a multitrack production for per-speaker stems."
+        )
+    body = {key: value for key, value in payload.items() if key not in {"input_file", "input_files"}}
+    if not input_files:
+        return body, []
+    if _looks_like_url(input_files[0]):
+        body["input_file"] = input_files[0]
+        return body, []
+    return body, [("input_file", _existing_input(input_files[0]))]
+
+
+def _prepare_multitrack(payload: Mapping[str, Any]) -> tuple[dict[str, Any], list[tuple[str, Path]]]:
+    if "input_file" in payload or "input_files" in payload:
+        raise AuphonicApiError("Auphonic multitrack productions take their inputs from multi_input_files only.")
+    raw = payload.get("multi_input_files")
+    if not isinstance(raw, Sequence) or isinstance(raw, (str, bytes, bytearray)) or not raw:
+        raise AuphonicApiError("Auphonic multitrack production needs a non-empty multi_input_files list.")
+    entries: list[dict[str, Any]] = []
+    uploads: list[tuple[str, Path]] = []
+    seen: set[str] = set()
+    for item in raw:
+        if not isinstance(item, Mapping):
+            raise AuphonicApiError("Auphonic multi_input_files entries must be mappings.")
+        entry = dict(item)
+        track_id = entry.get("id")
+        if not isinstance(track_id, str) or not track_id.strip():
+            raise AuphonicApiError("Auphonic multi_input_files entries need a non-empty id.")
+        if track_id in seen:
+            raise AuphonicApiError(f"Duplicate Auphonic track id {track_id!r}.")
+        seen.add(track_id)
+        input_file = entry.get("input_file")
+        if isinstance(input_file, str) and input_file.strip() and not _looks_like_url(input_file.strip()):
+            # Local stems are uploaded after the create request, as a form field named after the track.
+            uploads.append((track_id, _existing_input(input_file.strip())))
+            entry.pop("input_file")
+        entries.append(entry)
+    body = {key: value for key, value in payload.items() if key != "multi_input_files"}
+    body["multi_input_files"] = entries
+    return body, uploads
+
+
+def _track_ids(body: Mapping[str, Any]) -> list[str]:
+    entries = body.get("multi_input_files")
+    if not isinstance(entries, list):
+        return []
+    return [str(entry["id"]) for entry in entries if isinstance(entry, Mapping) and "id" in entry]
+
+
+def _preset_speaker_track_ids(raw: object) -> list[str]:
+    """Ids of a preset's speaker tracks; intro and outro entries are allowed in a preset."""
+    if not isinstance(raw, Sequence) or isinstance(raw, (str, bytes, bytearray)):
+        return []
+    ids: list[str] = []
+    for idx, entry in enumerate(raw, start=1):
+        if not isinstance(entry, Mapping):
+            continue
+        entry_type = entry.get("type")
+        if isinstance(entry_type, str) and entry_type.strip().lower() in {"intro", "outro"}:
+            continue
+        track_id = entry.get("id")
+        ids.append(track_id.strip() if isinstance(track_id, str) and track_id.strip() else f"#{idx}")
+    return ids
+
+
+def _existing_input(raw: str) -> Path:
+    path = Path(raw)
+    if not path.is_file():
+        raise AuphonicApiError(f"Auphonic input file not found: {path}")
+    return path
+
+
 def _extract_input_files(payload: Mapping[str, Any]) -> tuple[str, ...]:
     if "input_file" in payload:
         value = payload.get("input_file")
@@ -364,10 +474,6 @@ def _extract_input_files(payload: Mapping[str, Any]) -> tuple[str, ...]:
         items = [str(item).strip() for item in raw if str(item).strip()]
         return tuple(items)
     return ()
-
-
-def _strip_input_files(payload: Mapping[str, Any]) -> dict[str, Any]:
-    return {key: value for key, value in payload.items() if key not in {"input_file", "input_files"}}
 
 
 def _looks_like_url(value: str) -> bool:

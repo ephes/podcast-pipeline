@@ -14,6 +14,7 @@ class EpisodeInputs(DomainModel):
 
     transcript: str | None = None
     chapters: str | None = None
+    transcription_audio: str | None = None
 
 
 class EpisodeSources(DomainModel):

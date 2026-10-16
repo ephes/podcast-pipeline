@@ -291,52 +291,34 @@ def _resolve_audio_file(
     episode_yaml: dict[str, Any],
     workspace: Path,
 ) -> Path:
-    from_auphonic = _resolve_audio_file_from_auphonic(episode_yaml=episode_yaml, workspace=workspace)
-    if from_auphonic is not None:
-        return from_auphonic
+    # Transcription needs one audio file (typically a master mix exported for this purpose). It never
+    # reads the Auphonic inputs: Auphonic gets the per-speaker stems, a master mix is never sent there.
+    inputs = episode_yaml.get("inputs")
+    if isinstance(inputs, dict) and inputs.get("transcription_audio") is not None:
+        return _resolve_declared_audio_path(
+            inputs["transcription_audio"],
+            source="inputs.transcription_audio",
+            workspace=workspace,
+        )
 
     from_tracks = _resolve_audio_file_from_tracks(episode_yaml=episode_yaml, workspace=workspace)
     if from_tracks is not None:
         return from_tracks
 
     raise typer.BadParameter(
-        "Could not determine a single source audio file. Set auphonic.input_file in episode.yaml "
-        "or provide one preferred mix/master/final track."
+        "Could not determine a single source audio file. Set inputs.transcription_audio in episode.yaml "
+        "(for example a master mix exported for transcription) or provide one preferred "
+        "mix/master/final track." + _legacy_auphonic_input_hint(episode_yaml)
     )
 
 
-def _resolve_audio_file_from_auphonic(
-    *,
-    episode_yaml: dict[str, Any],
-    workspace: Path,
-) -> Path | None:
-    raw = episode_yaml.get("auphonic")
-    if not isinstance(raw, dict):
-        return None
-
-    input_file = raw.get("input_file")
-    if input_file is not None:
-        return _resolve_declared_audio_path(
-            input_file,
-            source="auphonic.input_file",
-            workspace=workspace,
+def _legacy_auphonic_input_hint(episode_yaml: dict[str, Any]) -> str:
+    auphonic = episode_yaml.get("auphonic")
+    if isinstance(auphonic, dict) and (auphonic.get("input_file") or auphonic.get("input_files")):
+        return (
+            " auphonic.input_file is no longer used for transcription; move that path to inputs.transcription_audio."
         )
-
-    input_files = raw.get("input_files")
-    if input_files is None:
-        return None
-    if not isinstance(input_files, list) or not input_files:
-        raise typer.BadParameter("auphonic.input_files must be a non-empty list of strings")
-    if len(input_files) != 1:
-        raise typer.BadParameter(
-            "podcast transcribe needs a single source audio file; set auphonic.input_file "
-            "or reduce auphonic.input_files to one entry"
-        )
-    return _resolve_declared_audio_path(
-        input_files[0],
-        source="auphonic.input_files[0]",
-        workspace=workspace,
-    )
+    return ""
 
 
 def _resolve_declared_audio_path(
@@ -378,14 +360,16 @@ def _resolve_audio_file_from_tracks(
         return preferred[0]
     if len(preferred) > 1:
         raise typer.BadParameter(
-            "Found multiple preferred mix/master/final tracks. Set auphonic.input_file to choose one."
+            "Found multiple preferred mix/master/final tracks. Set inputs.transcription_audio to choose one."
+            + _legacy_auphonic_input_hint(episode_yaml)
         )
     if len(fallback) == 1:
         return fallback[0]
     if len(fallback) > 1:
         raise typer.BadParameter(
             "Found multiple track audio files and no single preferred mix track. "
-            "Set auphonic.input_file to choose one."
+            "Set inputs.transcription_audio to choose one (for example a master mix exported for transcription)."
+            + _legacy_auphonic_input_hint(episode_yaml)
         )
     return None
 

@@ -5,10 +5,16 @@ import json
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
+from typing import Any
 
 import typer
 
-from podcast_pipeline.auphonic_api import AuphonicApiError, AuphonicClient, load_auphonic_credentials
+from podcast_pipeline.auphonic_api import (
+    AuphonicApiError,
+    AuphonicClient,
+    AuphonicProduction,
+    load_auphonic_credentials,
+)
 from podcast_pipeline.auphonic_payload import AuphonicConfigError, build_auphonic_payload
 from podcast_pipeline.domain.models import EpisodeWorkspace
 from podcast_pipeline.workspace_store import EpisodeWorkspaceStore
@@ -51,9 +57,12 @@ def run_produce(*, workspace: Path, dry_run: bool, restart: bool = False) -> Non
                     # written meanwhile are kept.
                     store.set_auphonic_production_uuid(created_uuid, default=workspace_state)
 
+                typer.echo(_describe_inputs(payload))
                 production = client.start_production(payload, on_created=remember)
                 production_uuid = production.uuid
                 just_started = True
+            else:
+                _check_resumable(client.fetch_production(production_uuid), payload)
 
             production = client.wait_for_production(
                 production_uuid,
@@ -72,6 +81,30 @@ def run_produce(*, workspace: Path, dry_run: bool, restart: bool = False) -> Non
 
     typer.echo(f"Auphonic production complete: {production_uuid}")
     typer.echo(f"Auphonic outputs: {store.layout.auphonic_outputs_dir}")
+
+
+def _describe_inputs(payload: dict[str, Any]) -> str:
+    tracks = payload.get("multi_input_files")
+    if payload.get("is_multitrack") is True and isinstance(tracks, list):
+        ids = ", ".join(str(track.get("id")) for track in tracks if isinstance(track, dict))
+        return f"Starting an Auphonic multitrack production with {len(tracks)} tracks: {ids}"
+    return f"Starting a single-track Auphonic production from {payload.get('input_file')}"
+
+
+def _production_kind(multitrack: bool) -> str:
+    return "multitrack" if multitrack else "single-track"
+
+
+def _check_resumable(production: AuphonicProduction, payload: dict[str, Any]) -> None:
+    """Refuse to resume a stored production of the other type (for example a pre-mixed single-track one)."""
+    expected = payload.get("is_multitrack") is True
+    if production.is_multitrack is None or production.is_multitrack == expected:
+        return
+    raise AuphonicApiError(
+        f"Stored Auphonic production {production.uuid} is a {_production_kind(production.is_multitrack)} "
+        f"production, but episode.yaml configures a {_production_kind(expected)} production. "
+        "Rerun with `podcast produce --restart` to start a new one."
+    )
 
 
 class ProduceInProgressError(AuphonicApiError):

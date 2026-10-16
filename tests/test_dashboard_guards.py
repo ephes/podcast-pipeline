@@ -277,6 +277,7 @@ def test_review_iterations_is_clamped(client: TestClient, no_job_threads: list[A
 class _FakeProduction:
     def __init__(self, uuid: str) -> None:
         self.uuid = uuid
+        self.is_multitrack: bool | None = None
         self.output_files = [{"download_url": "https://example.invalid/out.mp3"}]
 
 
@@ -301,6 +302,9 @@ class _FakeAuphonicClient:
         if on_created is not None:
             on_created(uuid)
         _FakeAuphonicClient.started.append(uuid)
+        return _FakeProduction(uuid)
+
+    def fetch_production(self, uuid: str) -> _FakeProduction:
         return _FakeProduction(uuid)
 
     def wait_for_production(self, uuid: str, **_kwargs: object) -> _FakeProduction:

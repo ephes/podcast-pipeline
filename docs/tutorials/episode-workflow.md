@@ -30,16 +30,24 @@ Notes:
 
 ## 2. Export and transcribe audio
 
-**Export a master mix** from Ultraschall/Reaper to MP3 first. The per-track FLAC files in the Reaper media folder are
-not suitable for transcription unless one track is explicitly marked as the mix source. `podcast transcribe` expects a
-single audio input and prefers `auphonic.input_file` from `episode.yaml`. The recommended transcription path is
-`podcast-transcript` with the `voxhelm` backend.
+Export two things from Ultraschall/Reaper once the edit is done:
+
+- **Per-speaker stems for Auphonic** (required): one FLAC per speaker, synced, all the same length and trimmed and
+  edited as in the project (in Reaper: render the stems of the selected tracks over the whole project, for example into
+  a `stems/` folder next to the project). Auphonic gets these individual tracks and does the mixing itself; see
+  [6. Produce with Auphonic](#6-produce-with-auphonic-produce). The raw recordings in the Reaper media folder are not a
+  substitute unless they already are synced, trimmed and edited.
+- **A master mix for transcription** (optional, for example an MP3): `podcast transcribe` needs a single audio file.
+  A master mix is only an input for transcription, never for Auphonic.
+
+`podcast transcribe` reads `inputs.transcription_audio` from `episode.yaml`; it never reads the Auphonic settings. The
+recommended transcription path is `podcast-transcript` with the `voxhelm` backend.
 
 ```bash
-# Example episode.yaml snippet
+# Example episode.yaml snippet (merge into an existing inputs: section if there is one)
 cat >> ./workspaces/ep_068/episode.yaml <<'YAML'
-auphonic:
-  input_file: /Users/jochen/Documents/REAPER Media/pp_068/pp_068.mp3
+inputs:
+  transcription_audio: /Users/jochen/Documents/REAPER Media/pp_068/pp_068_mix.mp3
 YAML
 
 # Transcribe through podcast-pipeline using podcast-transcript + Voxhelm
@@ -58,8 +66,11 @@ Notes:
 - `podcast transcribe` imports the generated plain-text transcript into `transcript/<mode>/transcript.txt` inside the workspace.
 - `podcast-transcript` keeps its artifacts (audio copy, chunks, chunk transcripts) in an episode-local cache under
   `transcript/<mode>/.podcast-transcript/<audio-hash>/`, so episodes with the same audio file name never share a
-  transcript. Re-running on unchanged audio reuses that cache; see the `auphonic` notes in the episode.yaml reference.
-- If the workspace has multiple possible audio inputs, set `auphonic.input_file` explicitly before running the command.
+  transcript. Re-running on unchanged audio reuses that cache; see the transcription notes in the episode.yaml reference.
+- Without `inputs.transcription_audio`, `podcast transcribe` uses a single track with role `mix`/`master`/`final`/
+  `mixdown`, or the only track. With several stems and no mix track it asks you to set `inputs.transcription_audio`.
+  Older workspaces that set `auphonic.input_file` for transcription must move that path to
+  `inputs.transcription_audio`.
 - If you want to override the backend or pass extra transcription flags, add more `--arg` entries; for example
   `--arg=--language --arg=de`.
 
@@ -194,8 +205,26 @@ editor, choose the text to refine (the editor's text or one of the candidates), 
 ## 6. Produce with Auphonic (produce)
 
 `podcast produce` builds the Auphonic payload from `episode.yaml`, the global config and the selected copy, starts an
-Auphonic production, waits for it and downloads the outputs to `auphonic/outputs/`. A production costs Auphonic
-credits, so preview the payload first:
+Auphonic **multitrack** production from the per-speaker stems, waits for it and downloads the outputs to
+`auphonic/outputs/`. Auphonic mixes the stems itself; never give it a master mix. List the stems you exported in
+step 2 and pick a multitrack preset:
+
+```yaml
+auphonic:
+  preset: python_podcast_multitrack   # key in auphonic.presets of the global config, or a preset UUID
+  tracks:
+    - id: jochen
+      path: /Users/jochen/Documents/REAPER Media/pp_072/stems/01-jochen.flac
+    - id: dominik
+      path: /Users/jochen/Documents/REAPER Media/pp_072/stems/02-dominik.flac
+    - id: johannes
+      path: /Users/jochen/Documents/REAPER Media/pp_072/stems/03-johannes.flac
+      algorithms:          # optional Auphonic per-track algorithms
+        denoise: true
+```
+
+Without `auphonic.tracks`, the ingested `tracks` are the stems (tracks with a mix/master/final/mixdown role are
+skipped), so ingesting the stems folder works too. A production costs Auphonic credits, so preview the payload first:
 
 ```bash
 podcast produce --workspace ./workspaces/ep_001 --dry-run   # print the payload, no API call
@@ -209,11 +238,24 @@ Notes:
   `AUPHONIC_USER` and `AUPHONIC_PASSWORD` (HTTP Basic). The API key wins when both are set. `AUPHONIC_BASE_URL`
   overrides the API base URL. Credentials are only sent to that URL's origin, never to output download hosts on
   other origins.
-- A production takes exactly one input file (`auphonic.input_file`, a one-entry `auphonic.input_files`, or a single
-  preferred mix/master/final track). More than one input fails; multitrack productions are not supported.
-- The input is a local path (relative to the workspace is ok) or an `http(s)://` URL. `produce` follows Auphonic's JSON
-  API flow: create the production (an input URL goes into this request), upload a local file to
-  `production/{uuid}/upload.json`, then call `production/{uuid}/start.json`.
+- The preset must be an Auphonic multitrack preset (created in Auphonic's multitrack mode). Single-track presets, such
+  as a mono preset built for one pre-mixed file, do not apply to multitrack productions. Before creating a production,
+  `produce` reads the preset and stops on a type mismatch, so nothing is created or paid for.
+- The multitrack preset must not contain speaker tracks: Auphonic appends the preset's tracks to the production's, which
+  duplicates them ("Multiple tracks with ID ... found"). `produce` stops before creating a production when the preset
+  has any; put per-track algorithms into `auphonic.tracks[].algorithms` instead.
+- `--dry-run` prints the full payload, including `is_multitrack: true`, the `multi_input_files` track list with
+  each stem's id and resolved path, and `output_basename`, without loading credentials or calling the API.
+- Output files are named after the episode: `output_basename` defaults to `episode_id` (for example `pp_72.mp3`,
+  `pp_72.m4a`, `pp_72.opus`); set `auphonic.output_basename` to override it. Without it Auphonic would name the
+  outputs after the first track.
+- Each stem is a local path (relative to the workspace is ok) or an `http(s)://` URL. `produce` follows Auphonic's
+  [multitrack API](https://auphonic.com/help/api/multitrack.html): create the production with `is_multitrack: true`
+  and one `multi_input_files` entry `{type: "multitrack", id: <track id>}` per stem (URL stems carry their
+  `input_file` in this request), upload all local stems in one multipart request to `production/{uuid}/upload.json`
+  with the track id as each file's form field name, then call `production/{uuid}/start.json`.
+- `auphonic.input_file` is rejected in a multitrack production. A single-file production is only available as an
+  explicit opt-in: `auphonic.mode: single_track` with `auphonic.input_file` and a single-track preset.
 - The production's UUID is stored in `state.json` as soon as it is created, before the start request, so a start
   whose outcome is unknown (for example a timeout) is never paid for twice. While it runs, `produce` polls it every
   15 seconds for up to an hour. Status `3` (Done) downloads the outputs. Status `2` (Error), `9` (Incomplete),
@@ -226,6 +268,9 @@ Notes:
   one. When the stored production has failed or was never started (for example the upload failed), rerunning reports
   the same status; fix the cause, then use `--restart` to start a new production on purpose. The dashboard's produce
   button always resumes; use the CLI for `--restart`.
+- A stored production of the other type is never resumed: when `state.json` still holds a single-track production (for
+  example a pre-mixed one from before productions became multitrack) and `episode.yaml` now configures stems, `produce`
+  stops and asks for `--restart`.
 
 Interrupted output downloads remove partial temporary files and preserve an existing destination.
 Stream and filesystem failures surface as `AuphonicApiError`, so the production can be retried.
