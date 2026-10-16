@@ -230,6 +230,8 @@ skipped), so ingesting the stems folder works too. A production costs Auphonic c
 podcast produce --workspace ./workspaces/ep_001 --dry-run   # print the payload, no API call
 podcast produce --workspace ./workspaces/ep_001             # start, wait, download
 podcast produce --workspace ./workspaces/ep_001 --restart   # discard the stored production, start a new one
+podcast produce --workspace ./workspaces/ep_001 --update --dry-run   # print the update requests, no API call
+podcast produce --workspace ./workspaces/ep_001 --update    # edit the stored production, start it again, download
 ```
 
 Notes:
@@ -266,11 +268,44 @@ Notes:
   missing.
 - A rerun (for example after a timeout or a crash) resumes the stored production instead of starting a second, paid
   one. When the stored production has failed or was never started (for example the upload failed), rerunning reports
-  the same status; fix the cause, then use `--restart` to start a new production on purpose. The dashboard's produce
-  button always resumes; use the CLI for `--restart`.
+  the same status; fix the cause, then use `--update` (same stems) or `--restart` (new production) on purpose. The
+  dashboard's produce button always resumes; use the CLI for `--update` and `--restart`.
 - A stored production of the other type is never resumed: when `state.json` still holds a single-track production (for
   example a pre-mixed one from before productions became multitrack) and `episode.yaml` now configures stems, `produce`
   stops and asks for `--restart`.
+
+### Re-run a production without uploading the stems again (--update)
+
+When the production itself is fine but its settings are not (the preset lacked an output format such as Ogg Vorbis or
+the audiogram video, metadata such as `year` was missing, chapters changed), `--update` edits the production stored in
+`state.json` and starts it again instead of creating a new one. The stems stay in Auphonic, so nothing is uploaded
+(a 70-minute three-speaker episode is about 750 MB of FLAC).
+
+- Re-running a finished production costs Auphonic credits again, like a new production. `produce` says so before it
+  starts.
+- `produce --update` rebuilds the payload from `episode.yaml`, the global config and the selected copy as usual and
+  sends everything except the inputs as one update to `production/{uuid}.json`: `preset`, `title`,
+  `output_basename`, `metadata` and `chapters`. Sending the preset makes Auphonic re-apply it, so the production gets
+  the preset's current output files (replacing the old list, not appending to it) and loses its old chapters before the
+  payload's chapters are set. Then each track's `offset` (0 when unset) and `algorithms` go to
+  `production/{uuid}/multi_input_files/{id}.json`. The UUID in `state.json` does not change.
+- Before the paid start request `produce` checks the updated production: it must have exactly the payload's chapters
+  and at least one output file, otherwise it stops without starting it.
+- `--update` refuses, before changing anything, when there is no stored production, when it is still running (a plain
+  rerun follows it), when Auphonic does not allow changes, and when the inputs differ: another production type, other
+  track ids, or a stem whose file name differs from the uploaded one. Changed stems need `--restart`, which uploads
+  them. A stem re-exported under the same file name is not detected; use `--restart` after re-exporting.
+- Auphonic merges per-track algorithms: an algorithm removed from `auphonic.tracks[].algorithms` keeps its previous
+  value in the production. Metadata fields the preset leaves empty also keep their previous value when they are
+  removed from `episode.yaml`. Use `--restart`, or edit the production in Auphonic, to drop them.
+- After the start, the production's previous `Done` (or `Production Changed`) status is ignored for up to two minutes
+  until Auphonic reports it running again, so the previous run's outputs are never downloaded as the new ones. The new
+  outputs overwrite files of the same name in `auphonic/outputs/`; files of an older run with other names stay.
+- `--update` never uses Auphonic's `reset_data` flag: on a multitrack production it deletes all tracks with their
+  uploaded stems. `multi_input_files` is never part of the update either, since Auphonic would add the tracks a second
+  time.
+- `--update` and `--restart` cannot be combined. `--update --dry-run` prints `production_uuid`, `production_update`
+  and `track_updates` without calling the API (it still needs a stored production UUID).
 
 Interrupted output downloads remove partial temporary files and preserve an existing destination.
 Stream and filesystem failures surface as `AuphonicApiError`, so the production can be retried.
@@ -298,7 +333,7 @@ The dashboard also runs each long job single-flight:
 - `podcast produce` itself holds an exclusive lock (`auphonic/.produce.lock`) for the whole Auphonic run. A second run
   for the same workspace, from the CLI or a dashboard, fails instead of starting a second production. A rerun after a
   failure reuses the production UUID stored in `state.json` rather than starting a new one; only
-  `podcast produce --restart` replaces it.
+  `podcast produce --restart` replaces it (`--update` re-runs that same production under the same lock).
   Other `state.json` writers (pick, dashboard, review loop) never clear or replace that stored UUID, and all
   `state.json` updates are serialized with a lock on the workspace directory.
 - Candidate counts (`candidates`) are clamped to 1-10 and review `max_iterations` to 1-10.

@@ -328,11 +328,21 @@ def produce(
             ),
         ),
     ] = False,
+    update: Annotated[
+        bool,
+        typer.Option(
+            help=(
+                "Update the production stored in state.json from episode.yaml (preset, metadata, chapters, "
+                "per-track settings) and start it again without uploading the inputs. Re-running a finished "
+                "production costs Auphonic credits again."
+            ),
+        ),
+    ] = False,
 ) -> None:
     """Start (or resume) the Auphonic production for an episode workspace and download its outputs."""
     from podcast_pipeline.entrypoints.produce import run_produce
 
-    run_produce(workspace=workspace, dry_run=dry_run, restart=restart)
+    run_produce(workspace=workspace, dry_run=dry_run, restart=restart, update=update)
 
 
 @app.command()
