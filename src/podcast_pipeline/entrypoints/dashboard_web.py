@@ -20,6 +20,7 @@ from starlette.responses import HTMLResponse, JSONResponse, PlainTextResponse, R
 from starlette.routing import Route
 from starlette.types import ASGIApp, Receive, Scope, Send
 
+from podcast_pipeline.asset_refine_llm import RefineRequest
 from podcast_pipeline.dashboard_context import BackgroundJob, DashboardContext
 from podcast_pipeline.local_web_guard import check_request
 
@@ -227,6 +228,49 @@ class _DashboardApi:
         if error:
             return JSONResponse({"error": error}, status_code=400)
         return JSONResponse({"ok": True})
+
+    async def handle_put_selection(self, request: Request) -> Response:
+        asset_id = request.path_params["asset_id"]
+        payload, error_response = await self._parse_json_object(request)
+        if error_response is not None:
+            return error_response
+        assert payload is not None
+
+        text = payload.get("text")
+        based_on = payload.get("based_on_candidate_id")
+        if not isinstance(text, str):
+            return JSONResponse({"error": "text must be a string"}, status_code=400)
+        if based_on is not None and not isinstance(based_on, str):
+            return JSONResponse({"error": "based_on_candidate_id must be a string"}, status_code=400)
+
+        with self.ctx.lock:
+            error = self.ctx.select_custom_text(asset_id, text, based_on)
+        if error:
+            return JSONResponse({"error": error}, status_code=400)
+        return JSONResponse({"ok": True})
+
+    async def handle_refine(self, request: Request) -> Response:
+        asset_id = request.path_params["asset_id"]
+        payload, error_response = await self._parse_json_object(request)
+        if error_response is not None:
+            return error_response
+        assert payload is not None
+
+        instruction = payload.get("instruction")
+        candidate_id = payload.get("candidate_id")
+        text = payload.get("text")
+        if not isinstance(instruction, str):
+            return JSONResponse({"error": "instruction must be a string"}, status_code=400)
+        if candidate_id is not None and not isinstance(candidate_id, str):
+            return JSONResponse({"error": "candidate_id must be a string"}, status_code=400)
+        if text is not None and not isinstance(text, str):
+            return JSONResponse({"error": "text must be a string"}, status_code=400)
+
+        with self.ctx.lock:
+            prepared = self.ctx.prepare_refine(asset_id, instruction, candidate_id, text)
+        if isinstance(prepared, str):
+            return JSONResponse({"error": prepared}, status_code=400)
+        return self._start_job(f"refine:{asset_id}", _run_refine_job, prepared)
 
     async def handle_regenerate(self, request: Request) -> Response:
         asset_id = request.path_params["asset_id"]
@@ -468,7 +512,9 @@ def create_dashboard_app(
         Route("/api/assets/{asset_id:str}/notes", api.handle_delete_notes, methods=["DELETE"]),
         Route("/api/assets/{asset_id:str}/tags", api.serve_asset_tags, methods=["GET"]),
         Route("/api/assets/{asset_id:str}/tags", api.handle_put_tags, methods=["PUT"]),
+        Route("/api/assets/{asset_id:str}/selection", api.handle_put_selection, methods=["PUT"]),
         Route("/api/assets/{asset_id:str}/regenerate", api.handle_regenerate, methods=["POST"]),
+        Route("/api/assets/{asset_id:str}/refine", api.handle_refine, methods=["POST"]),
         Route("/api/draft", api.handle_draft, methods=["POST"]),
         Route("/api/draft/summarize", api.handle_draft_summarize, methods=["POST"]),
         Route("/api/draft/candidates", api.handle_draft_candidates, methods=["POST"]),
@@ -629,6 +675,31 @@ def _run_regenerate_job(
             ctx.reload_candidates()
             job.status = "completed"
             job.result = {"candidates": len(new_candidates)}
+    except Exception as exc:
+        with ctx.lock:
+            job.status = "failed"
+            job.error = str(exc)
+
+
+def _run_refine_job(
+    ctx: DashboardContext,
+    job: BackgroundJob,
+    request: RefineRequest,
+) -> None:
+    try:
+        from podcast_pipeline.asset_refine_llm import refine_asset_text
+
+        capture = _ProgressCapture(ctx, job)
+        _thread_local.capture = capture
+        try:
+            candidate = refine_asset_text(workspace=ctx.workspace, request=request)
+        finally:
+            _thread_local.capture = None
+
+        with ctx.lock:
+            ctx.add_candidate(candidate)
+            job.status = "completed"
+            job.result = {"candidate_id": str(candidate.candidate_id)}
     except Exception as exc:
         with ctx.lock:
             job.status = "failed"

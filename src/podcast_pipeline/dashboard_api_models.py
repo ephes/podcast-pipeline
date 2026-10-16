@@ -13,6 +13,7 @@ class AssetCandidateOut(_DashboardApiModel):
     content_html: str
     format: str
     tags: list[str] | None = None
+    instruction: str | None = None
 
 
 class TagPoolEntryOut(_DashboardApiModel):
@@ -24,6 +25,9 @@ class AssetOut(_DashboardApiModel):
     asset_id: str
     selected_candidate_id: str | None = None
     has_selection: bool
+    custom_selected: bool = False
+    selected_text: str | None = None
+    selection_format: str = "markdown"
     candidates: list[AssetCandidateOut]
     selected_tags: list[str] | None = None
     tag_pool: list[TagPoolEntryOut] | None = None

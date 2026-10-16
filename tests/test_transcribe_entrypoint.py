@@ -107,32 +107,56 @@ def test_args_need_audio_file_ignores_legacy_templates() -> None:
     assert _args_need_audio_file(("--mode", "{mode}", "--output-dir", "{output_dir}")) is False
 
 
-def test_resolve_audio_file_prefers_auphonic_input_file(tmp_path: Path) -> None:
+def test_resolve_audio_file_prefers_inputs_transcription_audio(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     audio_file = workspace / "mix.mp3"
     audio_file.write_bytes(b"audio")
+    (workspace / "stem.flac").write_bytes(b"stem")
 
     resolved = _resolve_audio_file(
-        episode_yaml={"episode_id": "ep_001", "auphonic": {"input_file": "mix.mp3"}},
+        episode_yaml={
+            "episode_id": "ep_001",
+            "inputs": {"transcription_audio": "mix.mp3"},
+            "tracks": [{"track_id": "stem", "path": "stem.flac"}],
+            "auphonic": {"tracks": [{"id": "stem", "path": "stem.flac"}]},
+        },
         workspace=workspace,
     )
 
     assert resolved == audio_file.resolve()
 
 
-def test_resolve_audio_file_accepts_single_auphonic_input_files_entry(tmp_path: Path) -> None:
+def test_resolve_audio_file_ignores_auphonic_inputs(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     workspace.mkdir()
-    audio_file = workspace / "mix.mp3"
-    audio_file.write_bytes(b"audio")
+    (workspace / "mix.mp3").write_bytes(b"audio")
 
-    resolved = _resolve_audio_file(
-        episode_yaml={"episode_id": "ep_001", "auphonic": {"input_files": ["mix.mp3"]}},
-        workspace=workspace,
-    )
+    with pytest.raises(typer.BadParameter, match="inputs.transcription_audio") as excinfo:
+        _resolve_audio_file(
+            episode_yaml={"episode_id": "ep_001", "auphonic": {"input_file": "mix.mp3"}},
+            workspace=workspace,
+        )
+    assert "auphonic.input_file is no longer used for transcription" in str(excinfo.value)
 
-    assert resolved == audio_file.resolve()
+
+def test_resolve_audio_file_needs_explicit_mix_for_multiple_stems(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    for name in ("jochen.flac", "dominik.flac"):
+        (workspace / name).write_bytes(b"stem")
+
+    with pytest.raises(typer.BadParameter, match="Set inputs.transcription_audio"):
+        _resolve_audio_file(
+            episode_yaml={
+                "episode_id": "ep_001",
+                "tracks": [
+                    {"track_id": "jochen", "path": "jochen.flac"},
+                    {"track_id": "dominik", "path": "dominik.flac"},
+                ],
+            },
+            workspace=workspace,
+        )
 
 
 def test_resolve_audio_file_uses_single_preferred_track(tmp_path: Path) -> None:
@@ -373,7 +397,7 @@ def _write_podcast_transcript_workspace(workspace: Path, *, audio_name: str, aud
     audio_file = workspace / audio_name
     audio_file.write_bytes(audio_bytes)
     (workspace / "episode.yaml").write_text(
-        f"schema_version: 1\nepisode_id: {workspace.name}\nauphonic:\n  input_file: {audio_name}\n",
+        f"schema_version: 1\nepisode_id: {workspace.name}\ninputs:\n  transcription_audio: {audio_name}\n",
         encoding="utf-8",
     )
     return audio_file

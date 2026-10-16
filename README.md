@@ -31,17 +31,37 @@ The preview runs at http://127.0.0.1:8000 and static output lands in `docs/_buil
 
 ## Auphonic production
 
-`podcast produce --workspace <ep>` creates and starts an Auphonic production (uploading a local input file), polls
-it until Auphonic reports Done or a failure status, and downloads the outputs. Reruns resume the production stored in
-`state.json`; `--restart` deliberately starts a new (paid) one after a failure, and `--dry-run` only prints the payload.
-Credentials: `AUPHONIC_API_KEY`, or `AUPHONIC_USER` + `AUPHONIC_PASSWORD`. Details:
-`docs/tutorials/episode-workflow.md` ("Produce with Auphonic").
+Auphonic gets the individual speaker tracks and mixes them itself: export one stem per speaker from
+Reaper/Ultraschall (FLAC, synced, same length, trimmed as in the project) and list them in `episode.yaml`
+(`auphonic.tracks`, or ingest them as `tracks`). A master mix is at most an input for transcription
+(`inputs.transcription_audio`), never for Auphonic. The configured preset must be an Auphonic multitrack preset.
+
+`podcast produce --workspace <ep>` creates an Auphonic multitrack production, uploads the stems (one form field per
+track), starts it, polls it until Auphonic reports Done or a failure status, and downloads the outputs. Reruns resume
+the production stored in `state.json`; `--restart` deliberately starts a new (paid) one after a failure, and
+`--dry-run` only prints the payload, including the track list. `--update` re-runs the stored production without
+uploading the stems again: it applies the current preset, metadata, chapters and per-track settings to it and starts it
+again (`--update --dry-run` prints the update requests). Re-running a finished production costs credits again. Outputs are named after the episode (`output_basename`,
+default `episode_id`). A single-file production is only available as an
+explicit opt-in (`auphonic.mode: single_track`). Credentials: `AUPHONIC_API_KEY`, or `AUPHONIC_USER` +
+`AUPHONIC_PASSWORD`. Details: `docs/tutorials/episode-workflow.md` ("Produce with Auphonic") and
+`docs/decisions/auphonic-multitrack.md`.
 
 ## Local web UIs
 
 `podcast dashboard` and `podcast pick --web` listen on `127.0.0.1` only and reject requests from other origins or
 hostnames, and state-changing requests without `Content-Type: application/json`. Dashboard jobs such as Auphonic
 production run single-flight per episode. Details: `docs/tutorials/episode-workflow.md` ("Local web UIs").
+
+## Custom selected text
+
+Besides picking a whole generated candidate, `podcast pick --web` and the dashboard let you write or edit the
+selected text of an asset (start from a candidate with "Edit", then "Use custom text"); tag assets use the tag pool
+instead. Slugs are validated as
+lowercase, hyphen-separated and URL-safe; custom selections count as selected for "Done", `podcast status` and
+`podcast produce`. You can also refine a candidate or your own text with an instruction (`kürzer`, `ohne Emojis`):
+the drafter agent rewrites it into a new candidate that records the instruction. Details:
+`docs/tutorials/episode-workflow.md` ("Write or edit the selected text", "Refine a text with an instruction").
 
 ## Agent CLI timeout
 

@@ -6,4 +6,5 @@ Architecture decisions and rationale live here.
 :maxdepth: 1
 
 docs-stack
+auphonic-multitrack
 ```

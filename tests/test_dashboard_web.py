@@ -17,6 +17,7 @@ from podcast_pipeline.dashboard_api_models import AssetOut, StatusOut
 from podcast_pipeline.dashboard_context import DashboardContext
 from podcast_pipeline.domain.models import Candidate, TextFormat
 from podcast_pipeline.entrypoints.dashboard_web import create_dashboard_app
+from podcast_pipeline.pick_core import has_manual_selection_provenance
 from podcast_pipeline.workspace_store import EpisodeWorkspaceStore
 
 
@@ -1006,3 +1007,216 @@ def test_dashboard_serializes_tag_updates_and_hides_tag_candidate_select(
     body = urllib.request.urlopen(f"{base_url}/").read().decode("utf-8")
     assert "function enqueueTagUpdate(update)" in body
     assert "if (!isTagAsset(asset.asset_id)) actions.appendChild(button);" in body
+
+
+def _put_json(url: str, payload: object) -> tuple[int, dict[str, Any]]:
+    req = urllib.request.Request(
+        url,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="PUT",
+    )
+    try:
+        resp = urllib.request.urlopen(req)
+    except urllib.error.HTTPError as exc:
+        return exc.code, cast(dict[str, Any], json.loads(exc.read().decode("utf-8")))
+    return resp.status, cast(dict[str, Any], json.loads(resp.read().decode("utf-8")))
+
+
+def test_put_selection_saves_custom_text_and_updates_status(dashboard_server: _DashboardServerTuple) -> None:
+    _server, base_url, ctx = dashboard_server
+    assets = json.loads(urllib.request.urlopen(f"{base_url}/api/assets").read().decode("utf-8"))
+    shownotes = next(a for a in assets if a["asset_id"] == "shownotes")
+    assert shownotes["custom_selected"] is False
+    assert shownotes["selection_format"] == "markdown"
+    based_on = shownotes["candidates"][0]["candidate_id"]
+
+    status, data = _put_json(
+        f"{base_url}/api/assets/shownotes/selection",
+        {"text": "# Shownotes\n\n- Python 3.15\n", "based_on_candidate_id": based_on},
+    )
+    assert status == 200
+    assert data == {"ok": True}
+
+    assets = json.loads(urllib.request.urlopen(f"{base_url}/api/assets").read().decode("utf-8"))
+    shownotes = next(a for a in assets if a["asset_id"] == "shownotes")
+    AssetOut.model_validate(shownotes)
+    assert shownotes["has_selection"] is True
+    assert shownotes["custom_selected"] is True
+    assert shownotes["selected_candidate_id"] is None
+    assert shownotes["selected_text"] == "# Shownotes\n\n- Python 3.15\n"
+
+    stages = json.loads(urllib.request.urlopen(f"{base_url}/api/status").read().decode("utf-8"))["stages"]
+    assert stages["selected"] == 1
+
+    html = ctx.layout.selected_text_path("shownotes", TextFormat.html).read_text(encoding="utf-8")
+    assert "<li>Python 3.15</li>" in html
+    state = ctx.store.read_state()
+    assert next(a for a in state.assets if a.asset_id == "shownotes").selected_candidate_id is None
+    assert has_manual_selection_provenance(state, "shownotes")
+
+    # Selecting a candidate replaces the custom text and drops the manual-edit marker.
+    payload = json.dumps({"asset_id": "shownotes", "candidate_id": based_on}).encode()
+    req = urllib.request.Request(
+        f"{base_url}/api/select", data=payload, headers={"Content-Type": "application/json"}, method="POST"
+    )
+    assert urllib.request.urlopen(req).status == 200
+    assets = json.loads(urllib.request.urlopen(f"{base_url}/api/assets").read().decode("utf-8"))
+    shownotes = next(a for a in assets if a["asset_id"] == "shownotes")
+    assert shownotes["custom_selected"] is False
+    assert shownotes["selected_text"] is None
+    assert not has_manual_selection_provenance(ctx.store.read_state(), "shownotes")
+
+
+def test_put_selection_validates_slug(tmp_path: Path) -> None:
+    store = _setup_workspace(tmp_path)
+    store.write_candidate(Candidate(asset_id="slug", content="python-neuigkeiten"))
+    ctx = DashboardContext(workspace=tmp_path)
+
+    error = ctx.select_custom_text("slug", "python_3.15", None)
+    assert error is not None and "Invalid slug" in error
+    assert ctx.select_custom_text("slug", "python-3-15", None) is None
+    assert ctx.layout.selected_text_path("slug", TextFormat.plain).read_text(encoding="utf-8") == "python-3-15\n"
+
+
+@pytest.mark.parametrize(
+    ("asset_id", "payload", "message"),
+    [
+        ("description", {}, "text must be a string"),
+        ("description", {"text": "x", "based_on_candidate_id": 3}, "must be a string"),
+        ("description", {"text": "x", "based_on_candidate_id": "00000000-0000-0000-0000-000000000000"}, "not found"),
+        ("unknown", {"text": "x"}, "Unknown asset_id"),
+        ("description", {"text": ""}, "must not be empty"),
+    ],
+)
+def test_put_selection_rejects_bad_input(
+    dashboard_server: _DashboardServerTuple,
+    asset_id: str,
+    payload: dict[str, Any],
+    message: str,
+) -> None:
+    _server, base_url, ctx = dashboard_server
+    status, data = _put_json(f"{base_url}/api/assets/{asset_id}/selection", payload)
+    assert status == 400
+    assert message in data["error"]
+    assert not ctx.layout.state_json.exists()
+
+
+def test_refine_job_adds_candidate(dashboard_server: _DashboardServerTuple, monkeypatch: pytest.MonkeyPatch) -> None:
+    from podcast_pipeline import asset_refine_llm
+    from podcast_pipeline.asset_refine_llm import RefineRequest, parse_refined_candidate
+
+    _server, base_url, _ctx = dashboard_server
+    seen: list[RefineRequest] = []
+
+    def fake_refine(*, workspace: Path, request: RefineRequest) -> Candidate:
+        seen.append(request)
+        return parse_refined_candidate(
+            {"content": "# Kürzer"},
+            asset_id=request.asset_id,
+            instruction=request.instruction,
+            based_on_candidate_id=request.based_on_candidate_id,
+        )
+
+    monkeypatch.setattr(asset_refine_llm, "refine_asset_text", fake_refine)
+    assets = json.loads(urllib.request.urlopen(f"{base_url}/api/assets").read().decode("utf-8"))
+    source_id = next(a for a in assets if a["asset_id"] == "description")["candidates"][1]["candidate_id"]
+
+    req = urllib.request.Request(
+        f"{base_url}/api/assets/description/refine",
+        data=json.dumps({"instruction": "kürzer", "candidate_id": source_id}).encode(),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    job_id = json.loads(urllib.request.urlopen(req).read().decode("utf-8"))["job_id"]
+
+    deadline = time.time() + 5
+    job: dict[str, Any] = {}
+    while time.time() < deadline:
+        job = json.loads(urllib.request.urlopen(f"{base_url}/api/jobs/{job_id}").read().decode("utf-8"))
+        if job["status"] != "running":
+            break
+        time.sleep(0.05)
+    assert job["status"] == "completed", job
+    assert seen[0].source_text == "# Description 2\n\nSecond."
+
+    assets = json.loads(urllib.request.urlopen(f"{base_url}/api/assets").read().decode("utf-8"))
+    description = next(a for a in assets if a["asset_id"] == "description")
+    AssetOut.model_validate(description)
+    assert len(description["candidates"]) == 3
+    refined = [c for c in description["candidates"] if c["instruction"] == "kürzer"]
+    assert [c["content"] for c in refined] == ["# Kürzer"]
+
+
+@pytest.mark.parametrize(
+    ("payload", "message"),
+    [
+        ({}, "instruction must be a string"),
+        ({"instruction": "x", "candidate_id": 1}, "candidate_id must be a string"),
+        ({"instruction": "x", "text": 1}, "text must be a string"),
+        ({"instruction": "x"}, "no text to refine"),
+        ({"instruction": "", "text": "y"}, "instruction must not be empty"),
+    ],
+)
+def test_refine_rejects_bad_input_without_starting_a_job(
+    dashboard_server: _DashboardServerTuple,
+    payload: dict[str, Any],
+    message: str,
+) -> None:
+    _server, base_url, ctx = dashboard_server
+    req = urllib.request.Request(
+        f"{base_url}/api/assets/description/refine",
+        data=json.dumps(payload).encode(),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with pytest.raises(urllib.error.HTTPError) as exc_info:
+        urllib.request.urlopen(req)
+    assert exc_info.value.code == 400
+    assert message in json.loads(exc_info.value.read().decode("utf-8"))["error"]
+    assert not ctx.jobs
+
+
+def test_custom_selection_survives_deleting_last_candidate(dashboard_server: _DashboardServerTuple) -> None:
+    _server, base_url, ctx = dashboard_server
+    assets = json.loads(urllib.request.urlopen(f"{base_url}/api/assets").read().decode("utf-8"))
+    only_candidate = next(a for a in assets if a["asset_id"] == "shownotes")["candidates"][0]["candidate_id"]
+    assert _put_json(f"{base_url}/api/assets/shownotes/selection", {"text": "# Eigene Shownotes"})[0] == 200
+
+    req = urllib.request.Request(
+        f"{base_url}/api/assets/shownotes/candidates/{only_candidate}",
+        headers={"Content-Type": "application/json"},
+        method="DELETE",
+    )
+    assert urllib.request.urlopen(req).status == 200
+
+    assets = json.loads(urllib.request.urlopen(f"{base_url}/api/assets").read().decode("utf-8"))
+    shownotes = next(a for a in assets if a["asset_id"] == "shownotes")
+    assert shownotes["candidates"] == []
+    assert shownotes["custom_selected"] is True
+    assert shownotes["selected_text"] == "# Eigene Shownotes\n"
+    stages = json.loads(urllib.request.urlopen(f"{base_url}/api/status").read().decode("utf-8"))["stages"]
+    assert (stages["selected"], stages["total_assets"], stages["candidate_assets"]) == (1, 2, 1)
+
+    # The custom text can still be edited and refined.
+    assert _put_json(f"{base_url}/api/assets/shownotes/selection", {"text": "# Neu"})[0] == 200
+    prepared = ctx.prepare_refine("shownotes", "kürzer", None, None)
+    assert not isinstance(prepared, str)
+    assert prepared.source_text == "# Neu\n"
+
+
+def test_put_selection_rejects_custom_text_for_tag_assets(
+    dashboard_server_with_tags: _DashboardServerTuple,
+) -> None:
+    _server, base_url, ctx = dashboard_server_with_tags
+    req = urllib.request.Request(
+        f"{base_url}/api/assets/cms_tags/selection",
+        data=json.dumps({"text": "- a\n- b"}).encode(),
+        headers={"Content-Type": "application/json"},
+        method="PUT",
+    )
+    with pytest.raises(urllib.error.HTTPError) as exc_info:
+        urllib.request.urlopen(req)
+    assert exc_info.value.code == 400
+    assert "tag editor" in json.loads(exc_info.value.read().decode("utf-8"))["error"]
+    assert not ctx.layout.selected_text_path("cms_tags", TextFormat.markdown).exists()

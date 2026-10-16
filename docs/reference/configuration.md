@@ -83,6 +83,23 @@ auphonic:
 
 Use `preset_id` in `episode.yaml` to skip mapping and set the preset id directly.
 
+Productions are multitrack (Auphonic mixes the speaker stems), so the preset must be an Auphonic **multitrack preset**:
+create it in Auphonic's multitrack mode (the API reports `is_multitrack: true`). Single-track presets do not apply to
+multitrack productions; `podcast produce` reads the preset before creating a production and stops on a mismatch. Keep a
+single-track preset only for episodes that opt into `auphonic.mode: single_track`.
+
+A multitrack preset must not contain speaker tracks. Auphonic appends a preset's `multi_input_files` to the
+production's, so a preset created with tracks (for example `jochen`, `dominik`) doubles them and the start fails with
+"Multiple tracks with ID ... found". Keep the preset to master settings (output files, loudness, leveler, metadata
+defaults; intro/outro entries are fine) and put per-track algorithms into `auphonic.tracks[].algorithms` in
+`episode.yaml`. `podcast produce` stops before creating a production when the preset contains speaker tracks.
+
+After changing a preset (for example adding Ogg Vorbis or audiogram outputs), `podcast produce --update` applies it to
+the production stored in `state.json` and starts that production again without uploading the stems; re-running a
+finished production costs Auphonic credits again. Auphonic re-applies the preset on that update, so the production's
+output files become exactly the preset's. The same preset checks run before the update. See "Produce with Auphonic"
+in `tutorials/episode-workflow.md`.
+
 ## Tag assets (local only)
 
 `cms_tags`, `audio_tags` and `itunes_keywords` follow the show's tag house style: 6-10 short, specific terms

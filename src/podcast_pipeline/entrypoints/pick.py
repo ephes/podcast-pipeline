@@ -9,6 +9,7 @@ import typer
 from podcast_pipeline.domain.models import Candidate
 from podcast_pipeline.pick_core import (
     build_asset,
+    clear_manual_selection_provenance,
     find_candidate_by_id,
     load_candidates,
     load_workspace,
@@ -61,7 +62,10 @@ def run_pick(
             candidates=candidates,
             selected_candidate_id=chosen.candidate_id,
         )
-        workspace_state = update_workspace_assets(workspace_state, assets_by_id)
+        workspace_state = update_workspace_assets(
+            clear_manual_selection_provenance(workspace_state, asset_key),
+            assets_by_id,
+        )
         store.write_state(workspace_state)
         selections.append(_Selection(asset_id=asset_key, candidate=chosen, path=selected_path))
 

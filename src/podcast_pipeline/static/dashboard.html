@@ -105,6 +105,21 @@
     font-size: 0.8rem;
   }
   .delete-btn:hover { background: #fee2e2; border-color: #ef4444; }
+  .edit-btn { background: transparent; color: var(--accent); border: 1px solid var(--accent);
+              padding: 0.35rem 0.7rem; border-radius: 4px; cursor: pointer; font-size: 0.8rem; }
+  .edit-btn:hover { background: var(--selected-bg); }
+  .custom-section { margin-top: 1rem; }
+  .custom-section textarea { width: 100%; min-height: 4.5rem; font-family: ui-monospace, SFMono-Regular, monospace;
+                             font-size: 0.85rem; padding: 0.5rem; border: 1px solid var(--border);
+                             border-radius: 4px; resize: vertical; }
+  .custom-section textarea.multiline { min-height: 14rem; }
+  .custom-hint { font-size: 0.8rem; color: var(--text-muted); margin: 0.25rem 0 0.5rem; }
+  .custom-error { font-size: 0.8rem; color: var(--error); margin-top: 0.5rem; white-space: pre-wrap; }
+  .custom-error:empty { display: none; }
+  .refine-row { display: flex; gap: 0.5rem; margin-top: 0.75rem; align-items: center; }
+  .refine-row select, .refine-row input { font-size: 0.85rem; padding: 0.35rem 0.5rem;
+                                         border: 1px solid var(--border); border-radius: 4px; }
+  .refine-row input { flex: 1 1 auto; }
   .candidate-content { font-size: 0.9rem; line-height: 1.6; max-height: 60vh; overflow-y: auto; }
   .candidate-content h1, .candidate-content h2, .candidate-content h3 { margin: 0.5em 0 0.25em; }
   .candidate-content p { margin: 0.4em 0; }
@@ -348,6 +363,9 @@ const state = {
   jobPollInterval: null,
 };
 const TAG_ASSET_IDS = new Set(["audio_tags", "cms_tags", "itunes_keywords"]);
+const SINGLE_LINE_ASSET_IDS = new Set(["slug", "title_detail", "title_seo", "subtitle_auphonic"]);
+// Unsaved custom-text drafts per asset: {text, basedOn}
+const customDrafts = {};
 
 const elements = {
   tabs: document.getElementById("tabs"),
@@ -894,7 +912,8 @@ function createPickCandidatesGrid(asset) {
 
     const label = document.createElement("span");
     label.className = "card-label";
-    label.textContent = `Candidate ${index + 1} (${candidate.format})`;
+    label.textContent = `Candidate ${index + 1} (${candidate.format})` +
+      (candidate.instruction ? ` · refined: ${candidate.instruction}` : "");
     cardHeader.appendChild(label);
 
     const button = document.createElement("button");
@@ -915,6 +934,17 @@ function createPickCandidatesGrid(asset) {
 
     const actions = document.createElement("div");
     actions.className = "card-actions";
+    if (!isTagAsset(asset.asset_id)) {
+      const editButton = document.createElement("button");
+      editButton.type = "button";
+      editButton.className = "edit-btn";
+      editButton.dataset.action = "edit-candidate";
+      editButton.dataset.assetId = asset.asset_id;
+      editButton.dataset.candidateId = candidate.candidate_id;
+      editButton.title = "Copy this candidate into the custom text editor";
+      editButton.textContent = "Edit";
+      actions.appendChild(editButton);
+    }
     // Tag assets are curated tag by tag from the pool, not by selecting a whole candidate.
     if (!isTagAsset(asset.asset_id)) actions.appendChild(button);
     actions.appendChild(deleteButton);
@@ -1036,6 +1066,186 @@ function createPickTagsSection(asset) {
   return section;
 }
 
+function customDraft(asset) {
+  if (!customDrafts[asset.asset_id]) {
+    const text = asset.custom_selected ? (asset.selected_text || "").trimEnd() : "";
+    customDrafts[asset.asset_id] = { text, basedOn: null };
+  }
+  return customDrafts[asset.asset_id];
+}
+
+function editableCandidateText(asset, candidate) {
+  if (asset.selection_format !== "plain") return candidate.content.trimEnd();
+  // Plain selections carry only the value: drop markdown headings and blank lines.
+  const lines = candidate.content.split("\n").map((line) => line.trim()).filter((line) => line && !line.startsWith("#"));
+  return lines.join(SINGLE_LINE_ASSET_IDS.has(asset.asset_id) ? " " : "\n");
+}
+
+function createPickCustomSection(asset) {
+  const draft = customDraft(asset);
+  const section = document.createElement("div");
+  section.className = asset.custom_selected ? "candidate-card custom-section selected" : "candidate-card custom-section";
+
+  const header = document.createElement("div");
+  header.className = "card-header";
+  const label = document.createElement("span");
+  label.className = "card-label";
+  label.textContent = asset.custom_selected ? "Custom text (current selection)" : "Custom text";
+  header.appendChild(label);
+
+  const actions = document.createElement("div");
+  actions.className = "card-actions";
+  const clearBtn = document.createElement("button");
+  clearBtn.type = "button";
+  clearBtn.className = "edit-btn";
+  clearBtn.dataset.action = "clear-custom";
+  clearBtn.dataset.assetId = asset.asset_id;
+  clearBtn.textContent = "Clear";
+  actions.appendChild(clearBtn);
+  const saveBtn = document.createElement("button");
+  saveBtn.type = "button";
+  saveBtn.className = "select-btn";
+  saveBtn.dataset.action = "save-custom";
+  saveBtn.dataset.assetId = asset.asset_id;
+  saveBtn.textContent = asset.custom_selected ? "Save" : "Use custom text";
+  actions.appendChild(saveBtn);
+  header.appendChild(actions);
+  section.appendChild(header);
+
+  const hint = document.createElement("p");
+  hint.className = "custom-hint";
+  hint.textContent =
+    `Write your own ${asset.asset_id} or press "Edit" on a candidate to start from it. ` +
+    `Saved as ${asset.selection_format} text.` +
+    (asset.asset_id === "slug" ? " Slugs use lowercase letters, digits and hyphens (e.g. python-3-15)." : "");
+  section.appendChild(hint);
+
+  const textarea = document.createElement("textarea");
+  textarea.id = "pick-custom-text";
+  textarea.dataset.assetId = asset.asset_id;
+  textarea.spellcheck = true;
+  if (!SINGLE_LINE_ASSET_IDS.has(asset.asset_id)) textarea.className = "multiline";
+  textarea.value = draft.text;
+  section.appendChild(textarea);
+
+  section.appendChild(createRefineRow(asset, draft));
+
+  const error = document.createElement("div");
+  error.className = "custom-error";
+  error.id = "pick-custom-error";
+  section.appendChild(error);
+  return section;
+}
+
+function createRefineRow(asset, draft) {
+  const row = document.createElement("div");
+  row.className = "refine-row";
+
+  // Default source: the editor if it has text, else the selected candidate, else the first one.
+  const fallback = draft.text.trim() ? "editor" : asset.selected_candidate_id || asset.candidates[0]?.candidate_id;
+  const chosen = draft.refineSource || fallback;
+  const source = document.createElement("select");
+  source.id = "pick-refine-source";
+  source.dataset.assetId = asset.asset_id;
+  source.title = "Text to refine";
+  source.appendChild(new Option("Custom text (editor)", "editor", false, chosen === "editor"));
+  asset.candidates.forEach((candidate, index) => {
+    const selected = candidate.candidate_id === chosen;
+    source.appendChild(new Option(`Candidate ${index + 1}`, candidate.candidate_id, false, selected));
+  });
+  row.appendChild(source);
+
+  const instruction = document.createElement("input");
+  instruction.type = "text";
+  instruction.id = "pick-refine-instruction";
+  instruction.dataset.assetId = asset.asset_id;
+  instruction.placeholder = "Instruction for the drafter, e.g. kürzer, ohne Emojis, Slug nur python-315";
+  instruction.value = draft.instruction || "";
+  row.appendChild(instruction);
+
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "select-btn";
+  button.dataset.action = "refine";
+  button.dataset.assetId = asset.asset_id;
+  button.textContent = "Refine";
+  row.appendChild(button);
+  return row;
+}
+
+async function refineAsset(assetId) {
+  const asset = state.assets.find((item) => item.asset_id === assetId);
+  const textarea = document.getElementById("pick-custom-text");
+  const source = document.getElementById("pick-refine-source");
+  const instruction = document.getElementById("pick-refine-instruction");
+  const errorEl = document.getElementById("pick-custom-error");
+  const regenContainer = document.getElementById("pick-regen");
+  const regenLog = document.getElementById("pick-regen-log");
+  const regenProgress = document.getElementById("pick-regen-progress");
+  if (!asset || !textarea || !source || !instruction || !regenContainer || !regenLog || !regenProgress) return;
+
+  const draft = customDraft(asset);
+  draft.text = textarea.value;
+  draft.refineSource = source.value;
+  draft.instruction = instruction.value;
+  const body = { instruction: draft.instruction };
+  if (draft.refineSource === "editor") body.text = draft.text;
+  else body.candidate_id = draft.refineSource;
+  if (errorEl) errorEl.textContent = "";
+
+  let data;
+  try {
+    data = await apiJson("POST", `/api/assets/${encodeURIComponent(assetId)}/refine`, body);
+  } catch (error) {
+    if (errorEl) errorEl.textContent = error instanceof Error ? error.message : String(error);
+    return;
+  }
+  regenContainer.style.display = "";
+  regenLog.innerHTML = "";
+  appendLog(regenLog, `Refining ${assetId}: ${draft.instruction}`);
+  streamJob(data.job_id, regenLog, regenProgress, async (result) => {
+    // Keep the log visible on failure; on success show the new candidate.
+    if (result.status === "completed") await loadAssets();
+  });
+}
+
+function startCustomFromCandidate(assetId, candidateId) {
+  const asset = state.assets.find((item) => item.asset_id === assetId);
+  const candidate = asset?.candidates.find((item) => item.candidate_id === candidateId);
+  if (!asset || !candidate) return;
+  customDrafts[assetId] = { ...customDraft(asset), text: editableCandidateText(asset, candidate), basedOn: candidateId };
+  const textarea = document.getElementById("pick-custom-text");
+  if (!textarea) return;
+  textarea.value = customDrafts[assetId].text;
+  textarea.focus();
+  textarea.scrollIntoView({ block: "center" });
+}
+
+async function saveCustomSelection(assetId) {
+  const asset = state.assets.find((item) => item.asset_id === assetId);
+  const textarea = document.getElementById("pick-custom-text");
+  const errorEl = document.getElementById("pick-custom-error");
+  if (!asset || !textarea) return;
+  const draft = customDraft(asset);
+  draft.text = textarea.value;
+  if (draft.basedOn && !asset.candidates.some((item) => item.candidate_id === draft.basedOn)) {
+    draft.basedOn = null; // the candidate it started from was deleted meanwhile
+  }
+  if (errorEl) errorEl.textContent = "";
+  try {
+    await apiJson("PUT", `/api/assets/${encodeURIComponent(assetId)}/selection`, {
+      text: draft.text,
+      based_on_candidate_id: draft.basedOn,
+    });
+  } catch (error) {
+    if (errorEl) errorEl.textContent = error instanceof Error ? error.message : String(error);
+    return;
+  }
+  delete customDrafts[assetId];
+  await loadAssets();
+  await loadStatus();
+}
+
 function createPickRegenSection(assetId) {
   const container = document.createElement("div");
   container.id = "pick-regen";
@@ -1107,6 +1317,9 @@ async function renderPickMain() {
   } else {
     main.appendChild(createPickCandidatesGrid(asset));
   }
+  if (!isTagAsset(asset.asset_id)) {
+    main.appendChild(createPickCustomSection(asset));
+  }
   main.appendChild(createPickRegenSection(asset.asset_id));
 }
 
@@ -1145,6 +1358,9 @@ async function handlePickSelect(assetId, candidateId) {
 
 function candidateDeleteConfirmation(assetId) {
   const asset = state.assets.find((item) => item.asset_id === assetId);
+  if (asset && Array.isArray(asset.candidates) && asset.candidates.length === 1 && asset.custom_selected) {
+    return "Delete this last candidate? This cannot be undone.\n\nThe asset keeps its custom text.";
+  }
   if (asset && Array.isArray(asset.candidates) && asset.candidates.length === 1) {
     return (
       "Delete this last candidate? This cannot be undone.\n\n" +
@@ -1394,6 +1610,31 @@ function wireEvents() {
       return;
     }
 
+    if (action === "edit-candidate") {
+      const candidateId = actionElement.dataset.candidateId || "";
+      if (assetId && candidateId) startCustomFromCandidate(assetId, candidateId);
+      return;
+    }
+
+    if (action === "save-custom") {
+      if (assetId) saveCustomSelection(assetId);
+      return;
+    }
+
+    if (action === "refine") {
+      if (assetId) refineAsset(assetId);
+      return;
+    }
+
+    if (action === "clear-custom") {
+      if (assetId) {
+        customDrafts[assetId] = { ...customDrafts[assetId], text: "", basedOn: null };
+        const textarea = document.getElementById("pick-custom-text");
+        if (textarea) textarea.value = "";
+      }
+      return;
+    }
+
     if (action === "delete-candidate") {
       const candidateId = actionElement.dataset.candidateId || "";
       if (assetId && candidateId) {
@@ -1434,9 +1675,23 @@ function wireEvents() {
     }
   });
 
+  elements.pickMain.addEventListener("input", (event) => {
+    const target = event.target;
+    const asset = state.assets.find((item) => item.asset_id === target.dataset?.assetId);
+    if (!asset) return;
+    if (target.id === "pick-custom-text") customDraft(asset).text = target.value;
+    if (target.id === "pick-refine-instruction") customDraft(asset).instruction = target.value;
+    if (target.id === "pick-refine-source") customDraft(asset).refineSource = target.value;
+  });
+
   elements.pickMain.addEventListener("keydown", (event) => {
     const target = event.target;
     if (!(target instanceof HTMLInputElement)) return;
+    if (target.id === "pick-refine-instruction" && event.key === "Enter") {
+      event.preventDefault();
+      if (target.dataset.assetId) refineAsset(target.dataset.assetId);
+      return;
+    }
     if (target.id !== "pick-tag-input") return;
     if (event.key !== "Enter") return;
     event.preventDefault();
