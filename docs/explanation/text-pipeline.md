@@ -102,5 +102,9 @@ Current asset ids (from `AssetKind`):
 - `linkedin`
 - `youtube_description`
 
+In the LLM mode, the tag assets (`cms_tags`, `audio_tags`, `itunes_keywords`) get house-style tag rules in their
+prompt, optional few-shot examples from past episodes (`tags.examples`) and a deterministic post-filter that drops
+excluded terms and host names and caps the count. See `reference/configuration.md` ("Tag assets").
+
 Both modes write candidates to the same workspace paths. The stub generator uses deterministic UUIDs based on asset id
 and variant, so reruns with the same config are stable.

@@ -28,6 +28,7 @@ class RssEpisodeExample:
     guid: str | None
     published: str | None
     feed_url: str
+    keywords: tuple[str, ...] = ()
 
     def example_id(self) -> str:
         seed = self.guid or self.link or self.title
@@ -53,6 +54,7 @@ class RssEpisodeExample:
             "guid": self.guid,
             "published": self.published,
             "feed_url": self.feed_url,
+            "keywords": list(self.keywords),
         }
 
 
@@ -149,6 +151,7 @@ def _parse_item(item: ElementTree.Element, *, feed_url: str) -> RssEpisodeExampl
     link = _extract_first_text(item, ("link",))
     guid = _extract_first_text(item, ("guid",))
     published = _extract_first_text(item, ("pubDate", "published", "updated", "date"))
+    keywords = _extract_first_text(item, ("keywords",))
 
     return RssEpisodeExample(
         title=normalize_text(title),
@@ -158,7 +161,14 @@ def _parse_item(item: ElementTree.Element, *, feed_url: str) -> RssEpisodeExampl
         guid=normalize_text(guid) if guid else None,
         published=normalize_text(published) if published else None,
         feed_url=feed_url,
+        keywords=_split_keywords(keywords),
     )
+
+
+def _split_keywords(value: str | None) -> tuple[str, ...]:
+    if not value:
+        return ()
+    return tuple(item for item in (normalize_text(part) for part in value.split(",")) if item)
 
 
 def _extract_first_text(item: ElementTree.Element, tags: Sequence[str]) -> str | None:

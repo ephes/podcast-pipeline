@@ -14,6 +14,7 @@ from podcast_pipeline.dashboard_api_models import (
     AssetTagsOut,
     StatusOut,
     StatusStagesOut,
+    TagPoolEntryOut,
 )
 from podcast_pipeline.domain.models import Candidate, EpisodeWorkspace, TextFormat
 from podcast_pipeline.markdown_html import markdown_to_deterministic_html
@@ -22,10 +23,18 @@ from podcast_pipeline.pick_core import (
     find_candidate_by_id,
     load_candidates,
     load_workspace,
+    tag_pool_json,
     update_workspace_assets,
     validate_asset_id,
+    write_selected_tags,
 )
-from podcast_pipeline.tag_parsing import normalize_tag_values, parse_tag_list
+from podcast_pipeline.tag_assets import (
+    TAG_ASSET_IDS,
+    load_episode_tag_settings,
+    render_selected_tags_markdown,
+    tag_cap_error,
+)
+from podcast_pipeline.tag_parsing import parse_tag_list
 from podcast_pipeline.workspace_store import EpisodeWorkspaceStore, WorkspaceStoreError
 
 
@@ -154,6 +163,7 @@ class DashboardContext:
         candidates = self._ensure_candidates()
         ws = self._ensure_workspace_state()
         assets_by_id = {asset.asset_id: asset for asset in ws.assets}
+        tag_settings, hosts = load_episode_tag_settings(self.workspace)
 
         result: list[AssetOut] = []
         for asset_key in sorted(candidates):
@@ -181,13 +191,21 @@ class DashboardContext:
                 candidates=candidate_items,
             )
             if _is_tag_asset(asset_key):
-                asset_data = asset_data.model_copy(update={"selected_tags": self.get_selected_tags(asset_key)})
+                pool = tag_pool_json(cands, settings=tag_settings, hosts=hosts)
+                asset_data = asset_data.model_copy(
+                    update={
+                        "selected_tags": self.get_selected_tags(asset_key),
+                        "tag_pool": [TagPoolEntryOut.model_validate(entry) for entry in pool],
+                        "max_tags": tag_settings.max_tags,
+                    }
+                )
             result.append(asset_data)
         payload: list[dict[str, Any]] = []
         for asset in result:
             serialized_asset = asset.model_dump(mode="json")
-            if serialized_asset.get("selected_tags") is None:
-                serialized_asset.pop("selected_tags", None)
+            for optional_key in ("selected_tags", "tag_pool", "max_tags"):
+                if serialized_asset.get(optional_key) is None:
+                    serialized_asset.pop(optional_key, None)
             for candidate in serialized_asset["candidates"]:
                 if candidate.get("tags") is None:
                     candidate.pop("tags", None)
@@ -221,10 +239,14 @@ class DashboardContext:
 
         if _is_tag_asset(asset_id):
             selected_tags = parse_tag_list(match.content)
+            tag_settings, _hosts = load_episode_tag_settings(self.workspace)
+            error = tag_cap_error(asset_id, len(selected_tags), tag_settings.max_tags)
+            if error is not None:
+                return error
             self.store.write_selected_text(
                 asset_id,
                 TextFormat.markdown,
-                _render_tag_markdown(asset_id, selected_tags),
+                render_selected_tags_markdown(asset_id, selected_tags),
             )
         else:
             self.store.write_selected_text(asset_id, match.format, match.content)
@@ -331,18 +353,15 @@ class DashboardContext:
         if not _is_tag_asset(asset_id):
             return f"Asset {asset_id} does not support per-tag editing"
 
-        normalized = normalize_tag_values(tags)
-        content = _render_tag_markdown(asset_id, normalized)
-        self.store.write_selected_text(asset_id, TextFormat.markdown, content)
-
-        ws = self._ensure_workspace_state()
-        assets_by_id = {asset.asset_id: asset for asset in ws.assets}
-        existing = assets_by_id.get(asset_id)
-        if existing is not None and existing.selected_candidate_id is not None:
-            assets_by_id[asset_id] = existing.model_copy(update={"selected_candidate_id": None})
-            self._workspace_state = update_workspace_assets(ws, assets_by_id)
-            self.store.write_state(self._workspace_state)
-        return None
+        tag_settings, _hosts = load_episode_tag_settings(self.workspace)
+        self._workspace_state, error = write_selected_tags(
+            store=self.store,
+            workspace_state=self._ensure_workspace_state(),
+            asset_id=asset_id,
+            tags=tags,
+            max_tags=tag_settings.max_tags,
+        )
+        return error
 
     def running_job(self, stage: str) -> BackgroundJob | None:
         """Return a still-running job for ``stage``, if any. Call with ``lock`` held."""
@@ -387,21 +406,5 @@ def _glob_count(path: Path, pattern: str) -> int:
     return sum(1 for _ in path.glob(pattern))
 
 
-_TAG_ASSET_IDS = {"audio_tags", "cms_tags", "itunes_keywords"}
-
-
 def _is_tag_asset(asset_id: str) -> bool:
-    return asset_id in _TAG_ASSET_IDS
-
-
-def _render_tag_markdown(asset_id: str, tags: list[str]) -> str:
-    if asset_id == "audio_tags":
-        heading = "Audio tags"
-    elif asset_id == "cms_tags":
-        heading = "CMS tags"
-    else:
-        heading = "iTunes keywords"
-    lines = [f"# {heading}", ""]
-    if tags:
-        lines.extend(f"- {tag}" for tag in tags)
-    return "\n".join(lines).rstrip() + "\n"
+    return asset_id in TAG_ASSET_IDS

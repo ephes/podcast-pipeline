@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
 from pathlib import Path
+from typing import Any
 from uuid import UUID
 
 from pydantic import ValidationError
 
-from podcast_pipeline.domain.models import Asset, AssetKind, Candidate, EpisodeWorkspace
+from podcast_pipeline.domain.models import Asset, AssetKind, Candidate, EpisodeWorkspace, TextFormat
+from podcast_pipeline.tag_assets import TagSettings, build_tag_pool, render_selected_tags_markdown, tag_cap_error
+from podcast_pipeline.tag_parsing import normalize_tag_values
 from podcast_pipeline.workspace_store import EpisodeWorkspaceLayout, EpisodeWorkspaceStore
 
 
@@ -139,6 +143,46 @@ def _merge_assets(existing: list[Asset], assets_by_id: dict[str, Asset]) -> list
         if asset_id_key not in seen:
             out.append(assets_by_id[asset_id_key])
     return out
+
+
+def tag_pool_json(
+    candidates: Sequence[Candidate],
+    *,
+    settings: TagSettings,
+    hosts: Sequence[str] | None,
+) -> list[dict[str, Any]]:
+    """Serialize the merged tag suggestion pool of one tag asset."""
+    pool = build_tag_pool((c.content for c in candidates), settings=settings, hosts=hosts)
+    return [{"tag": entry.tag, "count": entry.count} for entry in pool]
+
+
+def write_selected_tags(
+    *,
+    store: EpisodeWorkspaceStore,
+    workspace_state: EpisodeWorkspace,
+    asset_id: str,
+    tags: Sequence[str],
+    max_tags: int,
+) -> tuple[EpisodeWorkspace, str | None]:
+    """Publish a curated tag selection to ``copy/selected/<asset_id>.md``.
+
+    Returns the (possibly updated) workspace state and an error message when the
+    selection exceeds *max_tags*; nothing is written in that case. A curated selection
+    replaces any whole-candidate selection.
+    """
+    normalized = normalize_tag_values(tags)
+    error = tag_cap_error(asset_id, len(normalized), max_tags)
+    if error is not None:
+        return workspace_state, error
+    store.write_selected_text(asset_id, TextFormat.markdown, render_selected_tags_markdown(asset_id, normalized))
+    assets_by_id = {asset.asset_id: asset for asset in workspace_state.assets}
+    existing = assets_by_id.get(asset_id)
+    if existing is None or existing.selected_candidate_id is None:
+        return workspace_state, None
+    assets_by_id[asset_id] = existing.model_copy(update={"selected_candidate_id": None})
+    updated = update_workspace_assets(workspace_state, assets_by_id)
+    store.write_state(updated)
+    return updated, None
 
 
 def find_candidate_by_id(candidates: list[Candidate], candidate_id: UUID) -> Candidate | None:

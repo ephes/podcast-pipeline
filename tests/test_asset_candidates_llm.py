@@ -9,6 +9,7 @@ from podcast_pipeline.asset_candidates_llm import generate_draft_candidates_llm
 from podcast_pipeline.domain.intermediate_formats import EpisodeSummary
 from podcast_pipeline.domain.models import AssetKind
 from podcast_pipeline.prompting import PromptRenderer, default_prompt_registry
+from podcast_pipeline.tag_assets import TAG_ASSET_IDS, render_tags
 
 
 class FakeDrafterRunner:
@@ -238,5 +239,8 @@ def test_drafting_ignores_model_candidate_identity() -> None:
     candidates = [c for alternatives in assets.values() for c in alternatives]
     assert existing_id not in {c.candidate_id for c in candidates}
     assert len({c.candidate_id for c in candidates}) == 2 * len(AssetKind)
-    for alternatives in assets.values():
-        assert [c.content for c in alternatives] == ["Alternative A", "Alternative B"]
+    for asset_id, alternatives in assets.items():
+        expected = ["Alternative A", "Alternative B"]
+        if asset_id in TAG_ASSET_IDS:
+            expected = [render_tags(asset_id, [value]) for value in expected]
+        assert [c.content for c in alternatives] == expected

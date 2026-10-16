@@ -59,6 +59,8 @@ auphonic:
 - `tracks` (list of objects, optional)
 - `agents` (object, optional)
 - `auphonic` (object, optional)
+- `tags` (object, optional): per-episode tag rules (`exclude`, `max`, `examples`, `examples_limit`); see
+  `reference/configuration.md` ("Tag assets")
 
 ## inputs
 

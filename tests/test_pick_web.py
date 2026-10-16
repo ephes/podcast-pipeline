@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import threading
+import urllib.error
 import urllib.request
 from collections.abc import Generator
 from functools import partial
@@ -10,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from podcast_pipeline.domain.models import Candidate, EpisodeWorkspace
+from podcast_pipeline.domain.models import Candidate, EpisodeWorkspace, TextFormat
 from podcast_pipeline.entrypoints.pick_web import _PickWebHandler, _ServerContext
 from podcast_pipeline.workspace_store import EpisodeWorkspaceStore
 
@@ -298,3 +299,128 @@ def test_post_api_select_without_content_length(
     resp = sock.recv(4096).decode()
     sock.close()
     assert "411" in resp.split("\r\n")[0]
+
+
+@pytest.fixture()
+def pick_server_with_tags(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> Generator[_PickServerTuple, None, None]:
+    config = tmp_path / "config.yaml"
+    config.write_text("tags:\n  max: 3\n", encoding="utf-8")
+    monkeypatch.setenv("PODCAST_PIPELINE_CONFIG", str(config))
+    store, candidates_by_asset = _setup_workspace(tmp_path)
+    with store.update_episode_yaml() as data:
+        data["hosts"] = ["Jochen"]
+    tag_candidates = [
+        Candidate(asset_id="itunes_keywords", content="python, Podcast, jit, Jochen"),
+        Candidate(asset_id="itunes_keywords", content="jit, pypy, python"),
+    ]
+    for candidate in tag_candidates:
+        store.write_candidate(candidate)
+    candidates_by_asset["itunes_keywords"] = tag_candidates
+
+    ctx = _ServerContext(
+        store=store,
+        candidates_by_asset=candidates_by_asset,
+        workspace_state=EpisodeWorkspace(episode_id="test_ep", root_dir="."),
+    )
+    server = HTTPServer(("127.0.0.1", 0), partial(_PickWebHandler, ctx))
+    base_url = f"http://127.0.0.1:{int(server.server_address[1])}"
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+
+    yield server, base_url, ctx, candidates_by_asset
+
+    server.shutdown()
+    server.server_close()
+
+
+def _post_tags(base_url: str, payload: dict[str, object]) -> tuple[int, dict[str, object]]:
+    req = urllib.request.Request(
+        f"{base_url}/api/tags",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        resp = urllib.request.urlopen(req)
+    except urllib.error.HTTPError as exc:
+        return exc.code, json.loads(exc.read().decode("utf-8"))
+    return resp.status, json.loads(resp.read().decode("utf-8"))
+
+
+def test_get_api_assets_includes_tag_pool(pick_server_with_tags: _PickServerTuple) -> None:
+    _server, base_url, _ctx, _candidates = pick_server_with_tags
+    assets = json.loads(urllib.request.urlopen(f"{base_url}/api/assets").read().decode("utf-8"))
+    keywords = next(a for a in assets if a["asset_id"] == "itunes_keywords")
+    assert keywords["is_tag_asset"] is True
+    assert keywords["max_tags"] == 3
+    assert keywords["selected_tags"] == []
+    assert keywords["tag_pool"] == [
+        {"tag": "python", "count": 2},
+        {"tag": "jit", "count": 2},
+        {"tag": "pypy", "count": 1},
+    ]
+    description = next(a for a in assets if a["asset_id"] == "description")
+    assert description["is_tag_asset"] is False
+    assert "tag_pool" not in description
+
+
+def test_post_api_tags_writes_selection(pick_server_with_tags: _PickServerTuple) -> None:
+    _server, base_url, ctx, _candidates = pick_server_with_tags
+    status, data = _post_tags(base_url, {"asset_id": "itunes_keywords", "tags": ["jit", "JIT", "pypy"]})
+    assert status == 200
+    assert data["tags"] == ["jit", "pypy"]
+    selected = ctx.store.read_selected_text("itunes_keywords", TextFormat.markdown)
+    assert selected == "# iTunes keywords\n\n- jit\n- pypy\n"
+
+
+@pytest.mark.parametrize(
+    ("payload", "message"),
+    [
+        ({"asset_id": "itunes_keywords", "tags": ["a", "b", "c", "d"]}, "At most 3"),
+        ({"asset_id": "description", "tags": ["a"]}, "does not support"),
+        ({"asset_id": "itunes_keywords", "tags": "a"}, "Missing asset_id or tags"),
+    ],
+)
+def test_post_api_tags_rejects_invalid_requests(
+    pick_server_with_tags: _PickServerTuple,
+    payload: dict[str, object],
+    message: str,
+) -> None:
+    _server, base_url, ctx, _candidates = pick_server_with_tags
+    status, data = _post_tags(base_url, payload)
+    assert status == 400
+    assert message in str(data["error"])
+    assert not ctx.store.layout.selected_text_path("itunes_keywords", TextFormat.markdown).exists()
+
+
+def test_pick_html_does_not_require_tag_assets_for_done(pick_server_with_tags: _PickServerTuple) -> None:
+    _server, base_url, _ctx, _candidates = pick_server_with_tags
+    body = urllib.request.urlopen(f"{base_url}/").read().decode("utf-8")
+    assert "assets.filter(a => !a.is_tag_asset)" in body
+    assert "/api/tags" in body
+
+
+def test_post_api_select_tag_candidate_enforces_cap(pick_server_with_tags: _PickServerTuple) -> None:
+    _server, base_url, ctx, candidates = pick_server_with_tags
+    candidate = candidates["itunes_keywords"][0]  # python, Podcast, jit, Jochen -> 4 entries > max 3
+    req = urllib.request.Request(
+        f"{base_url}/api/select",
+        data=json.dumps({"asset_id": "itunes_keywords", "candidate_id": str(candidate.candidate_id)}).encode(),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with pytest.raises(urllib.error.HTTPError) as exc_info:
+        urllib.request.urlopen(req)
+    assert exc_info.value.code == 400
+    assert "At most 3" in json.loads(exc_info.value.read().decode("utf-8"))["error"]
+    assert not ctx.store.layout.selected_text_path("itunes_keywords", TextFormat.markdown).exists()
+
+
+def test_pick_html_serializes_tag_saves(pick_server_with_tags: _PickServerTuple) -> None:
+    _server, base_url, _ctx, _candidates = pick_server_with_tags
+    body = urllib.request.urlopen(f"{base_url}/").read().decode("utf-8")
+    assert "function updateTags(asset, compute)" in body
+    assert "compute(asset.selected_tags || [])" in body

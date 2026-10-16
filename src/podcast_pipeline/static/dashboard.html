@@ -152,6 +152,13 @@
     cursor: pointer;
   }
   .tag-suggestion:hover { border-color: var(--accent); color: var(--accent); }
+  .tag-suggestion.active { border-color: var(--accent); background: #eff6ff; color: #1e3a8a; font-weight: 600; }
+  .tag-suggestion:disabled { opacity: 0.45; cursor: not-allowed; }
+  .tag-suggestion .tag-count { color: var(--text-muted); font-weight: 400; margin-left: 0.25rem; }
+  .tag-pool-head { display: flex; align-items: center; gap: 0.75rem; margin-top: 0.9rem; font-size: 0.8rem;
+                   color: var(--text-muted); }
+  .raw-candidates { margin-top: 1rem; }
+  .raw-candidates summary { cursor: pointer; font-size: 0.85rem; color: var(--text-muted); }
 
   /* Log panel */
   .log-panel { background: #1e1e2e; color: #cdd6f4; border-radius: 6px; padding: 1rem;
@@ -459,9 +466,9 @@ function tagEditorPlaceholder(assetId) {
 
 function tagEditorEmptyText(assetId) {
   if (assetId === "itunes_keywords") {
-    return "No keywords selected yet. Select a candidate or add keywords manually.";
+    return "No keywords selected yet. Toggle suggestions below or add keywords manually.";
   }
-  return "No tags selected yet. Select a candidate or add tags manually.";
+  return "No tags selected yet. Toggle suggestions below or add tags manually.";
 }
 
 function normalizeTags(tags) {
@@ -478,15 +485,14 @@ function normalizeTags(tags) {
   return out;
 }
 
-function collectCandidateTags(asset) {
-  if (!asset || !Array.isArray(asset.candidates)) return [];
-  const all = [];
-  asset.candidates.forEach((candidate) => {
-    if (Array.isArray(candidate.tags)) {
-      all.push(...candidate.tags);
-    }
-  });
-  return normalizeTags(all);
+function tagPool(asset) {
+  // Server-built pool: union of all candidates, filtered, most-agreed tags first.
+  if (asset && Array.isArray(asset.tag_pool)) return asset.tag_pool;
+  return [];
+}
+
+function maxTags(asset) {
+  return asset && Number.isInteger(asset.max_tags) ? asset.max_tags : 12;
 }
 
 function openLogCard(cardEl, logEl, message, progressEl) {
@@ -909,7 +915,8 @@ function createPickCandidatesGrid(asset) {
 
     const actions = document.createElement("div");
     actions.className = "card-actions";
-    actions.appendChild(button);
+    // Tag assets are curated tag by tag from the pool, not by selecting a whole candidate.
+    if (!isTagAsset(asset.asset_id)) actions.appendChild(button);
     actions.appendChild(deleteButton);
     cardHeader.appendChild(actions);
 
@@ -930,11 +937,12 @@ function createPickTagsSection(asset) {
   const section = document.createElement("div");
   section.className = "tags-section";
 
+  const selectedTags = normalizeTags(asset.selected_tags || []);
+  const limit = maxTags(asset);
   const title = document.createElement("h4");
-  title.textContent = tagEditorTitle(asset.asset_id);
+  title.textContent = `${tagEditorTitle(asset.asset_id)} (${selectedTags.length}/${limit})`;
   section.appendChild(title);
 
-  const selectedTags = normalizeTags(asset.selected_tags || []);
   if (selectedTags.length === 0) {
     const empty = document.createElement("div");
     empty.className = "tag-empty";
@@ -983,20 +991,43 @@ function createPickTagsSection(asset) {
 
   section.appendChild(addRow);
 
-  const selectedSet = new Set(selectedTags.map((tag) => tag.toLowerCase()));
-  const suggestions = collectCandidateTags(asset).filter((tag) => !selectedSet.has(tag.toLowerCase()));
-  if (suggestions.length > 0) {
+  const pool = tagPool(asset);
+  if (pool.length > 0) {
+    const selectedSet = new Set(selectedTags.map((tag) => tag.toLowerCase()));
+    const atLimit = selectedTags.length >= limit;
+
+    const head = document.createElement("div");
+    head.className = "tag-pool-head";
+    const label = document.createElement("span");
+    const candidateCount = Array.isArray(asset.candidates) ? asset.candidates.length : 0;
+    label.textContent = `Suggestions from ${candidateCount} candidate(s), most proposed first — click to toggle`;
+    head.appendChild(label);
+    const topBtn = document.createElement("button");
+    topBtn.type = "button";
+    topBtn.className = "btn btn-sm";
+    topBtn.dataset.action = "select-top-tags";
+    topBtn.dataset.assetId = asset.asset_id;
+    topBtn.textContent = `Use top ${Math.min(limit, pool.length)}`;
+    head.appendChild(topBtn);
+    section.appendChild(head);
+
     const suggestionBox = document.createElement("div");
     suggestionBox.className = "tag-suggestions";
-
-    suggestions.slice(0, 20).forEach((tag) => {
+    pool.forEach((entry) => {
+      const active = selectedSet.has(String(entry.tag).toLowerCase());
       const button = document.createElement("button");
       button.type = "button";
-      button.className = "tag-suggestion";
-      button.dataset.action = "quick-add-tag";
+      button.className = active ? "tag-suggestion active" : "tag-suggestion";
+      button.dataset.action = active ? "remove-tag" : "quick-add-tag";
       button.dataset.assetId = asset.asset_id;
-      button.dataset.tag = tag;
-      button.textContent = `+ ${tag}`;
+      button.dataset.tag = entry.tag;
+      button.disabled = !active && atLimit;
+      button.setAttribute("aria-pressed", active ? "true" : "false");
+      button.textContent = entry.tag;
+      const count = document.createElement("span");
+      count.className = "tag-count";
+      count.textContent = `×${entry.count}`;
+      button.appendChild(count);
       suggestionBox.appendChild(button);
     });
     section.appendChild(suggestionBox);
@@ -1066,8 +1097,16 @@ async function renderPickMain() {
   main.appendChild(createPickNotesSection(asset.asset_id, notes));
   if (isTagAsset(asset.asset_id)) {
     main.appendChild(createPickTagsSection(asset));
+    const raw = document.createElement("details");
+    raw.className = "raw-candidates";
+    const summary = document.createElement("summary");
+    summary.textContent = `Raw candidates (${asset.candidates.length})`;
+    raw.appendChild(summary);
+    raw.appendChild(createPickCandidatesGrid(asset));
+    main.appendChild(raw);
+  } else {
+    main.appendChild(createPickCandidatesGrid(asset));
   }
-  main.appendChild(createPickCandidatesGrid(asset));
   main.appendChild(createPickRegenSection(asset.asset_id));
 }
 
@@ -1147,12 +1186,49 @@ async function saveTags(assetId, tags) {
   await loadStatus();
 }
 
-async function addTags(assetId, newTags) {
+// Tag saves run one at a time; each reads the selection the previous save left in
+// state.assets, so quick successive toggles never overwrite each other.
+let tagUpdateQueue = Promise.resolve();
+
+function enqueueTagUpdate(update) {
+  const run = tagUpdateQueue.then(update);
+  tagUpdateQueue = run.catch(() => undefined);
+  return run;
+}
+
+function selectTopTags(assetId) {
+  return enqueueTagUpdate(() => selectTopTagsNow(assetId));
+}
+
+function addTags(assetId, newTags) {
+  return enqueueTagUpdate(() => addTagsNow(assetId, newTags));
+}
+
+function removeTag(assetId, tag) {
+  return enqueueTagUpdate(() => removeTagNow(assetId, tag));
+}
+
+async function selectTopTagsNow(assetId) {
+  const asset = state.assets.find((item) => item.asset_id === assetId);
+  if (!asset) return;
+  const top = tagPool(asset).slice(0, maxTags(asset)).map((entry) => entry.tag);
+  try {
+    await saveTags(assetId, top);
+  } catch (error) {
+    alert(`Failed to update tags: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
+async function addTagsNow(assetId, newTags) {
   const asset = state.assets.find((item) => item.asset_id === assetId);
   if (!asset) return false;
   const current = normalizeTags(asset.selected_tags || []);
   const combined = normalizeTags([...current, ...newTags]);
   if (combined.length === current.length) return true;
+  if (combined.length > maxTags(asset)) {
+    alert(`At most ${maxTags(asset)} entries can be selected.`);
+    return false;
+  }
   try {
     await saveTags(assetId, combined);
     return true;
@@ -1162,7 +1238,7 @@ async function addTags(assetId, newTags) {
   }
 }
 
-async function removeTag(assetId, tag) {
+async function removeTagNow(assetId, tag) {
   const asset = state.assets.find((item) => item.asset_id === assetId);
   if (!asset) return;
   const current = normalizeTags(asset.selected_tags || []);
@@ -1265,6 +1341,9 @@ async function handleDone() {
   });
   state.currentJobStreams = {};
 
+  // Let queued tag saves finish before the server shuts down.
+  await tagUpdateQueue;
+
   try {
     await apiJson("POST", "/api/done", {});
   } catch (_) {
@@ -1335,6 +1414,11 @@ function wireEvents() {
 
     if (action === "add-tag") {
       if (assetId) addTagsFromInput(assetId);
+      return;
+    }
+
+    if (action === "select-top-tags") {
+      if (assetId) selectTopTags(assetId);
       return;
     }
 

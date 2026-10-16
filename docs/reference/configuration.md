@@ -83,6 +83,53 @@ auphonic:
 
 Use `preset_id` in `episode.yaml` to skip mapping and set the preset id directly.
 
+## Tag assets (local only)
+
+`cms_tags`, `audio_tags` and `itunes_keywords` follow the show's tag house style: 6-10 short, specific terms
+(technologies, projects, libraries, PEPs, Python versions), no show-level constants, no language tags, no host or guest
+names and no generic summary phrases. The drafter prompt states these rules, and every generated tag candidate (from
+`podcast draft` and dashboard regeneration) then passes a deterministic post-filter that:
+
+- drops tags matching the exclude list (case-insensitive; spaces, hyphens and underscores are equivalent, a leading `#`
+  is ignored). Built-in defaults: `podcast`, `python podcast`, `pythonpodcast`, `deutsch`, `german`, `englisch`,
+  `english`;
+- drops host names from `episode.yaml` `hosts` (`--host`): the full name and any tag containing one of its words of
+  three or more letters, so `Dominik Geldmacher` also removes `Dominik`;
+- drops entries with more than four words (prose rather than tags) and duplicates. A long line without separators
+  stays one entry, so generated prose is dropped instead of being split into single-word tags;
+- keeps at most `tags.max` tags (default 12).
+
+Candidates are rewritten in their canonical format (`- tag` bullets for `cms_tags`/`audio_tags`, one comma-separated
+line for `itunes_keywords`). Tags you add by hand while picking are not filtered.
+
+When picking (`podcast pick --web` and the dashboard), each tag asset shows one suggestion pool instead of candidate
+lists: the union of all its candidates, filtered with the same rules (without the per-candidate cap) and ordered by how
+many candidates proposed each tag, ties in first-seen order. `tags.max` also caps the curated selection: saving more
+entries is rejected with `400` (`At most N tags can be selected ...`). The default of 12 matches Apple's historical
+limit for iTunes keywords. The picking UIs read the `tags` settings without loading `tags.examples`, and fall back to
+the defaults when the tag configuration is invalid.
+
+```yaml
+tags:
+  exclude:            # added to the built-in defaults
+    - Programmierung
+    - Softwareentwicklung
+    - Johannes        # e.g. a regular guest
+  max: 12             # hard cap per candidate (positive integer)
+  examples: datasets/rss_examples.jsonl
+  examples_limit: 5   # past episodes shown per tag prompt (positive integer)
+```
+
+`examples` points to a few-shot JSONL dataset from `podcast rss-examples` (uses `itunes:keywords`) or
+`podcast cms-examples` (uses `tags`; `cms_tags` prefers CMS tags, the other tag assets prefer keywords). A relative path
+resolves against the directory of the file that sets it. For each tag asset the pipeline picks up to `examples_limit`
+past episodes whose tags best match the episode topics, applies the same filter to their tags and appends them to the
+prompt as few-shot examples. Records without tags are ignored. A missing or invalid dataset fails `podcast draft`
+before any agent runs.
+
+The `tags` section can live in the global config and in `episode.yaml`: `exclude` lists are combined, while `max`,
+`examples` and `examples_limit` from `episode.yaml` override the global values.
+
 ## episode.yaml metadata
 
 `episode.yaml` also stores per-episode inputs, sources, and track metadata. See `reference/episode-yaml.md` for the full

@@ -24,6 +24,8 @@ Notes:
 - `--limit` caps how many episodes are written (default `25`).
 - `--timeout-seconds` sets the HTTP timeout.
 - The JSONL `output` field contains normalized episode description HTML.
+- `<itunes:keywords>` are exported as `keywords`. Point `tags.examples` at the file to show past episodes'
+  keywords to the tag-asset prompts (see `reference/configuration.md`, "Tag assets").
 
 ## Wagtail/CMS API examples
 

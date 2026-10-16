@@ -9,7 +9,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from uuid import UUID
 
-from podcast_pipeline.domain.models import Candidate, EpisodeWorkspace
+from podcast_pipeline.domain.models import Candidate, EpisodeWorkspace, TextFormat
 from podcast_pipeline.local_web_guard import check_request
 from podcast_pipeline.markdown_html import markdown_to_deterministic_html
 from podcast_pipeline.pick_core import (
@@ -17,9 +17,18 @@ from podcast_pipeline.pick_core import (
     find_candidate_by_id,
     load_candidates,
     load_workspace,
+    tag_pool_json,
     update_workspace_assets,
     validate_asset_id,
+    write_selected_tags,
 )
+from podcast_pipeline.tag_assets import (
+    TAG_ASSET_IDS,
+    load_episode_tag_settings,
+    render_selected_tags_markdown,
+    tag_cap_error,
+)
+from podcast_pipeline.tag_parsing import parse_tag_list
 from podcast_pipeline.workspace_store import EpisodeWorkspaceStore
 
 _SHUTDOWN_TIMEOUT_SECONDS = 30 * 60  # 30 minutes
@@ -82,7 +91,32 @@ class _ServerContext:
         self.store = store
         self.candidates_by_asset = candidates_by_asset
         self.workspace_state: EpisodeWorkspace = workspace_state
+        self.tag_settings, self.hosts = load_episode_tag_settings(store.layout.root)
         self.lock = threading.Lock()
+
+    def get_selected_tags(self, asset_id: str) -> list[str]:
+        for fmt in (TextFormat.markdown, TextFormat.plain, TextFormat.html):
+            path = self.store.layout.selected_text_path(asset_id, fmt)
+            if path.exists():
+                return parse_tag_list(path.read_text(encoding="utf-8"))
+        return []
+
+    def set_selected_tags(self, asset_id: str, tags: list[str]) -> str | None:
+        """Write a curated tag selection. Returns error message on failure, None on success."""
+        try:
+            validate_asset_id(asset_id)
+        except ValueError as exc:
+            return str(exc)
+        if asset_id not in TAG_ASSET_IDS or asset_id not in self.candidates_by_asset:
+            return f"Asset {asset_id} does not support per-tag editing"
+        self.workspace_state, error = write_selected_tags(
+            store=self.store,
+            workspace_state=self.workspace_state,
+            asset_id=asset_id,
+            tags=tags,
+            max_tags=self.tag_settings.max_tags,
+        )
+        return error
 
     def get_assets_json(self) -> list[dict[str, object]]:
         ws = self.workspace_state
@@ -105,13 +139,17 @@ class _ServerContext:
                     }
                 )
 
-            result.append(
-                {
-                    "asset_id": asset_key,
-                    "selected_candidate_id": selected_id,
-                    "candidates": candidate_items,
-                }
-            )
+            asset_data: dict[str, object] = {
+                "asset_id": asset_key,
+                "selected_candidate_id": selected_id,
+                "candidates": candidate_items,
+                "is_tag_asset": asset_key in TAG_ASSET_IDS,
+            }
+            if asset_key in TAG_ASSET_IDS:
+                asset_data["tag_pool"] = tag_pool_json(candidates, settings=self.tag_settings, hosts=self.hosts)
+                asset_data["selected_tags"] = self.get_selected_tags(asset_key)
+                asset_data["max_tags"] = self.tag_settings.max_tags
+            result.append(asset_data)
         return result
 
     def select_candidate(self, asset_id: str, candidate_id_str: str) -> str | None:
@@ -138,7 +176,15 @@ class _ServerContext:
         assets_by_id = {asset.asset_id: asset for asset in ws.assets}
         existing = assets_by_id.get(asset_id)
 
-        self.store.write_selected_text(asset_id, match.format, match.content)
+        if asset_id in TAG_ASSET_IDS:
+            selected_tags = parse_tag_list(match.content)
+            error = tag_cap_error(asset_id, len(selected_tags), self.tag_settings.max_tags)
+            if error is not None:
+                return error
+            content = render_selected_tags_markdown(asset_id, selected_tags)
+            self.store.write_selected_text(asset_id, TextFormat.markdown, content)
+        else:
+            self.store.write_selected_text(asset_id, match.format, match.content)
         assets_by_id[asset_id] = build_asset(
             asset_id=asset_id,
             existing=existing,
@@ -191,6 +237,8 @@ class _PickWebHandler(BaseHTTPRequestHandler):
             return
         if self.path == "/api/select":
             self._handle_select()
+        elif self.path == "/api/tags":
+            self._handle_tags()
         elif self.path == "/api/done":
             self._handle_done()
         else:
@@ -229,6 +277,36 @@ class _PickWebHandler(BaseHTTPRequestHandler):
             self._respond(400, "application/json", json.dumps({"error": error}).encode())
         else:
             self._respond(200, "application/json", json.dumps({"ok": True}).encode())
+
+    def _handle_tags(self) -> None:
+        body = self._read_body()
+        if body is None:
+            return
+        try:
+            payload = json.loads(body)
+        except json.JSONDecodeError:
+            self._respond(400, "application/json", json.dumps({"error": "Invalid JSON"}).encode())
+            return
+
+        asset_id = payload.get("asset_id") if isinstance(payload, dict) else None
+        tags = payload.get("tags") if isinstance(payload, dict) else None
+        if (
+            not isinstance(asset_id, str)
+            or not isinstance(tags, list)
+            or not all(isinstance(tag, str) for tag in tags)
+        ):
+            self._respond(400, "application/json", json.dumps({"error": "Missing asset_id or tags"}).encode())
+            return
+
+        with self.ctx.lock:
+            error = self.ctx.set_selected_tags(asset_id, tags)
+            selected = self.ctx.get_selected_tags(asset_id) if error is None else None
+
+        if error:
+            self._respond(400, "application/json", json.dumps({"error": error}).encode())
+        else:
+            body_out = json.dumps({"ok": True, "tags": selected}, ensure_ascii=False).encode("utf-8")
+            self._respond(200, "application/json", body_out)
 
     def _handle_done(self) -> None:
         self._respond(200, "application/json", json.dumps({"ok": True}).encode())
@@ -305,6 +383,18 @@ def _build_html_page() -> str:
   .candidate-content h1, .candidate-content h2, .candidate-content h3 { margin: 0.5em 0 0.25em; }
   .candidate-content p { margin: 0.4em 0; }
   .candidate-content ul, .candidate-content ol { padding-left: 1.5em; margin: 0.4em 0; }
+  .tag-hint { color: var(--text-muted); font-size: 0.85rem; margin-bottom: 0.75rem; }
+  .tag-toolbar { display: flex; gap: 0.5rem; align-items: center; margin-bottom: 0.75rem; }
+  .tag-toolbar input { flex: 1; max-width: 360px; padding: 0.35rem 0.5rem; border: 1px solid var(--border);
+                       border-radius: 4px; }
+  .tag-btn { background: var(--card-bg); border: 1px solid var(--border); padding: 0.35rem 0.8rem;
+             border-radius: 4px; cursor: pointer; font-size: 0.8rem; }
+  .tag-pool { display: flex; flex-wrap: wrap; gap: 0.4rem; }
+  .tag-chip { border: 1px solid var(--border); background: var(--card-bg); border-radius: 999px;
+              padding: 0.25rem 0.7rem; font-size: 0.85rem; cursor: pointer; }
+  .tag-chip.on { border-color: var(--selected-border); background: var(--selected-bg); font-weight: 600; }
+  .tag-chip:disabled { opacity: 0.45; cursor: not-allowed; }
+  .tag-chip .count { color: var(--text-muted); font-weight: 400; margin-left: 0.3rem; font-size: 0.75rem; }
 </style>
 </head>
 <body>
@@ -346,7 +436,12 @@ function renderSidebar() {
     const label = document.createElement("span");
     label.textContent = a.asset_id;
     div.appendChild(label);
-    if (a.selected_candidate_id) {
+    if (a.is_tag_asset) {
+      const n = document.createElement("span");
+      n.className = "check";
+      n.textContent = `${(a.selected_tags || []).length}/${a.max_tags}`;
+      div.appendChild(n);
+    } else if (a.selected_candidate_id) {
       const chk = document.createElement("span");
       chk.className = "check";
       chk.innerHTML = "&#10003;";
@@ -363,10 +458,97 @@ function selectAsset(assetId) {
   renderMain();
 }
 
+function escAttr(s) {
+  return esc(s).replace(/"/g, "&quot;");
+}
+
+function tagKey(tag) {
+  return String(tag).trim().toLowerCase();
+}
+
+function renderTagMain(main, asset) {
+  const aid = esc(asset.asset_id);
+  const selected = asset.selected_tags || [];
+  const selectedKeys = new Set(selected.map(tagKey));
+  const atLimit = selected.length >= asset.max_tags;
+  const poolKeys = new Set(asset.tag_pool.map(e => tagKey(e.tag)));
+  let html = `<div class="asset-header">${aid} (${selected.length}/${asset.max_tags})</div>`;
+  html += `<p class="tag-hint">Suggestions from ${asset.candidates.length} candidate(s), most proposed first.
+    Click to toggle; at most ${asset.max_tags} entries.</p>`;
+  html += `<div class="tag-toolbar">
+    <input id="tag-input" placeholder="Add tag (comma-separated)">
+    <button class="tag-btn" id="tag-add">Add</button>
+    <button class="tag-btn" id="tag-top">Use top ${Math.min(asset.max_tags, asset.tag_pool.length)}</button>
+    <button class="tag-btn" id="tag-clear">Clear</button>
+  </div>`;
+  html += '<div class="tag-pool">';
+  const extras = selected.filter(t => !poolKeys.has(tagKey(t)));
+  for (const t of extras) {
+    html += `<button class="tag-chip on" data-tag="${escAttr(t)}">${esc(t)}</button>`;
+  }
+  for (const e of asset.tag_pool) {
+    const on = selectedKeys.has(tagKey(e.tag));
+    const disabled = !on && atLimit ? " disabled" : "";
+    html += `<button class="tag-chip${on ? " on" : ""}" data-tag="${escAttr(e.tag)}"${disabled}>`
+      + `${esc(e.tag)}<span class="count">&times;${e.count}</span></button>`;
+  }
+  html += "</div>";
+  main.innerHTML = html;
+  main.querySelectorAll(".tag-chip").forEach(btn => {
+    btn.onclick = () => {
+      const tag = btn.dataset.tag;
+      const key = tagKey(tag);
+      updateTags(asset, current => current.some(t => tagKey(t) === key)
+        ? current.filter(t => tagKey(t) !== key)
+        : [...current, tag]);
+    };
+  });
+  const input = document.getElementById("tag-input");
+  const add = () => {
+    const extra = input.value.split(",").map(t => t.trim()).filter(Boolean);
+    if (extra.length) updateTags(asset, current => [...current, ...extra]);
+  };
+  document.getElementById("tag-add").onclick = add;
+  input.onkeydown = (ev) => { if (ev.key === "Enter") add(); };
+  document.getElementById("tag-top").onclick = () =>
+    updateTags(asset, () => asset.tag_pool.slice(0, asset.max_tags).map(e => e.tag));
+  document.getElementById("tag-clear").onclick = () => updateTags(asset, () => []);
+}
+
+// Tag saves run one at a time and each computes its selection from the state the
+// previous save left, so quick successive clicks never overwrite each other.
+let tagQueue = Promise.resolve();
+
+function updateTags(asset, compute) {
+  tagQueue = tagQueue
+    .then(() => saveTags(asset, compute(asset.selected_tags || [])))
+    .catch(err => alert(err instanceof Error ? err.message : String(err)));
+  return tagQueue;
+}
+
+async function saveTags(asset, tags) {
+  const resp = await fetch("/api/tags", {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({asset_id: asset.asset_id, tags: tags})
+  });
+  const data = await resp.json();
+  if (!resp.ok) {
+    alert(data.error);
+    return;
+  }
+  asset.selected_tags = data.tags;
+  asset.selected_candidate_id = null;
+  renderSidebar();
+  renderMain();
+  updateProgress();
+}
+
 function renderMain() {
   const main = document.getElementById("main");
   const asset = assets.find(a => a.asset_id === activeAsset);
   if (!asset) { main.innerHTML = ""; return; }
+  if (asset.is_tag_asset) { renderTagMain(main, asset); return; }
   const aid = esc(asset.asset_id);
   let html = `<div class="asset-header">${aid}</div>`;
   html += '<div class="candidates-grid">';
@@ -414,13 +596,16 @@ async function handleSelect(assetId, candidateId) {
 }
 
 function updateProgress() {
-  const total = assets.length;
-  const done = assets.filter(a => a.selected_candidate_id).length;
-  document.getElementById("progress").textContent = `${done}/${total} selected`;
-  document.getElementById("done-btn").disabled = done < total;
+  // Tag assets are curated by toggling tags and never block Done.
+  const required = assets.filter(a => !a.is_tag_asset);
+  const done = required.filter(a => a.selected_candidate_id).length;
+  document.getElementById("progress").textContent = `${done}/${required.length} selected`;
+  document.getElementById("done-btn").disabled = done < required.length;
 }
 
 async function handleDone() {
+  // Let queued tag saves finish before the server shuts down.
+  await tagQueue;
   await fetch("/api/done", {method: "POST", headers: {"Content-Type": "application/json"}, body: "{}"});
   const s = "display:flex;align-items:center;justify-content:center;";
   document.body.innerHTML = `<div style='${s}height:100vh;font-size:1.5rem;color:#16a34a'>All done!</div>`;
