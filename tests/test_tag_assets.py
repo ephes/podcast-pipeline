@@ -324,3 +324,16 @@ def test_long_single_line_prose_is_dropped_not_split() -> None:
     assert postprocess_tag_content("itunes_keywords", prose, settings=settings) == ""
     assert postprocess_tag_content("cms_tags", prose, settings=settings) == ""
     assert build_tag_pool([prose, "- jit"], settings=settings) == [TagPoolEntry(tag="jit", count=1)]
+
+
+@pytest.mark.parametrize("bad_tag", ["a\n- b\n- c", "a\r\nb"])
+def test_write_selected_tags_rejects_line_breaks(tmp_path: Path, bad_tag: str) -> None:
+    store = EpisodeWorkspaceStore(tmp_path)
+    store.write_episode_yaml({"episode_id": "ep"})
+    state = EpisodeWorkspace(episode_id="ep", root_dir=".")
+    unchanged, error = write_selected_tags(
+        store=store, workspace_state=state, asset_id="cms_tags", tags=[bad_tag], max_tags=2
+    )
+    assert error is not None and "line breaks" in error
+    assert unchanged is state
+    assert not store.layout.selected_text_path("cms_tags", TextFormat.markdown).exists()

@@ -122,7 +122,7 @@ line for `itunes_keywords`). Tags you add by hand while picking are not filtered
 When picking (`podcast pick --web` and the dashboard), each tag asset shows one suggestion pool instead of candidate
 lists: the union of all its candidates, filtered with the same rules (without the per-candidate cap) and ordered by how
 many candidates proposed each tag, ties in first-seen order. `tags.max` also caps the curated selection: saving more
-entries is rejected with `400` (`At most N tags can be selected ...`). The default of 12 matches Apple's historical
+entries is rejected with `400` (`At most N tags can be selected ...`), and so is a tag containing a line break. The default of 12 matches Apple's historical
 limit for iTunes keywords. The picking UIs read the `tags` settings without loading `tags.examples`, and fall back to
 the defaults when the tag configuration is invalid.
 

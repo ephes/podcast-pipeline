@@ -1048,7 +1048,8 @@ function createPickTagsSection(asset) {
       const button = document.createElement("button");
       button.type = "button";
       button.className = active ? "tag-suggestion active" : "tag-suggestion";
-      button.dataset.action = active ? "remove-tag" : "quick-add-tag";
+      // Toggle decides add or remove when the queued save runs, so double clicks undo.
+      button.dataset.action = "toggle-tag";
       button.dataset.assetId = asset.asset_id;
       button.dataset.tag = entry.tag;
       button.disabled = !active && atLimit;
@@ -1424,6 +1425,15 @@ function removeTag(assetId, tag) {
   return enqueueTagUpdate(() => removeTagNow(assetId, tag));
 }
 
+function toggleTag(assetId, tag) {
+  return enqueueTagUpdate(() => {
+    const asset = state.assets.find((item) => item.asset_id === assetId);
+    const key = String(tag).toLowerCase();
+    const selected = normalizeTags((asset && asset.selected_tags) || []).some((item) => item.toLowerCase() === key);
+    return selected ? removeTagNow(assetId, tag) : addTagsNow(assetId, [tag]);
+  });
+}
+
 async function selectTopTagsNow(assetId) {
   const asset = state.assets.find((item) => item.asset_id === assetId);
   if (!asset) return;
@@ -1663,9 +1673,9 @@ function wireEvents() {
       return;
     }
 
-    if (action === "quick-add-tag") {
+    if (action === "toggle-tag") {
       const tag = actionElement.dataset.tag || "";
-      if (assetId && tag) addTags(assetId, [tag]);
+      if (assetId && tag) toggleTag(assetId, tag);
       return;
     }
 

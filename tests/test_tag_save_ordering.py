@@ -132,3 +132,22 @@ def test_dashboard_close_waits_for_queued_tag_saves() -> None:
         ["PUT", "/api/assets/itunes_keywords/tags", ["jit"]],
         ["POST", "/api/done", None],
     ]
+
+
+def test_dashboard_double_click_on_suggestion_toggles_back() -> None:
+    page_script = "\n".join(re.findall(r"<script>(.*?)</script>", _DASHBOARD_HTML.read_text(encoding="utf-8"), re.S))
+    scenario = r"""
+(async () => {
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  state.assets = ASSETS();
+  toggleTag("itunes_keywords", "pypy");
+  await toggleTag("itunes_keywords", "pypy");
+  console.log(JSON.stringify(mutations));
+  process.exit(0);  // the dashboard's job polling timer would keep Node alive
+})();
+"""
+    mutations = _run(_FAKE_ENV + page_script + scenario)
+    assert mutations == [
+        ["PUT", "/api/assets/itunes_keywords/tags", ["pypy"]],
+        ["PUT", "/api/assets/itunes_keywords/tags", []],
+    ]
