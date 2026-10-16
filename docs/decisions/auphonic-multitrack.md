@@ -51,4 +51,7 @@ pre-mixed FLAC almost went to Auphonic before the producer stopped it.
   migration: list the stems in `auphonic.tracks`, move the mix to `inputs.transcription_audio`.
 - A multitrack preset has to exist in the Auphonic account; single-track presets (for example the mono "Python
   Podcast" preset) cannot be reused for multitrack productions.
-- Uploads are larger (one file per speaker) and go out in one multipart request.
+- Uploads are larger (one file per speaker) and go out in one multipart request. To fix settings (preset outputs, metadata, chapters,
+  per-track algorithms) without uploading them again, `podcast produce --update` edits the stored production and
+  starts it again. It never sends `reset_data` (which deletes a multitrack production's tracks and stems) or
+  `multi_input_files` (which an update appends as extra tracks); per-track settings go to each track's own endpoint.
