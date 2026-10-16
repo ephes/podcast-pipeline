@@ -229,7 +229,11 @@ def test_produce_payload_uses_custom_plain_title(tmp_path: Path, monkeypatch: py
     )
 
     payload = build_auphonic_payload(
-        episode_yaml={"episode_id": "ep_001", "auphonic": {"preset": "main"}},
+        # One speaker stem keeps the payload valid for multitrack productions too.
+        episode_yaml={
+            "episode_id": "ep_001",
+            "auphonic": {"preset": "main", "tracks": [{"id": "host", "path": "stems/host.flac"}]},
+        },
         workspace=workspace,
     )
 
