@@ -90,6 +90,17 @@ def select_few_shot_examples(
     topics: Iterable[str],
     limit: int = 5,
 ) -> tuple[FewShotExample, ...]:
+    selected = select_few_shot_records(examples=examples, topics=topics, limit=limit)
+    return tuple(record.to_few_shot() for record in selected)
+
+
+def select_few_shot_records(
+    *,
+    examples: Sequence[FewShotExampleRecord | Mapping[str, Any]],
+    topics: Iterable[str],
+    limit: int = 5,
+) -> tuple[FewShotExampleRecord, ...]:
+    """Select records like :func:`select_few_shot_examples`, keeping their metadata."""
     if limit < 1:
         raise ValueError("limit must be >= 1")
     records = [FewShotExampleRecord.from_value(example) for example in examples]
@@ -98,15 +109,14 @@ def select_few_shot_examples(
 
     topic_tokens = _tokens_from_values(topics)
     if not topic_tokens:
-        selected = _fill_remaining([], [(0, idx, record) for idx, record in enumerate(records)], limit)
-        return tuple(record.to_few_shot() for record in selected)
+        return tuple(_fill_remaining([], [(0, idx, record) for idx, record in enumerate(records)], limit))
 
     scored = _score_records(records, topic_tokens)
     selected = _select_scored(scored, limit)
     if len(selected) < limit:
         selected = _fill_remaining(selected, scored, limit)
 
-    return tuple(record.to_few_shot() for record in selected[:limit])
+    return tuple(selected[:limit])
 
 
 def _score_records(

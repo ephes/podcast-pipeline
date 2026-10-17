@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from podcast_pipeline.few_shot_selector import FewShotExampleRecord
 from podcast_pipeline.rss_examples import (
     RssEpisodeExample,
     RssExamplesError,
@@ -98,3 +99,23 @@ def test_write_rss_examples_jsonl_writes_records(tmp_path: Path) -> None:
     payload = json.loads(lines[0])
     assert payload["source"] == "rss"
     assert payload["title"] == "Episode"
+    assert payload["keywords"] == []
+
+
+def test_parse_rss_examples_reads_itunes_keywords() -> None:
+    xml_payload = """<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:itunes="http://www.itunes.com/dtds/podcast-1.0.dtd">
+  <channel>
+    <item>
+      <title>Python 3.13</title>
+      <description>Desc</description>
+      <itunes:keywords>python,python3.13, pypy ,,jit</itunes:keywords>
+    </item>
+  </channel>
+</rss>
+"""
+    examples = parse_rss_examples(xml_payload, feed_url="https://example.com/feed", limit=5)
+
+    assert examples[0].keywords == ("python", "python3.13", "pypy", "jit")
+    record = FewShotExampleRecord.from_value(examples[0].to_record())
+    assert record.keywords == ("python", "python3.13", "pypy", "jit")

@@ -174,6 +174,7 @@ def draft(
     from podcast_pipeline.agent_runners import AgentRunnerError
     from podcast_pipeline.entrypoints.draft_pipeline import run_draft_pipeline
     from podcast_pipeline.summarization_stub import StubSummarizerConfig
+    from podcast_pipeline.tag_assets import TagConfigError
     from podcast_pipeline.transcript_chunker import ChunkerConfig
 
     try:
@@ -191,7 +192,7 @@ def draft(
             timeout_seconds=timeout,
             hosts=host if host else None,
         )
-    except (AgentRunnerError, AgentCliConfigError) as exc:
+    except (AgentRunnerError, AgentCliConfigError, TagConfigError) as exc:
         typer.echo(f"Error: {exc}", err=True)
         raise typer.Exit(code=1) from exc
 

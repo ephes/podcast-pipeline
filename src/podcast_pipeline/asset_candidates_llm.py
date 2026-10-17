@@ -11,6 +11,24 @@ from podcast_pipeline.domain.intermediate_formats import EpisodeSummary
 from podcast_pipeline.domain.models import AssetKind, Candidate, ProvenanceRef, TextFormat
 from podcast_pipeline.drafter_runner import DrafterRunner  # noqa: TC001
 from podcast_pipeline.prompting import PromptRenderer, render_asset_candidates_prompt
+from podcast_pipeline.tag_assets import TAG_ASSET_IDS, TagSettings, postprocess_tag_content, tag_few_shots
+
+_TAG_RULES = (
+    "Tag rules:\n"
+    "- Each tag is a short, specific search term (1-3 words): technologies, projects, libraries, "
+    "tools, PEPs, Python versions (e.g. python3.13) or well-defined concepts discussed in depth.\n"
+    "- Prefer the established spelling of technical terms (usually English, lowercase unless it is "
+    "a proper name); use German only when no common English term exists.\n"
+    "- Do not include show-level tags that fit every episode (podcast name, 'Podcast', "
+    "'Programmierung', 'Softwareentwicklung'), language tags ('Deutsch', 'German'), or names of "
+    "hosts or guests.\n"
+    "- Do not include generic summary phrases (e.g. 'Neue Features', 'What's New', "
+    "'Fehlermeldungen', 'Best Practices').\n"
+    "- The Topics list below is input context, not a tag list; do not copy it verbatim.\n"
+    "- If few-shot examples follow the response schema, each pairs a past episode (User) with "
+    "its published tags (Assistant): match their length and style, tag this episode's content, "
+    "and still answer with the JSON response schema."
+)
 
 _ASSET_GUIDANCE: dict[str, str] = {
     AssetKind.description: (
@@ -41,17 +59,16 @@ _ASSET_GUIDANCE: dict[str, str] = {
         "separate words. Keep it concise and descriptive."
     ),
     AssetKind.cms_tags: (
-        "Generate CMS tags (topics) for this episode. Return markdown only as a bullet list "
-        "with one tag per line (format: '- tag'). No prose, no explanations, no sentences. "
-        "Mix German and English terms as appropriate."
+        "Generate CMS tags for this episode. Return markdown only as a bullet list "
+        "with one tag per line (format: '- tag'). No prose, no explanations, no sentences.\n" + _TAG_RULES
     ),
     AssetKind.audio_tags: (
         "Generate ID3/audio metadata tags for this episode. Return markdown only as a bullet "
-        "list with one short tag per line (format: '- tag'). No prose or commentary."
+        "list with one short tag per line (format: '- tag'). No prose or commentary.\n" + _TAG_RULES
     ),
     AssetKind.itunes_keywords: (
         "Generate iTunes keywords. Return only a comma-separated keyword list (single line), "
-        "with no heading and no extra prose. Mix German and English terms."
+        "with no heading and no extra prose.\n" + _TAG_RULES
     ),
     AssetKind.mastodon: (
         "Write a Mastodon/social media post in German announcing the episode. "
@@ -67,14 +84,35 @@ _ASSET_GUIDANCE: dict[str, str] = {
 }
 
 
+def _tag_count_target(max_tags: int) -> str:
+    high = min(10, max_tags)
+    low = min(6, high)
+    return f"{low}-{high} tags" if low < high else f"{high} tags"
+
+
+def _asset_guidance(asset_id: str, *, tag_settings: TagSettings) -> str:
+    guidance = _ASSET_GUIDANCE.get(asset_id, f"Generate content for {asset_id}.")
+    if asset_id in TAG_ASSET_IDS:
+        guidance += (
+            f"\n- Return {_tag_count_target(tag_settings.max_tags)}, never more than {tag_settings.max_tags}. "
+            "Fewer precise tags beat many vague ones."
+        )
+    return guidance
+
+
 def _parse_raw_candidates(
     payload: dict[str, Any],
     *,
     asset_id: str,
     candidates_per_asset: int,
     provenance_prefix: str,
+    tag_settings: TagSettings,
+    hosts: Sequence[str] | None,
 ) -> list[Candidate]:
-    """Validate and parse raw candidate dicts from a drafter response."""
+    """Validate and parse raw candidate dicts from a drafter response.
+
+    Tag-like assets are passed through the deterministic tag post-filter.
+    """
     raw_candidates = payload.get("candidates")
     if not isinstance(raw_candidates, list):
         raise RuntimeError(f"Drafter response for {asset_id} missing 'candidates' array")
@@ -95,6 +133,9 @@ def _parse_raw_candidates(
                 f"Drafter candidate {idx} for {asset_id} returned wrong asset_id: {raw.get('asset_id')!r}"
             )
         raw.setdefault("format", TextFormat.markdown.value)
+        content = raw.get("content")
+        if isinstance(content, str):
+            raw["content"] = postprocess_tag_content(asset_id, content, settings=tag_settings, hosts=hosts)
         raw.setdefault(
             "provenance",
             [
@@ -172,8 +213,10 @@ def generate_single_asset_candidates_llm(
     from podcast_pipeline.agent_cli_config import load_agent_cli_bundle
     from podcast_pipeline.drafter_runner import DrafterCliRunner
     from podcast_pipeline.prompting import PromptRenderer, default_prompt_registry
+    from podcast_pipeline.tag_assets import load_tag_settings
 
     episode_summary, chapters, hosts = _load_workspace_context(workspace)
+    tag_settings = load_tag_settings(workspace=workspace)
 
     bundle = load_agent_cli_bundle(workspace=workspace)
     renderer = PromptRenderer(default_prompt_registry())
@@ -183,7 +226,7 @@ def generate_single_asset_candidates_llm(
         cwd=str(workspace),
     )
 
-    guidance = _ASSET_GUIDANCE.get(asset_id, f"Generate content for {asset_id}.")
+    guidance = _asset_guidance(asset_id, tag_settings=tag_settings)
     if editorial_notes:
         guidance += f"\n\nEditorial notes from the producer:\n{editorial_notes}"
 
@@ -197,6 +240,7 @@ def generate_single_asset_candidates_llm(
         chapters=chapters,
         num_candidates=candidates_per_asset,
         hosts=hosts,
+        few_shots=tag_few_shots(asset_id, settings=tag_settings, topics=episode_summary.topics, hosts=hosts),
     )
     typer.echo(f"  Generating candidates for {asset_id}...", err=True)
     payload = runner.run(prompt.text)
@@ -206,6 +250,8 @@ def generate_single_asset_candidates_llm(
         asset_id=asset_id,
         candidates_per_asset=candidates_per_asset,
         provenance_prefix="regen_v1",
+        tag_settings=tag_settings,
+        hosts=hosts,
     )
 
 
@@ -217,16 +263,19 @@ def generate_draft_candidates_llm(
     runner: DrafterRunner,
     renderer: PromptRenderer,
     hosts: Sequence[str] | None = None,
+    tag_settings: TagSettings | None = None,
 ) -> dict[str, list[Candidate]]:
     """Generate draft candidates for all asset types via LLM calls.
 
     One LLM call per asset type, each producing *candidates_per_asset* candidates.
+    *tag_settings* defaults to the built-in tag rules without few-shot examples.
     """
+    settings = tag_settings if tag_settings is not None else TagSettings()
     assets: dict[str, list[Candidate]] = {}
 
     for kind in AssetKind:
         asset_id = kind.value
-        guidance = _ASSET_GUIDANCE.get(asset_id, f"Generate content for {asset_id}.")
+        guidance = _asset_guidance(asset_id, tag_settings=settings)
 
         prompt = render_asset_candidates_prompt(
             renderer=renderer,
@@ -238,6 +287,7 @@ def generate_draft_candidates_llm(
             chapters=list(chapters),
             num_candidates=candidates_per_asset,
             hosts=hosts,
+            few_shots=tag_few_shots(asset_id, settings=settings, topics=episode_summary.topics, hosts=hosts),
         )
         typer.echo(f"  Generating candidates for {asset_id}...", err=True)
         payload = runner.run(prompt.text)
@@ -247,6 +297,8 @@ def generate_draft_candidates_llm(
             asset_id=asset_id,
             candidates_per_asset=candidates_per_asset,
             provenance_prefix="asset_v1",
+            tag_settings=settings,
+            hosts=hosts,
         )
 
     return assets

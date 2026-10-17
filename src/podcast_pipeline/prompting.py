@@ -501,6 +501,7 @@ def render_asset_candidates_prompt(
     chapters: Sequence[str],
     num_candidates: int,
     hosts: Sequence[str] | None = None,
+    few_shots: Sequence[FewShotExample | Mapping[str, Any]] | None = None,
 ) -> PromptRenderResult:
     hosts_text = _render_hosts(hosts)
     context = {
@@ -514,4 +515,4 @@ def render_asset_candidates_prompt(
         "hosts": f"\n{hosts_text}\n" if hosts_text else "",
         "response_schema": _json_block(asset_candidates_response_json_schema(num_candidates=num_candidates)),
     }
-    return renderer.render(name="asset_candidates", context=context)
+    return renderer.render(name="asset_candidates", context=context, few_shots=few_shots)

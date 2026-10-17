@@ -3,8 +3,10 @@ from __future__ import annotations
 import json
 import re
 import unicodedata
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 from uuid import UUID
 
 from pydantic import ValidationError
@@ -17,6 +19,14 @@ from podcast_pipeline.domain.models import (
     ProvenanceRef,
     TextFormat,
 )
+from podcast_pipeline.tag_assets import (
+    TAG_ASSET_IDS,
+    TagSettings,
+    build_tag_pool,
+    render_selected_tags_markdown,
+    tag_cap_error,
+)
+from podcast_pipeline.tag_parsing import normalize_tag_values, parse_tag_list
 from podcast_pipeline.workspace_store import EpisodeWorkspaceLayout, EpisodeWorkspaceStore
 
 MANUAL_SELECTION_PROVENANCE_KIND = "manual_selection"
@@ -179,6 +189,51 @@ def _merge_assets(existing: list[Asset], assets_by_id: dict[str, Asset]) -> list
     return out
 
 
+def tag_pool_json(
+    candidates: Sequence[Candidate],
+    *,
+    settings: TagSettings,
+    hosts: Sequence[str] | None,
+) -> list[dict[str, Any]]:
+    """Serialize the merged tag suggestion pool of one tag asset."""
+    pool = build_tag_pool((c.content for c in candidates), settings=settings, hosts=hosts)
+    return [{"tag": entry.tag, "count": entry.count} for entry in pool]
+
+
+def write_selected_tags(
+    *,
+    store: EpisodeWorkspaceStore,
+    workspace_state: EpisodeWorkspace,
+    asset_id: str,
+    tags: Sequence[str],
+    max_tags: int,
+) -> tuple[EpisodeWorkspace, str | None]:
+    """Publish a curated tag selection to ``copy/selected/<asset_id>.md``.
+
+    Returns the (possibly updated) workspace state and an error message when a tag
+    contains a line break or the selection exceeds *max_tags*; nothing is written in
+    that case. The cap is checked on the published text as it will be read back, so no
+    entry can expand into several tags. A curated selection replaces any
+    whole-candidate selection.
+    """
+    normalized = normalize_tag_values(tags)
+    if any("\n" in tag or "\r" in tag for tag in normalized):
+        return workspace_state, f"Tags for {asset_id} must not contain line breaks"
+    content = render_selected_tags_markdown(asset_id, normalized)
+    error = tag_cap_error(asset_id, max(len(normalized), len(parse_tag_list(content))), max_tags)
+    if error is not None:
+        return workspace_state, error
+    store.write_selected_text(asset_id, TextFormat.markdown, content)
+    assets_by_id = {asset.asset_id: asset for asset in workspace_state.assets}
+    existing = assets_by_id.get(asset_id)
+    if existing is None or existing.selected_candidate_id is None:
+        return workspace_state, None
+    assets_by_id[asset_id] = existing.model_copy(update={"selected_candidate_id": None})
+    updated = update_workspace_assets(workspace_state, assets_by_id)
+    store.write_state(updated)
+    return updated, None
+
+
 def find_candidate_by_id(candidates: list[Candidate], candidate_id: UUID) -> Candidate | None:
     """Find a candidate by its UUID, or return None."""
     for candidate in candidates:
@@ -278,9 +333,12 @@ def save_custom_selection(
     The asset keeps its candidates but has no ``selected_candidate_id``; a
     ``manual_selection`` provenance entry on the workspace (plus a JSON record
     under ``copy/provenance/manual_selection/``) notes the manual edit and the
-    candidate it started from. Raises ValueError for invalid input.
+    candidate it started from. Raises ValueError for invalid input, including tag
+    assets: they are curated tag by tag (capped at ``tags.max``) via write_selected_tags.
     """
     validate_asset_id(asset_id)
+    if asset_id in TAG_ASSET_IDS:
+        raise ValueError(f"{asset_id} is curated tag by tag; use the tag editor instead of custom text")
     normalized = normalize_custom_selection_text(asset_id, text)
     fmt = custom_selection_format(asset_id)
 

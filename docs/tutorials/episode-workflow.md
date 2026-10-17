@@ -102,6 +102,26 @@ Outputs:
 - `summaries/` contains chunk summaries and the episode summary.
 - `copy/candidates/<asset_id>/` contains candidate JSON + Markdown + HTML files.
 
+Tag assets (`cms_tags`, `audio_tags`, `itunes_keywords`) aim for 6-10 specific terms. Generated tag candidates are
+filtered deterministically: host names, show-level constants such as `Python Podcast` or `Deutsch`, prose-like entries
+and anything beyond the cap (12 by default) are dropped. To teach the drafter your published tag style, export past
+episodes once and reference them from the global config:
+
+```bash
+podcast rss-examples \
+  --feed-url https://example.com/feed.xml \
+  --output ~/.config/podcast-pipeline/rss_examples.jsonl
+```
+
+```yaml
+# ~/.config/podcast-pipeline/config.yaml
+tags:
+  examples: rss_examples.jsonl
+  exclude: [Programmierung, Softwareentwicklung]
+```
+
+See `reference/configuration.md` ("Tag assets") for all options.
+
 ### Replacing the transcript
 
 - The new transcript is copied completely into a staging file next to `transcript/transcript.txt` before anything else
@@ -144,6 +164,16 @@ Notes:
 
 - `--web` opens a local web UI for full-text comparison of all candidates per asset. Select candidates by clicking, then
   press "Done" to shut down the server.
+- Tag assets (`cms_tags`, `audio_tags`, `itunes_keywords`) are not picked as whole candidates in `--web` or the
+  dashboard. All their candidates (including regenerated ones) are merged into one deduplicated suggestion pool, ordered
+  by how many candidates proposed each tag (`×3` means three candidates agreed), after the tag filter (see "Draft text
+  assets"). Click a tag to include or exclude it, add your own tags, or use "Use top N" to take the most agreed ones.
+  Each change writes `copy/selected/<asset_id>.md` right away (changes are saved one at a time, and "Done"/"Close"
+  waits for pending saves); at most `tags.max` entries (default 12, Apple's
+  historical iTunes keyword limit) can be selected. In `--web`, tag assets never block "Done": an asset without
+  selected tags is simply left empty. The dashboard keeps the raw candidates in a collapsed "Raw candidates" section, where
+  they can be deleted but not selected as a whole. Selecting a whole tag candidate through the API is rejected when it
+  has more than `tags.max` entries.
 - Without `--web`, the CLI prompts when multiple candidates exist and writes the selection to `copy/selected/`.
 - Use `--asset-id` and `--candidate-id` to pick a specific candidate non-interactively (CLI only).
 - A selection has one canonical file: `.md` (with a derived `.html`), `.txt` or `.html`. Selecting a candidate in
@@ -155,7 +185,8 @@ Notes:
 
 When no candidate is quite right (for example you want the slug `python-315` and none of the candidates offers it),
 write the selection yourself. Both `podcast pick --web` and the dashboard's Pick tab show a "Custom text" card below
-the candidates of each asset (in the dashboard, tag assets keep their per-tag editor instead):
+the candidates of each asset except the tag assets, which use the tag pool editor instead (see above). Custom text
+for a tag asset is rejected by both endpoints, so the `tags.max` cap cannot be bypassed:
 
 1. Press "Edit" on a candidate to copy its text into the editor, or type from scratch.
 2. Change the text and press "Use custom text" (or "Save" once a custom text is the current selection).

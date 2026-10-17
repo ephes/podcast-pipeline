@@ -4,7 +4,12 @@ import re
 from collections.abc import Sequence
 
 
-def parse_tag_list(text: str | None) -> list[str]:
+def parse_tag_list(text: str | None, *, split_words: bool = True) -> list[str]:
+    """Parse bullet, separator or line-based tag text.
+
+    With *split_words* (the default) a single separator-free line of eight or more words
+    is treated as a space-separated keyword blob and split into words.
+    """
     if text is None:
         return []
 
@@ -12,7 +17,7 @@ def parse_tag_list(text: str | None) -> list[str]:
     if items:
         return normalize_tag_values(items)
 
-    return _parse_non_bulleted_tag_items(_content_lines(text))
+    return _parse_non_bulleted_tag_items(_content_lines(text), split_words=split_words)
 
 
 def normalize_tag_values(items: Sequence[str]) -> list[str]:
@@ -48,7 +53,7 @@ def _content_lines(text: str) -> list[str]:
     return [line.strip() for line in text.splitlines() if line.strip() and not line.strip().startswith("#")]
 
 
-def _parse_non_bulleted_tag_items(lines: list[str]) -> list[str]:
+def _parse_non_bulleted_tag_items(lines: list[str], *, split_words: bool) -> list[str]:
     if not lines:
         return []
 
@@ -56,7 +61,7 @@ def _parse_non_bulleted_tag_items(lines: list[str]) -> list[str]:
     if saw_separator:
         return normalize_tag_values(segments)
 
-    if len(lines) == 1:
+    if split_words and len(lines) == 1:
         words = _split_keyword_blob(lines[0])
         if words:
             return normalize_tag_values(words)

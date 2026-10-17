@@ -36,3 +36,8 @@ def test_parse_tag_list_space_blob_threshold() -> None:
 
 def test_normalize_tag_values_uses_casefold() -> None:
     assert normalize_tag_values(["Straße", "strasse", "LLM", "llm"]) == ["Straße", "LLM"]
+
+
+def test_parse_tag_list_can_keep_long_lines_whole() -> None:
+    line = "one two three four five six seven eight"
+    assert parse_tag_list(line, split_words=False) == [line]

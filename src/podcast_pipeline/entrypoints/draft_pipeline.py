@@ -174,6 +174,7 @@ def _run_llm_pipeline(
     from podcast_pipeline.drafter_runner import DrafterCliRunner
     from podcast_pipeline.prompting import PromptRenderer, default_prompt_registry
     from podcast_pipeline.summarization_llm import run_llm_summarization
+    from podcast_pipeline.tag_assets import load_tag_settings
     from podcast_pipeline.transcript_chunker import write_transcript_chunks
 
     # Fall back to episode.yaml hosts if CLI didn't provide them
@@ -183,6 +184,7 @@ def _run_llm_pipeline(
     workspace = store.layout.root
 
     bundle = load_agent_cli_bundle(workspace=workspace)
+    tag_settings = load_tag_settings(workspace=workspace)
     renderer = PromptRenderer(default_prompt_registry())
     runner = DrafterCliRunner(
         config=bundle.drafter,
@@ -236,6 +238,7 @@ def _run_llm_pipeline(
         runner=runner,
         renderer=renderer,
         hosts=hosts,
+        tag_settings=tag_settings,
     )
 
     written = 0

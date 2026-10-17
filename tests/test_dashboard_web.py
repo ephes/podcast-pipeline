@@ -118,7 +118,12 @@ def bare_dashboard_server(
 @pytest.fixture()
 def dashboard_server_with_tags(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> Generator[_DashboardServerTuple, None, None]:
+    # The legacy cms_tags blob below splits into ~27 tags; allow selecting it whole.
+    config = tmp_path / "dashboard-config.yaml"
+    config.write_text("tags:\n  max: 50\n", encoding="utf-8")
+    monkeypatch.setenv("PODCAST_PIPELINE_CONFIG", str(config))
     store = _setup_workspace(tmp_path)
     store.write_candidate(Candidate(asset_id="audio_tags", content="# Audio tags\n\n- AI\n- Python\n- LLM"))
     store.write_candidate(
@@ -289,8 +294,9 @@ def test_get_api_assets_matches_contract(dashboard_server: _DashboardServerTuple
     expected: list[dict[str, Any]] = []
     for parsed in parsed_assets:
         serialized = parsed.model_dump(mode="json")
-        if serialized.get("selected_tags") is None:
-            serialized.pop("selected_tags", None)
+        for optional_key in ("selected_tags", "tag_pool", "max_tags"):
+            if serialized.get(optional_key) is None:
+                serialized.pop(optional_key, None)
         for candidate in serialized["candidates"]:
             if candidate.get("tags") is None:
                 candidate.pop("tags", None)
@@ -933,6 +939,76 @@ def test_run_dashboard_opens_browser(
     assert opened_urls[0].startswith("http://127.0.0.1:")
 
 
+def test_assets_expose_tag_pool_and_cap(
+    dashboard_server_with_tags: _DashboardServerTuple,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _server, base_url, ctx = dashboard_server_with_tags
+    config = tmp_path / "tag-config.yaml"
+    config.write_text("tags:\n  max: 2\n  exclude: [LLM]\n", encoding="utf-8")
+    monkeypatch.setenv("PODCAST_PIPELINE_CONFIG", str(config))
+    ctx.store.write_candidate(Candidate(asset_id="audio_tags", content="- python\n- Podcast\n- devops"))
+
+    ctx.reload_candidates()
+    assets = json.loads(urllib.request.urlopen(f"{base_url}/api/assets").read().decode("utf-8"))
+    audio_tags = next(item for item in assets if item["asset_id"] == "audio_tags")
+    assert audio_tags["max_tags"] == 2
+    assert audio_tags["tag_pool"] == [
+        {"tag": "Python", "count": 2},
+        {"tag": "AI", "count": 1},
+        {"tag": "devops", "count": 1},
+    ]
+    description = next(item for item in assets if item["asset_id"] == "description")
+    assert "tag_pool" not in description
+
+    req = urllib.request.Request(
+        f"{base_url}/api/assets/audio_tags/tags",
+        data=json.dumps({"tags": ["a", "b", "c"]}).encode(),
+        headers={"Content-Type": "application/json"},
+        method="PUT",
+    )
+    with pytest.raises(urllib.error.HTTPError) as exc_info:
+        urllib.request.urlopen(req)
+    assert exc_info.value.code == 400
+    assert "At most 2" in json.loads(exc_info.value.read().decode("utf-8"))["error"]
+
+
+def test_select_tag_candidate_enforces_cap(
+    dashboard_server_with_tags: _DashboardServerTuple,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _server, base_url, ctx = dashboard_server_with_tags
+    config = tmp_path / "cap-config.yaml"
+    config.write_text("tags:\n  max: 2\n", encoding="utf-8")
+    monkeypatch.setenv("PODCAST_PIPELINE_CONFIG", str(config))
+    assets = json.loads(urllib.request.urlopen(f"{base_url}/api/assets").read().decode("utf-8"))
+    audio_tags = next(item for item in assets if item["asset_id"] == "audio_tags")
+
+    candidate_id = audio_tags["candidates"][0]["candidate_id"]
+    req = urllib.request.Request(
+        f"{base_url}/api/select",
+        data=json.dumps({"asset_id": "audio_tags", "candidate_id": candidate_id}).encode(),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with pytest.raises(urllib.error.HTTPError) as exc_info:
+        urllib.request.urlopen(req)
+    assert exc_info.value.code == 400
+    assert "At most 2" in json.loads(exc_info.value.read().decode("utf-8"))["error"]
+    assert not ctx.layout.selected_text_path("audio_tags", TextFormat.markdown).exists()
+
+
+def test_dashboard_serializes_tag_updates_and_hides_tag_candidate_select(
+    dashboard_server: _DashboardServerTuple,
+) -> None:
+    _server, base_url, _ctx = dashboard_server
+    body = urllib.request.urlopen(f"{base_url}/").read().decode("utf-8")
+    assert "function enqueueTagUpdate(update)" in body
+    assert "if (!isTagAsset(asset.asset_id)) actions.appendChild(button);" in body
+
+
 def _put_json(url: str, payload: object) -> tuple[int, dict[str, Any]]:
     req = urllib.request.Request(
         url,
@@ -1127,3 +1203,20 @@ def test_custom_selection_survives_deleting_last_candidate(dashboard_server: _Da
     prepared = ctx.prepare_refine("shownotes", "kürzer", None, None)
     assert not isinstance(prepared, str)
     assert prepared.source_text == "# Neu\n"
+
+
+def test_put_selection_rejects_custom_text_for_tag_assets(
+    dashboard_server_with_tags: _DashboardServerTuple,
+) -> None:
+    _server, base_url, ctx = dashboard_server_with_tags
+    req = urllib.request.Request(
+        f"{base_url}/api/assets/cms_tags/selection",
+        data=json.dumps({"text": "- a\n- b"}).encode(),
+        headers={"Content-Type": "application/json"},
+        method="PUT",
+    )
+    with pytest.raises(urllib.error.HTTPError) as exc_info:
+        urllib.request.urlopen(req)
+    assert exc_info.value.code == 400
+    assert "tag editor" in json.loads(exc_info.value.read().decode("utf-8"))["error"]
+    assert not ctx.layout.selected_text_path("cms_tags", TextFormat.markdown).exists()

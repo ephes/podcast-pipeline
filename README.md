@@ -56,7 +56,8 @@ production run single-flight per episode. Details: `docs/tutorials/episode-workf
 ## Custom selected text
 
 Besides picking a whole generated candidate, `podcast pick --web` and the dashboard let you write or edit the
-selected text of an asset (start from a candidate with "Edit", then "Use custom text"). Slugs are validated as
+selected text of an asset (start from a candidate with "Edit", then "Use custom text"); tag assets use the tag pool
+instead. Slugs are validated as
 lowercase, hyphen-separated and URL-safe; custom selections count as selected for "Done", `podcast status` and
 `podcast produce`. You can also refine a candidate or your own text with an instruction (`kürzer`, `ohne Emojis`):
 the drafter agent rewrites it into a new candidate that records the instruction. Details:
@@ -69,6 +70,15 @@ login prompt, network stall or rate limit fails its dashboard job (which can the
 stage "running" until the dashboard restarts. Raise or lower it with `PODCAST_PIPELINE_AGENT_TIMEOUT=<seconds>` or
 `agents.<role>.timeout_seconds` in the agent config; `podcast draft --timeout <seconds>` overrides both for one run.
 Details: `docs/reference/configuration.md`.
+
+## Tag assets
+
+Generated `cms_tags`, `audio_tags` and `itunes_keywords` candidates target 6-10 specific terms and are post-filtered:
+host names, show-level constants (`Python Podcast`, `Deutsch`, ...) and a configurable `tags.exclude` list are dropped,
+and the count is capped (`tags.max`, default 12). `tags.examples` can point at a `podcast rss-examples` JSONL export so
+past episodes' keywords serve as few-shot examples. `podcast pick --web` and the dashboard merge all tag candidates
+into one pool ordered by agreement, where you toggle individual tags instead of picking a whole list (at most
+`tags.max`); tag assets never block "Done". Details: `docs/reference/configuration.md` ("Tag assets").
 
 ## Domain models
 

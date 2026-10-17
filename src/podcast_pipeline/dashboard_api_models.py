@@ -16,6 +16,11 @@ class AssetCandidateOut(_DashboardApiModel):
     instruction: str | None = None
 
 
+class TagPoolEntryOut(_DashboardApiModel):
+    tag: str
+    count: int
+
+
 class AssetOut(_DashboardApiModel):
     asset_id: str
     selected_candidate_id: str | None = None
@@ -25,6 +30,8 @@ class AssetOut(_DashboardApiModel):
     selection_format: str = "markdown"
     candidates: list[AssetCandidateOut]
     selected_tags: list[str] | None = None
+    tag_pool: list[TagPoolEntryOut] | None = None
+    max_tags: int | None = None
 
 
 class AssetTagsOut(_DashboardApiModel):
