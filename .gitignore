@@ -10,3 +10,4 @@ ep_test/
 specs/
 docs/_build/
 .DS_Store
+.envrc
