@@ -162,6 +162,33 @@ class Track(DomainModel):
     provenance: list[ProvenanceRef] = Field(default_factory=list)
 
 
+class AuphonicProductionStatus(StrEnum):
+    current = "current"
+    superseded = "superseded"
+    deleted = "deleted"
+
+
+class AuphonicProductionRecord(DomainModel):
+    """One Auphonic production this workspace created (``podcast produce``).
+
+    ``created_at`` is unset for a production that was stored in
+    ``auphonic_production_uuid`` before the history existed. ``last_known_state``
+    is the production state as last observed (``done``, ``running``,
+    ``not_started``, ``changed``, ``error`` or ``missing``). ``outputs_downloaded_at``
+    marks that the outputs of the production's latest run were downloaded.
+    """
+
+    uuid: Annotated[str, Field(min_length=1, pattern=r"^[A-Za-z0-9_-]+$")]
+    status: AuphonicProductionStatus = AuphonicProductionStatus.current
+    created_at: AwareDatetime | None = None
+    last_known_state: str | None = None
+    outputs_downloaded_at: AwareDatetime | None = None
+    superseded_at: AwareDatetime | None = None
+    superseded_by: str | None = None
+    superseded_reason: str | None = None
+    deleted_at: AwareDatetime | None = None
+
+
 class EpisodeWorkspace(SchemaVersioned):
     episode_id: Annotated[str, Field(min_length=1)]
     root_dir: Annotated[str, Field(min_length=1)]
@@ -169,8 +196,25 @@ class EpisodeWorkspace(SchemaVersioned):
     chapters: list[Chapter] = Field(default_factory=list)
     tracks: list[Track] = Field(default_factory=list)
     auphonic_production_uuid: Annotated[str | None, Field(default=None, min_length=1)] = None
+    auphonic_productions: list[AuphonicProductionRecord] = Field(default_factory=list)
     created_at: AwareDatetime = Field(default_factory=_utc_now)
     provenance: list[ProvenanceRef] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _validate_auphonic_history(self) -> EpisodeWorkspace:
+        uuids = [record.uuid for record in self.auphonic_productions]
+        if len(set(uuids)) != len(uuids):
+            raise ValueError("auphonic_productions must not repeat a uuid")
+        current = [
+            record.uuid for record in self.auphonic_productions if record.status == AuphonicProductionStatus.current
+        ]
+        if len(current) > 1:
+            raise ValueError("auphonic_productions may have at most one current production")
+        if current and current[0] != self.auphonic_production_uuid:
+            raise ValueError("the current auphonic_productions entry must match auphonic_production_uuid")
+        if self.auphonic_production_uuid in uuids and not current:
+            raise ValueError("auphonic_production_uuid must not be superseded or deleted in auphonic_productions")
+        return self
 
     @model_validator(mode="after")
     def _validate_invariants(self) -> EpisodeWorkspace:

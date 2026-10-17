@@ -149,6 +149,9 @@ master mix is at most an input for transcription (`inputs.transcription_audio`),
   Times (including `start_sec`/`end_sec` aliases) must be finite, nonnegative numbers or numeric strings,
   never booleans. Fractional seconds are supported; when both times exist, `end` must be >= `start`.
   Invalid times fail locally before Auphonic credentials are loaded or production is submitted.
+- `cleanup_superseded` (boolean, optional, default `false`): after a successful `podcast produce`, delete this
+  workspace's superseded Auphonic productions (recorded in `state.json`) from the Auphonic account. Overrides the
+  global config; never part of the payload. See `reference/configuration.md`.
 
 If metadata fields are missing, the payload builder falls back to selected copy in `copy/selected/` (for example
 `title_detail`, `subtitle_auphonic`, `summary_short`, `description`, `audio_tags`, and `itunes_keywords`).

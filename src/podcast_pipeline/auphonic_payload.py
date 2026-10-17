@@ -78,6 +78,23 @@ def build_auphonic_payload(
     return payload
 
 
+def resolve_cleanup_superseded(episode_yaml: Mapping[str, Any]) -> bool:
+    """``auphonic.cleanup_superseded`` from episode.yaml, else the global config (default false)."""
+    global_path = global_config_path()
+    sources = (
+        (_extract_auphonic_section(episode_yaml, source="episode.yaml"), "episode.yaml"),
+        (_extract_auphonic_section(_load_yaml_mapping(global_path), source=str(global_path)), str(global_path)),
+    )
+    for section, source in sources:
+        value = section.get("cleanup_superseded")
+        if value is None:
+            continue
+        if not isinstance(value, bool):
+            raise AuphonicConfigError(f"auphonic.cleanup_superseded must be true or false in {source}")
+        return value
+    return False
+
+
 def _load_yaml_mapping(path: Path) -> dict[str, Any]:
     if not path.exists():
         return {}

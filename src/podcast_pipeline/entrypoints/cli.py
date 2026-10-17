@@ -339,11 +339,51 @@ def produce(
             ),
         ),
     ] = False,
+    cleanup: Annotated[
+        bool | None,
+        typer.Option(
+            "--cleanup/--no-cleanup",
+            help=(
+                "After the production finished and its outputs were downloaded, delete this workspace's "
+                "superseded Auphonic productions (recorded in state.json; irreversible). "
+                "Default: auphonic.cleanup_superseded from episode.yaml or the global config (off)."
+            ),
+            show_default=False,
+        ),
+    ] = None,
 ) -> None:
     """Start (or resume) the Auphonic production for an episode workspace and download its outputs."""
     from podcast_pipeline.entrypoints.produce import run_produce
 
-    run_produce(workspace=workspace, dry_run=dry_run, restart=restart, update=update)
+    run_produce(workspace=workspace, dry_run=dry_run, restart=restart, update=update, cleanup=cleanup)
+
+
+@app.command()
+def auphonic_cleanup(
+    *,
+    workspace: Annotated[
+        Path,
+        typer.Option(
+            exists=True,
+            file_okay=False,
+            help="Episode workspace directory (default: current directory).",
+        ),
+    ] = Path("."),
+    dry_run: Annotated[
+        bool,
+        typer.Option(
+            "--dry-run/--delete",
+            help=(
+                "List the superseded Auphonic productions that would be deleted (default, no API call), "
+                "or delete them from the Auphonic account (irreversible)."
+            ),
+        ),
+    ] = True,
+) -> None:
+    """Delete the Auphonic productions this workspace created and later superseded (for example by --restart)."""
+    from podcast_pipeline.entrypoints.produce import run_auphonic_cleanup
+
+    run_auphonic_cleanup(workspace=workspace, dry_run=dry_run)
 
 
 @app.command()
