@@ -237,6 +237,14 @@ class EpisodeWorkspaceLayout:
     def auphonic_outputs_dir(self) -> Path:
         return self.auphonic_dir / "outputs"
 
+    @property
+    def cms_dir(self) -> Path:
+        return self.root / "cms"
+
+    @property
+    def cms_draft_json(self) -> Path:
+        return self.cms_dir / "draft.json"
+
     def candidate_json_path(self, asset_id: str, candidate_id: UUID) -> Path:
         safe_asset = _safe_path_segment(asset_id)
         return self.copy_candidates_dir / safe_asset / f"candidate_{candidate_id}.json"
