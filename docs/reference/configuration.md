@@ -100,6 +100,23 @@ finished production costs Auphonic credits again. Auphonic re-applies the preset
 output files become exactly the preset's. The same preset checks run before the update. See "Produce with Auphonic"
 in `tutorials/episode-workflow.md`.
 
+### Cleanup of superseded productions
+
+`auphonic.cleanup_superseded` (default `false`) makes `podcast produce` delete the workspace's superseded Auphonic
+productions (for example the ones `--restart` replaced) after the new production finished and its outputs were
+downloaded. Deletion is irreversible, so it is opt-in:
+
+```yaml
+auphonic:
+  cleanup_superseded: true
+```
+
+The key can be set in the global config and in `episode.yaml`; the value from `episode.yaml` wins. It must be `true` or
+`false`. `podcast produce --cleanup` / `--no-cleanup` overrides it for one run, and
+`podcast auphonic-cleanup [--dry-run | --delete]` lists or deletes them on demand. Only productions recorded as
+superseded in the workspace's `state.json` are ever deleted, never the current one. See "Clean up superseded
+productions" in `tutorials/episode-workflow.md`.
+
 ## Tag assets (local only)
 
 `cms_tags`, `audio_tags` and `itunes_keywords` follow the show's tag house style: 6-10 short, specific terms

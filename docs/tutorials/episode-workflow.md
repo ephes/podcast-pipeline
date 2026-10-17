@@ -263,6 +263,8 @@ podcast produce --workspace ./workspaces/ep_001             # start, wait, downl
 podcast produce --workspace ./workspaces/ep_001 --restart   # discard the stored production, start a new one
 podcast produce --workspace ./workspaces/ep_001 --update --dry-run   # print the update requests, no API call
 podcast produce --workspace ./workspaces/ep_001 --update    # edit the stored production, start it again, download
+podcast auphonic-cleanup --workspace ./workspaces/ep_001    # list superseded productions, no API call
+podcast auphonic-cleanup --workspace ./workspaces/ep_001 --delete   # delete them from the Auphonic account
 ```
 
 Notes:
@@ -335,8 +337,50 @@ the audiogram video, metadata such as `year` was missing, chapters changed), `--
 - `--update` never uses Auphonic's `reset_data` flag: on a multitrack production it deletes all tracks with their
   uploaded stems. `multi_input_files` is never part of the update either, since Auphonic would add the tracks a second
   time.
+- Deleting the current production in the Auphonic web UI deletes its uploaded stems too, so it cannot be resumed and
+  `--update` no longer works for it. When Auphonic answers 404 for the production stored in `state.json`, a plain
+  `produce` and `produce --update` stop before creating, updating or starting anything, record it as `missing` in the
+  history and ask for `podcast produce --restart`, which uploads the stems to a new (paid) production. The same
+  happens when the production is deleted while `produce` polls it.
 - `--update` and `--restart` cannot be combined. `--update --dry-run` prints `production_uuid`, `production_update`
   and `track_updates` without calling the API (it still needs a stored production UUID).
+
+### Clean up superseded productions (auphonic-cleanup)
+
+`--restart` creates a new production and leaves the previous one (never started, failed, or a finished one that was
+redone) in the Auphonic account. `state.json` therefore records every production `produce` created for the workspace
+in `auphonic_productions`, not only the current one in `auphonic_production_uuid`. Each entry has the production's
+`uuid`, its `status` in the history (`current`, `superseded` or `deleted`), `created_at`, `last_known_state` (the
+Auphonic state last seen: `done`, `error`, `not_started`, `changed`, `running` or `missing`), `outputs_downloaded_at`
+for the current one, and for a replaced one `superseded_at`, `superseded_by` and `superseded_reason` (for example
+"replaced by `podcast produce --restart`"). A production UUID stored before this history existed is added to it the
+next time `produce` replaces it (without `created_at`).
+
+Deleting a production cannot be undone, so cleanup is explicit:
+
+- `podcast auphonic-cleanup` (or `--dry-run`, the default) lists each production that would be deleted, by UUID with
+  its reason, without loading credentials or calling the API.
+- `podcast auphonic-cleanup --delete` deletes them with `DELETE production/{uuid}.json` and marks them `deleted` in the
+  history.
+- `podcast produce --cleanup` does the same right after the production finished and its outputs were downloaded. Set
+  `auphonic.cleanup_superseded: true` in `episode.yaml` or the global config to make this the default; `--no-cleanup`
+  turns it off for one run. In this automatic mode a refused or failed deletion is a warning: the production itself
+  succeeded, and `podcast auphonic-cleanup --delete` retries later.
+
+What is deleted, and when:
+
+- Only `superseded` entries of the workspace's own history. The current production, productions already marked
+  `deleted`, and anything that is not in the history (for example productions of other episodes, or ones created in
+  the Auphonic web UI) are never deleted.
+- Nothing is deleted unless the current production is Done with downloaded outputs: `state.json` must record its
+  outputs as downloaded after its latest run, and Auphonic is asked first that it is still Done. An `--update`
+  re-run counts as a new run until its outputs are downloaded, so a failed re-run blocks the cleanup.
+- A superseded production that Auphonic reports as still running is skipped; one that no longer exists (404 on the
+  status check or on the delete request, for example because it was deleted in the Auphonic web UI) is recorded as
+  deleted. Failed deletions stay `superseded` and are retried by the next cleanup.
+- When the current production itself was deleted in Auphonic, the cleanup deletes nothing, records it as `missing` and
+  asks for `podcast produce --restart`; after the new production finished, the old one is recorded as deleted.
+- `auphonic-cleanup --delete` holds the same `auphonic/.produce.lock` as `produce`, so it never runs next to one.
 
 Interrupted output downloads remove partial temporary files and preserve an existing destination.
 Stream and filesystem failures surface as `AuphonicApiError`, so the production can be retried.
@@ -483,8 +527,9 @@ The dashboard also runs each long job single-flight:
   for the same workspace, from the CLI or a dashboard, fails instead of starting a second production. A rerun after a
   failure reuses the production UUID stored in `state.json` rather than starting a new one; only
   `podcast produce --restart` replaces it (`--update` re-runs that same production under the same lock).
-  Other `state.json` writers (pick, dashboard, review loop) never clear or replace that stored UUID, and all
-  `state.json` updates are serialized with a lock on the workspace directory.
+  Other `state.json` writers (pick, dashboard, review loop) never clear or replace that stored UUID or the production
+  history (`auphonic_productions`), and all `state.json` updates are serialized with a lock on the workspace
+  directory.
 - Candidate counts (`candidates`) are clamped to 1-10 and review `max_iterations` to 1-10.
 
 ## Episode workspace layout

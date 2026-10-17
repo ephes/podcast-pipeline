@@ -41,7 +41,12 @@ track), starts it, polls it until Auphonic reports Done or a failure status, and
 the production stored in `state.json`; `--restart` deliberately starts a new (paid) one after a failure, and
 `--dry-run` only prints the payload, including the track list. `--update` re-runs the stored production without
 uploading the stems again: it applies the current preset, metadata, chapters and per-track settings to it and starts it
-again (`--update --dry-run` prints the update requests). Re-running a finished production costs credits again. Outputs are named after the episode (`output_basename`,
+again (`--update --dry-run` prints the update requests). Re-running a finished production costs credits again.
+`state.json` records every production the workspace created; `podcast auphonic-cleanup` lists the ones a `--restart`
+superseded and `--delete` removes them from the Auphonic account (irreversible, and only while the current production
+is Done with downloaded outputs). `podcast produce --cleanup`, or `auphonic.cleanup_superseded: true`, does that
+automatically after a successful run. Deleting the current production in the Auphonic web UI also deletes its stems:
+`produce` and `--update` then stop and ask for `--restart`. Outputs are named after the episode (`output_basename`,
 default `episode_id`). A single-file production is only available as an
 explicit opt-in (`auphonic.mode: single_track`). Credentials: `AUPHONIC_API_KEY`, or `AUPHONIC_USER` +
 `AUPHONIC_PASSWORD`. Details: `docs/tutorials/episode-workflow.md` ("Produce with Auphonic") and

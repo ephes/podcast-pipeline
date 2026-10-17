@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import os
+import re
 import tempfile
 import time
 from collections.abc import Callable, Iterable, Mapping, Sequence
@@ -20,6 +21,14 @@ class AuphonicApiError(RuntimeError):
 
 class AuphonicProductionFailedError(AuphonicApiError):
     """The polled production reached a terminal state other than Done."""
+
+
+class AuphonicNotFoundError(AuphonicApiError):
+    """The Auphonic API answered 404, for example for a production that no longer exists."""
+
+
+# Auphonic production UUIDs are URL-safe; anything else never reaches a request URL.
+_PRODUCTION_UUID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 
 
 # Production status codes as returned by https://auphonic.com/api/info/production_status.json.
@@ -247,7 +256,13 @@ class AuphonicClient:
             "Remove all tracks from the preset; per-track algorithms belong in auphonic.tracks[].algorithms."
         )
 
-    def rerun_production(self, stored: AuphonicProduction, payload: Mapping[str, Any]) -> AuphonicProduction:
+    def rerun_production(
+        self,
+        stored: AuphonicProduction,
+        payload: Mapping[str, Any],
+        *,
+        before_update: Callable[[], None] | None = None,
+    ) -> AuphonicProduction:
         """Update the existing production ``stored`` from ``payload`` and start it again.
 
         Nothing is uploaded: the production keeps its input files. Everything
@@ -258,7 +273,9 @@ class AuphonicClient:
         ``offset`` and ``algorithms`` go to each track's own endpoint, because
         ``multi_input_files`` in a production update would add duplicate tracks
         and ``reset_data`` would delete the uploaded stems. The update is
-        checked before the paid start request.
+        checked before the paid start request. ``before_update`` runs after
+        the local checks, right before the first request that changes the
+        production.
         """
         body, track_updates = update_requests(payload)
         multitrack = payload.get("is_multitrack") is True
@@ -271,6 +288,8 @@ class AuphonicClient:
                 track_ids=[str(track["id"]) for track in track_updates],
             )
 
+        if before_update is not None:
+            before_update()
         production_url = f"{self._base_url}/production/{stored.uuid}"
         updated = _parse_production(_request_json(self._client, "POST", f"{production_url}.json", json=body))
         for track in track_updates:
@@ -292,6 +311,22 @@ class AuphonicClient:
         url = f"{self._base_url}/production/{uuid}.json"
         response = _request_json(self._client, "GET", url)
         return _parse_production(response)
+
+    def delete_production(self, uuid: str) -> None:
+        """Delete a production from the Auphonic account (irreversible).
+
+        Raises :class:`AuphonicNotFoundError` when the production does not exist.
+        """
+        if not _PRODUCTION_UUID_RE.fullmatch(uuid):
+            raise AuphonicApiError(f"Refusing to delete Auphonic production with invalid UUID {uuid!r}.")
+        url = f"{self._base_url}/production/{uuid}.json"
+        try:
+            response = self._client.request("DELETE", url)
+        except httpx.RequestError as exc:
+            raise AuphonicApiError(f"Auphonic API request failed: {exc}") from exc
+        if response.status_code < 300 and not response.content.strip():
+            return
+        _check_response(response)
 
     def wait_for_production(
         self,
@@ -368,21 +403,25 @@ def _request_json(client: httpx.Client, method: str, url: str, **kwargs: Any) ->
         response = client.request(method, url, **kwargs)
     except httpx.RequestError as exc:
         raise AuphonicApiError(f"Auphonic API request failed: {exc}") from exc
+    return _check_response(response)
 
+
+def _check_response(response: httpx.Response) -> dict[str, Any]:
+    error_class = AuphonicNotFoundError if response.status_code == 404 else AuphonicApiError
     try:
         payload = response.json()
     except ValueError as exc:
-        raise AuphonicApiError(f"Auphonic API returned invalid JSON (status {response.status_code}).") from exc
+        raise error_class(f"Auphonic API returned invalid JSON (status {response.status_code}).") from exc
 
     if isinstance(payload, Mapping):
         status = payload.get("status")
         if isinstance(status, str) and status.lower() == "error":
             message = _extract_error_message(payload) or "Auphonic API returned an error."
-            raise AuphonicApiError(message)
+            raise error_class(message)
 
     if response.status_code >= 400:
         message = _extract_error_message(payload) or f"HTTP {response.status_code}"
-        raise AuphonicApiError(f"Auphonic API error ({response.status_code}): {message}")
+        raise error_class(f"Auphonic API error ({response.status_code}): {message}")
     if isinstance(payload, Mapping):
         return dict(payload)
     return {"data": payload}

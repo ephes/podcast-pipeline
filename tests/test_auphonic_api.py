@@ -727,7 +727,35 @@ class _FakeAuphonic:
         self.chapters: dict[str, list[dict[str, Any]]] = {}
         self.updates: list[tuple[str, dict[str, Any]]] = []
         self.track_updates: list[tuple[str, str, dict[str, Any]]] = []
-        self.recorder = _Recorder(self._handle)
+        # Productions whose GET status is fixed instead of following the script.
+        self.fixed_status: dict[str, tuple[int, str]] = {}
+        self.deleted: list[str] = []
+        self.missing: set[str] = set()
+        self.delete_status: dict[str, int] = {}
+        self.recorder = _Recorder(self._dispatch)
+
+    def _handle_fixed(self, request: httpx.Request) -> httpx.Response | None:
+        """Deleted, missing and fixed-status productions; None for everything else."""
+        path = request.url.path
+        if not (path.startswith("/api/production/") and path.endswith(".json") and path.count("/") == 3):
+            return None
+        uuid = path.removeprefix("/api/production/").removesuffix(".json")
+        if uuid in self.missing:
+            return httpx.Response(404, json={"status_code": 404, "error_message": "Production not found"})
+        if request.method == "DELETE":
+            status = self.delete_status.get(uuid, 200)
+            if status >= 400:
+                return httpx.Response(status, json={"status_code": status, "error_message": "nope"})
+            self.deleted.append(uuid)
+            self.missing.add(uuid)
+            return _ok({})
+        if request.method == "GET" and uuid in self.fixed_status:
+            return _ok(self._production(uuid, *self.fixed_status[uuid]))
+        return None
+
+    def _dispatch(self, request: httpx.Request) -> httpx.Response:
+        fixed = self._handle_fixed(request)
+        return fixed if fixed is not None else self._handle(request)
 
     def _handle(self, request: httpx.Request) -> httpx.Response:
         path = request.url.path

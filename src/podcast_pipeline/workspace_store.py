@@ -8,7 +8,7 @@ import os
 import re
 import stat
 import tempfile
-from collections.abc import Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
@@ -19,6 +19,7 @@ from uuid import UUID
 import yaml
 from pydantic import ValidationError
 
+from podcast_pipeline.auphonic_history import record_new_production
 from podcast_pipeline.domain.episode_yaml import EpisodeYaml, try_load_episode_yaml
 from podcast_pipeline.domain.models import (
     Candidate,
@@ -391,41 +392,77 @@ class EpisodeWorkspaceStore:
         finally:
             os.close(fd)  # closing the descriptor releases the lock
 
-    def _stored_auphonic_production_uuid(self) -> str | None:
+    def _stored_auphonic_fields(self) -> dict[str, Any]:
         if not self.layout.state_json.exists():
-            return None
+            return {}
         try:
-            return self.read_state().auphonic_production_uuid
+            stored = self.read_state()
         except WorkspaceStoreError:
-            return None
+            return {}
+        if stored.auphonic_production_uuid is None and not stored.auphonic_productions:
+            return {}
+        # Both fields together, so the written state stays consistent.
+        return {
+            "auphonic_production_uuid": stored.auphonic_production_uuid,
+            "auphonic_productions": stored.auphonic_productions,
+        }
 
     def _write_state_unlocked(self, workspace: EpisodeWorkspace) -> None:
         payload = workspace.model_dump(mode="json")
         if payload.get("auphonic_production_uuid") is None:
             payload.pop("auphonic_production_uuid", None)
+        if not payload.get("auphonic_productions"):
+            payload.pop("auphonic_productions", None)
         dumped = json.dumps(payload, indent=2, sort_keys=True) + "\n"
         _atomic_write_text(self.layout.state_json, dumped)
 
     def write_state(self, workspace: EpisodeWorkspace) -> None:
         """Write ``state.json``.
 
-        A stored ``auphonic_production_uuid`` is never cleared or replaced here:
-        writers holding an older in-memory copy (dashboard, pick UI, review
-        loop) would otherwise drop or roll back the UUID of a paid production
-        that ``podcast produce`` (or ``produce --restart``) saved in the
-        meantime. Only :meth:`set_auphonic_production_uuid` changes it.
+        A stored ``auphonic_production_uuid`` and production history
+        (``auphonic_productions``) are never cleared or replaced here: writers
+        holding an older in-memory copy (dashboard, pick UI, review loop) would
+        otherwise drop or roll back the UUID of a paid production that
+        ``podcast produce`` (or ``produce --restart``) saved in the meantime,
+        or forget a superseded production that still has to be cleaned up.
+        Only :meth:`set_auphonic_production_uuid` and
+        :meth:`update_auphonic_productions` change them.
         """
         with self._state_lock():
-            stored = self._stored_auphonic_production_uuid()
-            if stored is not None and workspace.auphonic_production_uuid != stored:
-                workspace = workspace.model_copy(update={"auphonic_production_uuid": stored})
+            stored = self._stored_auphonic_fields()
+            changed = {key: value for key, value in stored.items() if getattr(workspace, key) != value}
+            if changed:
+                workspace = workspace.model_copy(update=changed)
             self._write_state_unlocked(workspace)
 
-    def set_auphonic_production_uuid(self, production_uuid: str, *, default: EpisodeWorkspace) -> EpisodeWorkspace:
-        """Record ``production_uuid`` on the current on-disk state (``default`` when none exists)."""
+    def set_auphonic_production_uuid(
+        self,
+        production_uuid: str,
+        *,
+        default: EpisodeWorkspace,
+        superseded_reason: str | None = None,
+    ) -> EpisodeWorkspace:
+        """Record the new production ``production_uuid`` as the current one.
+
+        Works on the current on-disk state (``default`` when none exists). The
+        previously stored production stays in the history as superseded, with
+        ``superseded_reason``.
+        """
+        return self.update_auphonic_productions(
+            lambda workspace: record_new_production(workspace, production_uuid, reason=superseded_reason),
+            default=default,
+        )
+
+    def update_auphonic_productions(
+        self,
+        update: Callable[[EpisodeWorkspace], EpisodeWorkspace],
+        *,
+        default: EpisodeWorkspace,
+    ) -> EpisodeWorkspace:
+        """Apply ``update`` to the on-disk state (``default`` when none exists) under the state lock."""
         with self._state_lock():
             current = self.read_state() if self.layout.state_json.exists() else default
-            updated = current.model_copy(update={"auphonic_production_uuid": production_uuid})
+            updated = EpisodeWorkspace.model_validate(update(current).model_dump())
             self._write_state_unlocked(updated)
             return updated
 
