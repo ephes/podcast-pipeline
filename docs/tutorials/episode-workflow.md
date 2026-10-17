@@ -1,4 +1,4 @@
-# Episode workflow: init → ingest → draft → review → pick → produce
+# Episode workflow: init → ingest → draft → review → pick → produce → cms-draft
 
 This guide ties together the MVP pipeline steps for a single episode and shows where each step writes in the
 workspace.
@@ -341,6 +341,124 @@ the audiogram video, metadata such as `year` was missing, chapters changed), `--
 Interrupted output downloads remove partial temporary files and preserve an existing destination.
 Stream and filesystem failures surface as `AuphonicApiError`, so the production can be retried.
 
+## 7. Create the episode draft on the website (cms-draft)
+
+`podcast cms-draft` creates (or updates) the episode page as an unpublished **draft** on a
+[django-cast](https://github.com/ephes/django-cast) site such as python-podcast.de, through django-cast's editor API.
+It replaces the manual steps of uploading the MP3, creating the episode and pasting the copy into Wagtail. It never
+publishes; `podcast cms-publish` does that after a confirmation.
+
+Configure the site once in the global config (`~/.config/podcast-pipeline/config.yaml`; see
+`reference/configuration.md` for every key) and put the API token into the environment:
+
+```yaml
+cms:
+  base_url: https://python-podcast.de/
+  token_env: PYTHON_PODCAST_API_TOKEN
+  parent_id: 120              # the podcast page; optional when the token sees exactly one podcast
+  audio_collection: 1
+  detail_intro_html: >-
+    <h2>Shownotes</h2><p>Unsere E-Mail für Fragen, Anregungen &amp; Kommentare:
+    <a href="mailto:hallo@python-podcast.de">hallo@python-podcast.de</a></p>
+  host_links:
+    Jochen: https://fedi.wersdoerfer.de/@jochen
+    Dominik: https://mastodon.social/@oryon_dominik
+    Johannes: https://mastodon.world/@shezi
+  contributors:               # host name -> django-cast Contributor slug (role host), or {slug, role}
+    Jochen: jochen
+    Dominik: dominik
+    Johannes: johannes
+```
+
+```bash
+export PYTHON_PODCAST_API_TOKEN=...                      # DRF token of a user with Wagtail admin access
+podcast cms-draft --workspace ./workspaces/pp_73 --dry-run   # print the upload and episode payloads, no API call
+podcast cms-draft --workspace ./workspaces/pp_73             # upload the MP3, create or update the draft
+podcast cms-publish --workspace ./workspaces/pp_73           # publish after checking the preview (asks first)
+```
+
+What `cms-draft` sends:
+
+- **Audio**: one `POST api/editor/media/audios/` with the Auphonic MP3 (`auphonic/outputs/<output_basename>.mp3`,
+  `output_basename` defaulting to `episode_id`; set `cms.audio_file` in `episode.yaml` to upload another file), the
+  episode title as `title`, `subtitle_auphonic` as `subtitle`, `auphonic.chapters` (or the chapters in `state.json`)
+  as `chaptermarks` lines `HH:MM:SS Title`, `cms.audio_collection` as `collection`, and
+  `transcript_diarization_mode` (`cms.transcript_diarization`, default `enabled`) when the site accepts it.
+  django-cast accepts exactly one file per upload.
+- **Episode**: `POST api/editor/episodes/` with the podcast page as `parent`, `title` (`title_detail`), `slug`,
+  `seo_title` (`title_seo`), `search_description` (`summary_short`), `tags` (`cms_tags`), `keywords` (the
+  `itunes_keywords`, comma-separated), `explicit` (`cms.explicit`, default 2 = no) and `podcast_audio`. The overview is
+  the selected description as HTML without its leading title heading, followed by an `audio` block for the uploaded
+  Audio: without that block no player renders on the page. Hosts of the episode (`hosts` in `episode.yaml`) are linked
+  to their `cms.host_links` profile at their first unlinked mention; links already in the selected description (host
+  links, inline topic links) are kept as they are. The detail section is `cms.detail_intro_html` followed by the
+  selected shownotes.
+- **Contributors**: the episode's `hosts`, mapped through `cms.contributors` to django-cast Contributor slugs, once the
+  editor API accepts an episode `contributors` field (see below).
+- **Transcript**: Voxhelm transcript generation, but only once diarization is enabled on the Audio and the
+  contributors are set, so the transcript gets speaker labels.
+- It prints the Wagtail preview and edit URLs, says plainly that nothing was published, and ends with the numbered
+  list of manual steps that remain, in the order to do them (or "No manual steps remain.").
+
+Re-running it updates the same draft instead of creating a second one:
+
+- The episode and Audio ids are stored in `cms/draft.json` (per `cms.base_url`), so the draft is found again even
+  after the slug changed. Without that file the draft is looked up with `GET api/editor/posts/?parent=<id>&slug=<slug>`.
+- The update is a `PATCH api/editor/episodes/<id>/` with the draft's `latest_revision_id` as `base_revision_id` and
+  `require_unpublished: true`. It sends every field listed above again, so a re-run replaces edits made to them in
+  Wagtail with the workspace copy (make lasting changes in the workspace, or stop re-running `cms-draft` once you
+  edit in Wagtail). django-cast refuses the update when the draft changes between reading and writing it (re-run) and
+  when the episode is already live; `cms-draft` never changes a published episode.
+- The Audio is reused: an Audio uploaded by a run whose episode request then failed (stored in `cms/draft.json`
+  until it is attached), else the draft's `podcast_audio`. The editor API cannot change an Audio, so its title,
+  subtitle, chapter marks and file stay as uploaded. `--new-audio` uploads the file again as a new Audio and points
+  the draft at it; once the draft uses it, `cms-draft` says which old Audio to delete in Wagtail.
+- Every run reads the Audio from the editor audio list (paged by number on the configured site) and checks what is
+  still missing: further formats, diarization mode. The steps for them are listed again until they are done. The
+  transcript of a new Audio stays pending in `cms/draft.json` until it is started or listed as a manual step, so a
+  run that failed after the upload does not lose it.
+
+Limitations of the current django-cast editor API. `cms-draft` detects each missing capability on every run, uses
+the endpoint as soon as a django-cast release offers it, and until then lists the manual step:
+
+1. **Further audio formats.** There is no endpoint to add files to an existing Audio, so the M4A, Ogg Vorbis and Opus
+   outputs next to the MP3 must be added in the Wagtail audio editor (URL and file paths are printed). `cms-draft`
+   asks `OPTIONS api/editor/media/audios/<id>/` whether `PATCH` is allowed; once it is, each format goes there as its
+   own multipart request (field `m4a`/`oga`/`opus`).
+2. **Diarization mode.** Speaker labels need `transcript_diarization_mode` = Enabled on the Audio. The upload API
+   rejects `enabled` today, and `inherit` follows the site's Voxhelm settings (on python-podcast.de these currently
+   switch diarization off even though the environment enables it). Before uploading, `cms-draft` probes with a
+   file-less upload request (it creates nothing): if `enabled` is accepted it is sent with the upload; otherwise the
+   Audio is uploaded with the site default and the mode is set with the audio `PATCH` above, or listed as "Set
+   Transcript diarization mode to Enabled" in the audio editor. The Audio's current mode is read from the editor
+   audio list on every run, so a mode set by hand counts, and a mode set through the API counts only when the
+   response reports it. When the Audio is not in the list, checking its formats and its mode are manual steps
+   (nothing is uploaded blindly).
+3. **Contributors.** The editor API cannot set episode contributors yet; Voxhelm uses them for the speaker count and
+   the known speakers. `cms-draft` sends `contributors: [{"slug": ..., "role": "host"|"guest"}]` in a follow-up
+   `PATCH` once episode responses contain a `contributors` field; until then it lists the contributors to add in the
+   episode editor. The contributors are confirmed from the `PATCH` response; a response without them is a manual
+   step too. Hosts without a `cms.contributors` entry, and an `episode.yaml` without `hosts`, are always a manual
+   step (add the entries to automate it; guests go into `hosts` and get a `cms.contributors` entry with
+   `role: guest` in `episode.yaml`).
+4. **Transcript.** There is no editor endpoint to start Voxhelm transcript generation yet. `cms-draft` probes
+   `OPTIONS api/editor/episodes/<id>/transcript/` and, once `POST` is allowed, enqueues the transcript of a new
+   Audio (`--transcript` also requests it for a reused Audio) - but only when the Audio reports diarization mode
+   Enabled and the contributors are confirmed. Otherwise the last manual step is "Generate transcript" in the episode
+   editor, after the steps above; when the endpoint exists, the transcript stays pending and a re-run starts it once
+   the steps are done.
+
+`podcast cms-publish` finds the same draft, shows its title, slug, status, Audio and preview URL, asks for
+confirmation (`--yes` skips the question) and publishes it with `POST api/editor/episodes/<id>/publish/` and the
+draft's revision in `If-Match`, so a revision edited after the summary was shown is not published. The token needs the
+`publish` scope if it is scoped.
+
+Security: the token is read from the environment variable named by `cms.token_env` (default
+`PODCAST_PIPELINE_CMS_TOKEN`) and sent as `Authorization: Token <key>`. `cms.base_url` must be `https://`; every
+request goes to it, and redirects are never followed (a redirect fails the run), so the token is never sent anywhere
+else. `--dry-run` neither reads the token nor calls the site. Concurrent `cms-draft`/`cms-publish` runs for the same
+workspace are refused (`cms/.cms.lock`).
+
 ## Local web UIs (pick --web, dashboard)
 
 `podcast pick --web` and `podcast dashboard` serve a local UI on `http://127.0.0.1:<random port>/`. Both accept only
@@ -398,6 +516,8 @@ ep_001/
   auphonic/
     downloads/
     outputs/
+  cms/
+    draft.json        # django-cast episode and Audio ids (podcast cms-draft)
 ```
 
 ## Copy/paste HTML into Wagtail

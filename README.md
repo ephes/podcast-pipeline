@@ -47,6 +47,23 @@ explicit opt-in (`auphonic.mode: single_track`). Credentials: `AUPHONIC_API_KEY`
 `AUPHONIC_PASSWORD`. Details: `docs/tutorials/episode-workflow.md` ("Produce with Auphonic") and
 `docs/decisions/auphonic-multitrack.md`.
 
+## Episode draft on django-cast
+
+`podcast cms-draft --workspace <ep>` creates or updates the episode page as an unpublished draft on a django-cast site
+(for example python-podcast.de) through django-cast's editor API: it uploads the Auphonic MP3 as an Audio (title,
+subtitle, chapter marks), creates the episode with the selected copy (overview = description plus an audio player
+block, detail = shownotes), links the hosts, and prints the Wagtail preview and edit URLs. Re-runs update the same
+draft (ids in `cms/draft.json`) and reuse the Audio; `--dry-run` prints the payloads without the token. It never
+publishes: `podcast cms-publish` does that after a confirmation. Configure `cms.base_url` (https only), the podcast
+page, the token's environment variable and the host → contributor mapping in the global config. The draft is meant
+to end with a Voxhelm transcript with speaker labels: the Audio gets diarization mode Enabled and the episode its
+contributors before the transcript is started. django-cast's API cannot yet add further formats to an Audio, upload
+with diarization Enabled, set contributors or start a transcript, so the command ends with a numbered list of the
+remaining Wagtail steps in order (M4A/Ogg/Opus, diarization mode, contributors, "Generate transcript") and uses each
+endpoint automatically once django-cast offers it. Details:
+`docs/tutorials/episode-workflow.md` ("Create the episode draft on the website"), `docs/reference/configuration.md`
+and `docs/decisions/cms-draft.md`.
+
 ## Local web UIs
 
 `podcast dashboard` and `podcast pick --web` listen on `127.0.0.1` only and reject requests from other origins or

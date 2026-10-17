@@ -347,6 +347,65 @@ def produce(
 
 
 @app.command()
+def cms_draft(
+    *,
+    workspace: Annotated[
+        Path,
+        typer.Option(
+            exists=True,
+            file_okay=False,
+            help="Episode workspace directory (default: current directory).",
+        ),
+    ] = Path("."),
+    dry_run: Annotated[
+        bool,
+        typer.Option(help="Print the audio upload and episode payloads without loading the token or calling the API."),
+    ] = False,
+    new_audio: Annotated[
+        bool,
+        typer.Option(
+            help=(
+                "Upload the audio file again as a new Audio even if the draft already has one "
+                "(the API cannot change an existing Audio)."
+            ),
+        ),
+    ] = False,
+    transcript: Annotated[
+        bool,
+        typer.Option(
+            help="Also start transcript generation when the Audio is reused (it starts after every new upload).",
+        ),
+    ] = False,
+) -> None:
+    """Create or update the episode draft on a django-cast site through its editor API (never publishes)."""
+    from podcast_pipeline.entrypoints.cms_draft import run_cms_draft
+
+    run_cms_draft(workspace=workspace, dry_run=dry_run, new_audio=new_audio, transcript=transcript)
+
+
+@app.command()
+def cms_publish(
+    *,
+    workspace: Annotated[
+        Path,
+        typer.Option(
+            exists=True,
+            file_okay=False,
+            help="Episode workspace directory (default: current directory).",
+        ),
+    ] = Path("."),
+    yes: Annotated[
+        bool,
+        typer.Option("--yes", help="Publish without asking for confirmation."),
+    ] = False,
+) -> None:
+    """Publish the episode draft created by `podcast cms-draft` after a confirmation."""
+    from podcast_pipeline.entrypoints.cms_draft import run_cms_publish
+
+    run_cms_publish(workspace=workspace, yes=yes)
+
+
+@app.command()
 def summarize(
     *,
     workspace: Annotated[
