@@ -7,7 +7,7 @@ goes through ``httpx.MockTransport``.
 from __future__ import annotations
 
 import json
-from collections.abc import Callable, Iterator
+from collections.abc import AsyncIterator, Callable, Iterator
 from pathlib import Path
 from typing import Any
 
@@ -1154,10 +1154,14 @@ def test_default_client_keeps_environment_proxy_support(monkeypatch: pytest.Monk
         assert any(pattern.matches(httpx.URL("https://auphonic.com/api")) for pattern in mounts)
 
 
-class _InterruptedDownload(httpx.SyncByteStream):
+class _InterruptedDownload(httpx.SyncByteStream, httpx.AsyncByteStream):
     def __iter__(self) -> Iterator[bytes]:
         yield b"partial"
         raise httpx.ReadError("stream interrupted")
+
+    async def __aiter__(self) -> AsyncIterator[bytes]:
+        for chunk in self:
+            yield chunk
 
 
 def test_interrupted_download_cleans_temp_and_preserves_destination(tmp_path: Path) -> None:
@@ -1224,7 +1228,7 @@ def test_successful_download_replaces_once(tmp_path: Path, monkeypatch: pytest.M
         assert client.download_outputs(
             [auphonic_api.AuphonicOutputFile(url=f"{BASE}/audio", filename="ep.mp3")], tmp_path
         ) == (dest,)
-    assert replacements == [dest]
+    assert [p for p in replacements if p == dest] == [dest]
     assert dest.read_bytes() == b"new"
     assert list(tmp_path.iterdir()) == [dest]
 
@@ -1240,3 +1244,55 @@ def test_download_directory_failure_uses_api_error(tmp_path: Path) -> None:
             )
     assert isinstance(error.value.__cause__, OSError)
     assert output_dir.read_bytes() == b"existing"
+
+
+@pytest.mark.parametrize("fail_second", [False, True])
+def test_produce_marks_downloaded_only_after_complete_set(
+    tmp_path: Path,
+    fake_api: Callable[[list[tuple[int, str]]], _FakeAuphonic],
+    monkeypatch: pytest.MonkeyPatch,
+    fail_second: bool,
+) -> None:
+    fake = fake_api([(3, "Done")])
+    production = fake._production
+    dispatch = fake.recorder._handler
+
+    def production_with_two_outputs(uuid: str, code: int, name: str) -> dict[str, Any]:
+        data = production(uuid, code, name)
+        if code == 3:
+            data["output_files"].append({"download_url": "https://cdn.test/second", "filename": "ep.ogg"})
+        return data
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/second":
+            if fail_second:
+                return httpx.Response(200, stream=_InterruptedDownload())
+            return httpx.Response(200, content=b"ogg-bytes")
+        return dispatch(request)
+
+    monkeypatch.setattr(fake, "_production", production_with_two_outputs)
+    monkeypatch.setattr(fake.recorder, "_handler", handler)
+    workspace = _workspace(tmp_path)
+    store = EpisodeWorkspaceStore(workspace)
+    output_dir = store.layout.auphonic_outputs_dir
+    output_dir.mkdir(parents=True)
+    for filename in ["ep.mp3", "ep.ogg"]:
+        (output_dir / filename).write_bytes(b"old")
+    if fail_second:
+        with pytest.raises(typer.BadParameter, match="download"):
+            produce.run_produce(workspace=workspace, dry_run=False)
+        assert {p.name: p.read_bytes() for p in output_dir.iterdir()} == {"ep.mp3": b"old", "ep.ogg": b"old"}
+        assert store.read_state().auphonic_productions[-1].outputs_downloaded_at is None
+    else:
+        original_mark = produce.mark_outputs_downloaded
+
+        def mark(state: EpisodeWorkspace, uuid: str) -> EpisodeWorkspace:
+            assert {p.name: p.read_bytes() for p in output_dir.iterdir()} == {
+                "ep.mp3": b"mp3-bytes",
+                "ep.ogg": b"ogg-bytes",
+            }
+            return original_mark(state, uuid)
+
+        monkeypatch.setattr(produce, "mark_outputs_downloaded", mark)
+        produce.run_produce(workspace=workspace, dry_run=False)
+        assert store.read_state().auphonic_productions[-1].outputs_downloaded_at is not None
