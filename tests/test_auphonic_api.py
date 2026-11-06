@@ -6,7 +6,6 @@ goes through ``httpx.MockTransport``.
 
 from __future__ import annotations
 
-import itertools
 import json
 from collections.abc import Callable, Iterator
 from pathlib import Path
@@ -628,23 +627,32 @@ def test_rerun_start_failure_points_at_update(tmp_path: Path) -> None:
         client.rerun_production(_stored(), _rerun_payload(tmp_path))
 
 
+def _poll_clock(monkeypatch: pytest.MonkeyPatch) -> None:
+    now = 0.0
+
+    def sleep(seconds: float) -> None:
+        nonlocal now
+        now += seconds
+
+    monkeypatch.setattr(auphonic_api.time, "monotonic", lambda: now)
+    monkeypatch.setattr(auphonic_api.time, "sleep", sleep)
+
+
 def test_rerun_polling_ignores_the_previous_done_until_it_runs(monkeypatch: pytest.MonkeyPatch) -> None:
-    ticks = itertools.count()
-    monkeypatch.setattr(auphonic_api.time, "monotonic", lambda: float(next(ticks)))
+    _poll_clock(monkeypatch)
     statuses = [(3, "Done"), (15, "Production Changed"), (4, "Audio Processing"), (3, "Done")]
     recorder = _Recorder(_polling_handler(statuses))
     with _client(recorder) as client:
-        production = client.wait_for_production("u1", poll_interval=0, timeout_seconds=60, rerun_grace_seconds=30)
+        production = client.wait_for_production("u1", poll_interval=0.001, timeout_seconds=60, rerun_grace_seconds=30)
     assert production.status == 3
     assert len(recorder.requests) == 4
 
 
 def test_rerun_polling_gives_up_on_a_stale_done(monkeypatch: pytest.MonkeyPatch) -> None:
-    ticks = iter([0.0, 10.0, 20.0, 40.0])
-    monkeypatch.setattr(auphonic_api.time, "monotonic", lambda: next(ticks))
-    recorder = _Recorder(_polling_handler([(3, "Done")] * 3))
+    _poll_clock(monkeypatch)
+    recorder = _Recorder(_polling_handler([(3, "Done")] * 5))
     with _client(recorder) as client, pytest.raises(AuphonicApiError, match="still reports its previous run"):
-        client.wait_for_production("u1", poll_interval=0, timeout_seconds=600, rerun_grace_seconds=30)
+        client.wait_for_production("u1", poll_interval=10, timeout_seconds=600, rerun_grace_seconds=30)
 
 
 # --- polling ------------------------------------------------------------------
@@ -665,7 +673,7 @@ def test_polling_walks_through_every_in_progress_status_until_done() -> None:
     statuses = [*sorted(RUNNING_STATUSES.items()), (3, "Done")]
     recorder = _Recorder(_polling_handler(statuses))
     with _client(recorder) as client:
-        production = client.wait_for_production("u1", poll_interval=0, timeout_seconds=60)
+        production = client.wait_for_production("u1", poll_interval=0.001, timeout_seconds=60)
     assert production.status == 3
     assert len(recorder.requests) == len(statuses)
 
@@ -674,7 +682,7 @@ def test_polling_walks_through_every_in_progress_status_until_done() -> None:
 def test_polling_raises_on_error_statuses(code: int, name: str) -> None:
     recorder = _Recorder(_polling_handler([(4, "Audio Processing"), (code, name)]))
     with _client(recorder) as client, pytest.raises(AuphonicProductionFailedError, match="--restart") as excinfo:
-        client.wait_for_production("u1", poll_interval=0, timeout_seconds=60)
+        client.wait_for_production("u1", poll_interval=0.001, timeout_seconds=60)
     assert name in str(excinfo.value)
 
 
@@ -683,20 +691,19 @@ def test_polling_raises_for_unstarted_and_changed_productions() -> None:
         _client(_Recorder(_polling_handler([(10, "Production Not Started Yet")]))) as client,
         pytest.raises(AuphonicProductionFailedError, match="never started"),
     ):
-        client.wait_for_production("u1", poll_interval=0, timeout_seconds=60)
+        client.wait_for_production("u1", poll_interval=0.001, timeout_seconds=60)
     with (
         _client(_Recorder(_polling_handler([(15, "Production Changed")]))) as client,
         pytest.raises(AuphonicProductionFailedError, match="changed after it finished"),
     ):
-        client.wait_for_production("u1", poll_interval=0, timeout_seconds=60)
+        client.wait_for_production("u1", poll_interval=0.001, timeout_seconds=60)
 
 
 def test_polling_times_out(monkeypatch: pytest.MonkeyPatch) -> None:
-    ticks = iter([0.0, 5.0, 11.0])
-    monkeypatch.setattr(auphonic_api.time, "monotonic", lambda: next(ticks))
+    _poll_clock(monkeypatch)
     recorder = _Recorder(lambda _r: _ok(_production("u1", 4, "Audio Processing")))
     with _client(recorder) as client, pytest.raises(AuphonicApiError, match="timed out"):
-        client.wait_for_production("u1", poll_interval=0, timeout_seconds=10)
+        client.wait_for_production("u1", poll_interval=6, timeout_seconds=10)
     assert len(recorder.requests) == 2
 
 
@@ -1069,12 +1076,11 @@ def test_run_produce_update_dry_run_prints_the_update_without_api_calls(
 
 
 def test_not_started_is_tolerated_during_grace_period(monkeypatch: pytest.MonkeyPatch) -> None:
-    ticks = iter([0.0, 1.0, 2.0, 3.0])
-    monkeypatch.setattr(auphonic_api.time, "monotonic", lambda: next(ticks))
+    _poll_clock(monkeypatch)
     recorder = _Recorder(_polling_handler([(10, "Production Not Started Yet"), (1, "Waiting"), (3, "Done")]))
     with _client(recorder) as client:
         production = client.wait_for_production(
-            "u1", poll_interval=0, timeout_seconds=60, not_started_grace_seconds=30
+            "u1", poll_interval=0.001, timeout_seconds=60, not_started_grace_seconds=30
         )
     assert production.status == 3
 

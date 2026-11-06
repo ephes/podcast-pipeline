@@ -27,7 +27,10 @@ Two more are detected from the API's answers instead:
 
 from __future__ import annotations
 
+import asyncio
+import math
 import os
+import time
 from collections.abc import Mapping
 from typing import Any
 
@@ -46,6 +49,8 @@ EPISODE_TRANSCRIPT_PATH = "api/editor/episodes/{id}/transcript/"
 
 _AUDIO_CONTENT_TYPES = {"mp3": "audio/mpeg", "m4a": "audio/mp4", "oga": "audio/ogg", "opus": "audio/ogg"}
 _AUDIO_PAGE_SIZE = 200
+_MAX_CONTROL_BYTES = 8 * 1024 * 1024
+_MAX_ERROR_CHARS = 2000
 
 
 class CmsApiError(RuntimeError):
@@ -74,20 +79,25 @@ class DjangoCastClient:
         *,
         timeout_seconds: float = 60.0,
         upload_timeout_seconds: float = 1800.0,
-        transport: httpx.BaseTransport | None = None,
+        response_timeout_seconds: float = 60.0,
+        transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
+        if not math.isfinite(response_timeout_seconds) or response_timeout_seconds <= 0:
+            raise CmsApiError("response_timeout_seconds must be finite and positive")
+        self._response_timeout = response_timeout_seconds
         validate_base_url(base_url)
         self.base_url = base_url.rstrip("/") + "/"
         self._upload_timeout = upload_timeout_seconds
-        self._client = httpx.Client(
-            timeout=timeout_seconds,
-            follow_redirects=False,
-            transport=transport,
-            headers={"Authorization": f"Token {token}", "Accept": "application/json"},
-        )
+        self._transport = transport
+        self._timeout = timeout_seconds
+        self._headers = {
+            "Authorization": f"Token {token}",
+            "Accept": "application/json",
+            "Accept-Encoding": "identity",
+        }
 
     def close(self) -> None:
-        self._client.close()
+        """Connections are owned and closed by each bounded request."""
 
     def __enter__(self) -> DjangoCastClient:
         return self
@@ -227,18 +237,50 @@ class DjangoCastClient:
         return _expect_dict(_checked(response, method, path), method, path)
 
     def _send(self, method: str, path: str, **kwargs: Any) -> httpx.Response:
+        return asyncio.run(self._send_async(method, path, **kwargs))
+
+    async def _send_async(self, method: str, path: str, **kwargs: Any) -> httpx.Response:
         url = self.base_url + path
+        # The upload can have a longer request budget; the response body always has
+        # its own control-payload deadline. asyncio cancellation also interrupts a stalled read.
+        request_timeout = kwargs.pop("timeout", self._timeout)
         try:
-            response = self._client.request(method, url, **kwargs)
+            async with (
+                httpx.AsyncClient(
+                    timeout=request_timeout, follow_redirects=False, transport=self._transport, headers=self._headers
+                ) as client,
+            ):
+                async with client.stream(method, url, **kwargs) as response:
+                    if response.is_redirect:
+                        location = response.headers.get("Location", "?")[:300]
+                        raise CmsApiError(
+                            f"{method} {url} was redirected to {location}; redirects are not followed "
+                            "so the API token stays on the configured site. "
+                            "Check cms.base_url (scheme, host, trailing path)."
+                        )
+                    async with asyncio.timeout(self._response_timeout):
+                        deadline = time.monotonic() + self._response_timeout
+                        payload = bytearray()
+                        if response.headers.get("Content-Encoding", "identity").lower() != "identity":
+                            raise CmsApiError(f"{method} {path}: unsupported Content-Encoding")
+                        async for chunk in response.aiter_bytes():
+                            if time.monotonic() >= deadline:
+                                raise CmsApiError(f"{method} {path}: response deadline exceeded")
+                            if len(payload) + len(chunk) > _MAX_CONTROL_BYTES:
+                                raise CmsApiError(f"{method} {path}: response byte limit exceeded")
+                            payload.extend(chunk)
+                        if time.monotonic() >= deadline:
+                            raise CmsApiError(f"{method} {path}: response deadline exceeded")
+                        return httpx.Response(
+                            response.status_code,
+                            headers=response.headers,
+                            content=bytes(payload),
+                            request=response.request,
+                        )
+        except TimeoutError as exc:
+            raise CmsApiError(f"{method} {path}: response deadline exceeded") from exc
         except httpx.HTTPError as exc:
             raise CmsApiError(f"{method} {url} failed: {exc}") from exc
-        if response.is_redirect:
-            location = response.headers.get("Location", "?")
-            raise CmsApiError(
-                f"{method} {url} was redirected to {location}; redirects are not followed so the API token stays "
-                "on the configured site. Check cms.base_url (scheme, host, trailing path)."
-            )
-        return response
 
 
 def _checked(response: httpx.Response, method: str, path: str) -> Any:
@@ -271,20 +313,22 @@ def _error(response: httpx.Response, method: str, path: str) -> CmsApiError:
     if code == "revision_conflict":
         return CmsRevisionConflictError(
             f"{prefix}: the draft changed since it was read (current revision "
-            f"{body.get('current_revision_id')}). Check the edit in Wagtail; a re-run "
+            f"{str(body.get('current_revision_id'))[:100]}). Check the edit in Wagtail; a re-run "
             "replaces it with the workspace copy."
         )
-    message = f"{prefix}: {code}" if code else prefix
+    message = f"{prefix}: {str(code)[:_MAX_ERROR_CHARS]}" if code else prefix
     detail = body.get("detail")
     if detail:
-        message += f": {detail}"
+        message += f": {str(detail)[:_MAX_ERROR_CHARS]}"
     errors = body.get("errors")
     if isinstance(errors, Mapping):
         for field, items in errors.items():
             for item in items if isinstance(items, list) else [items]:
                 item_message = item.get("message") if isinstance(item, Mapping) else item
-                message += f"\n  {field}: {item_message}"
-    return CmsApiError(message)
+                message += f"\n  {str(field)[:200]}: {str(item_message)[:_MAX_ERROR_CHARS]}"
+                if len(message) >= _MAX_ERROR_CHARS:
+                    return CmsApiError(message[:_MAX_ERROR_CHARS])
+    return CmsApiError(message[:_MAX_ERROR_CHARS])
 
 
 def audio_file_label(audio_file: AudioFile) -> str:
