@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import logging
 import math
 import os
 import re
+import shutil
 import tempfile
 import time
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import AsyncIterable, Callable, Mapping, Sequence
 from contextlib import ExitStack
 from dataclasses import dataclass
 from pathlib import Path
@@ -19,6 +21,10 @@ import httpx
 
 class AuphonicApiError(RuntimeError):
     pass
+
+
+class _OutputRollbackError(AuphonicApiError):
+    """Publication rollback failed; its staging directory must be retained."""
 
 
 class AuphonicProductionFailedError(AuphonicApiError):
@@ -156,9 +162,29 @@ class AuphonicClient:
         *,
         timeout_seconds: float = 300.0,
         transport: httpx.BaseTransport | None = None,
+        download_max_bytes: int | None = None,
+        download_timeout_seconds: float | None = None,
     ) -> None:
         if transport is not None and not isinstance(transport, httpx.AsyncBaseTransport):
             raise AuphonicApiError("Auphonic transport must support both sync and async requests")
+        try:
+            byte_limit = (
+                int(os.environ.get("PODCAST_PIPELINE_DOWNLOAD_MAX_BYTES", str(4 * 1024**3)))
+                if download_max_bytes is None
+                else download_max_bytes
+            )
+            download_timeout = (
+                float(os.environ.get("PODCAST_PIPELINE_DOWNLOAD_TIMEOUT_SECONDS", "3600"))
+                if download_timeout_seconds is None
+                else download_timeout_seconds
+            )
+        except ValueError as exc:
+            raise AuphonicApiError("Invalid Auphonic download byte/time budget") from exc
+        if isinstance(byte_limit, bool) or not isinstance(byte_limit, int) or byte_limit <= 0:
+            raise AuphonicApiError("download_max_bytes must be a positive integer")
+        _positive_finite("download_timeout_seconds", download_timeout)
+        self._download_max_bytes = byte_limit
+        self._download_timeout_seconds = download_timeout
         self._timeout_seconds = timeout_seconds
         self._credentials = credentials
         self._transport = transport
@@ -416,18 +442,53 @@ class AuphonicClient:
         return ()
 
     def download_outputs(self, outputs: Sequence[AuphonicOutputFile], output_dir: Path) -> tuple[Path, ...]:
+        staging: Path | None = None
+        keep_staging = False
         try:
             output_dir.mkdir(parents=True, exist_ok=True)
+            staging = Path(tempfile.mkdtemp(dir=output_dir, prefix=".outputs-"))
+            incoming = staging / "incoming"
+            incoming.mkdir()
+            filenames = asyncio.run(self._stage_outputs(outputs, incoming))
+            _publish_outputs(incoming, output_dir, filenames)
+            return tuple(output_dir / filename for filename in filenames)
+        except _OutputRollbackError:
+            keep_staging = True
+            raise
         except OSError as exc:
-            raise AuphonicApiError(f"Failed to prepare download directory {output_dir}: {exc}") from exc
+            raise AuphonicApiError(
+                f"Failed to prepare download directory or publish outputs in {output_dir}: {exc}"
+            ) from exc
+        finally:
+            if staging is not None and not keep_staging:
+                try:
+                    shutil.rmtree(staging)
+                except OSError as exc:
+                    logging.getLogger(__name__).warning(
+                        "Could not remove download staging directory %s: %s", staging, exc
+                    )
+
+    async def _stage_outputs(self, outputs: Sequence[AuphonicOutputFile], incoming: Path) -> list[str]:
+        assert self._transport is None or isinstance(self._transport, httpx.AsyncBaseTransport)
         used: set[str] = set()
-        downloaded: list[Path] = []
-        for idx, output in enumerate(outputs, start=1):
-            filename = _unique_filename(output.filename, used, idx)
-            dest = output_dir / filename
-            _download_file(self._client, output.url, dest)
-            downloaded.append(dest)
-        return tuple(downloaded)
+        filenames: list[str] = []
+        async with httpx.AsyncClient(
+            timeout=min(self._timeout_seconds, self._download_timeout_seconds),
+            transport=self._transport,
+            event_hooks={"request": [self._authorize_async]},
+            headers={"Accept-Encoding": "identity"},
+        ) as client:
+            for idx, output in enumerate(outputs, start=1):
+                filename = _unique_filename(output.filename, used, idx)
+                await _download_file(
+                    client,
+                    output.url,
+                    incoming / filename,
+                    max_bytes=self._download_max_bytes,
+                    timeout_seconds=self._download_timeout_seconds,
+                )
+                filenames.append(filename)
+        return filenames
 
 
 def _positive_finite(name: str, value: float) -> None:
@@ -840,34 +901,81 @@ def _filename_from_url(url: str) -> str | None:
 
 def _unique_filename(filename: str, used: set[str], idx: int) -> str:
     name = Path(filename).name
-    if not name:
+    if name in {"", ".", ".."}:
         name = f"output_{idx}"
-    if name not in used:
-        used.add(name)
+    if name.casefold() not in used:
+        used.add(name.casefold())
         return name
     stem = Path(name).stem
     suffix = Path(name).suffix
     counter = 2
     while True:
         candidate = f"{stem}_{counter}{suffix}"
-        if candidate not in used:
-            used.add(candidate)
+        if candidate.casefold() not in used:
+            used.add(candidate.casefold())
             return candidate
         counter += 1
 
 
-def _download_file(client: httpx.Client, url: str, dest: Path) -> None:
+async def _download_file(
+    client: httpx.AsyncClient,
+    url: str,
+    dest: Path,
+    *,
+    max_bytes: int,
+    timeout_seconds: float,
+) -> None:
+    deadline = time.monotonic() + timeout_seconds
     try:
-        with client.stream("GET", url) as response:
-            if response.status_code >= 400:
-                raise AuphonicApiError(f"Failed to download {url} (status {response.status_code}).")
-            _atomic_write_stream(dest, response.iter_bytes())
-    except (httpx.HTTPError, OSError) as exc:
-        raise AuphonicApiError(f"Failed to download {url}: {exc}") from exc
+        async with asyncio.timeout(timeout_seconds):
+            request = client.build_request("GET", url)
+            # Follow redirects without buffering their bodies. The origin hook still
+            # authorizes each hop independently and the total deadline covers the chain.
+            for _ in range(client.max_redirects + 1):
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError
+                request.extensions["timeout"] = httpx.Timeout(
+                    min(client.timeout.read or remaining, remaining)
+                ).as_dict()
+                response = await client.send(request, stream=True, follow_redirects=False)
+                try:
+                    if response.is_redirect and response.next_request is not None:
+                        request = response.next_request
+                        continue
+                    _check_download_response(response, max_bytes, dest.name)
+                    await _atomic_write_stream(dest, response.aiter_bytes(), max_bytes=max_bytes, deadline=deadline)
+                    return
+                finally:
+                    await response.aclose()
+            raise AuphonicApiError("Failed to download output: too many redirects")
+    except TimeoutError as exc:
+        raise AuphonicApiError(f"Failed to download {dest.name}: download deadline exceeded") from exc
+    except OSError as exc:
+        raise AuphonicApiError(f"Failed to download {dest.name}: {exc}") from exc
+    except httpx.HTTPError as exc:
+        # Signed URLs and transport exception messages never enter diagnostics.
+        raise AuphonicApiError(f"Failed to download {dest.name}: {type(exc).__name__}") from exc
 
 
-def _atomic_write_stream(path: Path, chunks: Iterable[bytes]) -> None:
+def _check_download_response(response: httpx.Response, max_bytes: int, filename: str) -> None:
+    if response.status_code >= 400:
+        raise AuphonicApiError(f"Failed to download {filename} (status {response.status_code})")
+    if response.headers.get("Content-Encoding", "identity").lower() != "identity":
+        raise AuphonicApiError(f"Failed to download {filename}: unsupported Content-Encoding")
+    length = response.headers.get("Content-Length", "")
+    if length.isdecimal():
+        try:
+            too_large = int(length) > max_bytes
+        except ValueError as exc:
+            raise AuphonicApiError(f"Failed to download {filename}: invalid Content-Length") from exc
+        if too_large:
+            raise AuphonicApiError(f"Failed to download {filename}: byte limit exceeded")
+
+
+async def _atomic_write_stream(path: Path, chunks: AsyncIterable[bytes], *, max_bytes: int, deadline: float) -> None:
     tmp_path: Path | None = None
+    total = 0
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         with tempfile.NamedTemporaryFile(
@@ -878,16 +986,62 @@ def _atomic_write_stream(path: Path, chunks: Iterable[bytes]) -> None:
             suffix=".tmp",
         ) as tmp:
             tmp_path = Path(tmp.name)
-            for chunk in chunks:
-                if not chunk:
-                    continue
+            async for chunk in chunks:
+                if time.monotonic() >= deadline:
+                    raise TimeoutError
+                total += len(chunk)
+                if total > max_bytes:
+                    raise AuphonicApiError(f"Failed to download {path.name}: byte limit exceeded")
                 tmp.write(chunk)
             tmp.flush()
             os.fsync(tmp.fileno())
+        if time.monotonic() >= deadline:
+            raise TimeoutError
         os.replace(tmp_path, path)
     finally:
         if tmp_path is not None:
             try:
                 tmp_path.unlink(missing_ok=True)
-            except OSError:
-                pass
+            except OSError as exc:
+                logging.getLogger(__name__).warning("Could not remove download temporary file %s: %s", tmp_path, exc)
+
+
+def _publish_outputs(incoming: Path, output_dir: Path, filenames: Sequence[str]) -> None:
+    backup = incoming.parent / "previous"
+    backup.mkdir()
+    published: list[str] = []
+    saved: list[str] = []
+    try:
+        for name in filenames:
+            dest = output_dir / name
+            if dest.is_dir() and not dest.is_symlink():
+                raise OSError(f"Refusing to replace directory {dest}")
+            if dest.exists() or dest.is_symlink():
+                os.replace(dest, backup / name)
+                saved.append(name)
+            os.replace(incoming / name, dest)
+            published.append(name)
+    except BaseException:
+        try:
+            _restore_outputs(output_dir, backup, published, saved)
+        except OSError as exc:
+            raise _OutputRollbackError(
+                f"Output publication rollback failed; recovery files retained in {incoming.parent}"
+            ) from exc
+        raise
+
+
+def _restore_outputs(output_dir: Path, backup: Path, published: Sequence[str], saved: Sequence[str]) -> None:
+    errors: list[OSError] = []
+    for name in reversed(published):
+        try:
+            (output_dir / name).unlink()
+        except OSError as exc:
+            errors.append(exc)
+    for name in reversed(saved):
+        try:
+            os.replace(backup / name, output_dir / name)
+        except OSError as exc:
+            errors.append(exc)
+    if errors:
+        raise errors[0]

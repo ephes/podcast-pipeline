@@ -237,3 +237,24 @@ and the final sleep are capped by the remaining budget; the configured per-reque
 
 Injected Auphonic test transports must support both synchronous and asynchronous requests
 (such as `httpx.MockTransport`); CMS test transports must support asynchronous requests.
+
+### Auphonic output download limits and publication
+
+Each output file is limited to 4 GiB and one hour, including redirects, headers and the
+streamed body. Configure `PODCAST_PIPELINE_DOWNLOAD_MAX_BYTES` (positive integer bytes)
+and `PODCAST_PIPELINE_DOWNLOAD_TIMEOUT_SECONDS` (finite positive seconds) before running
+`podcast produce`; invalid values fail before requests or paid starts. These values are
+validated when constructing a client, so invalid values also block `podcast auphonic-cleanup --delete` (listing still works). Library callers can
+instead set `AuphonicClient(download_max_bytes=..., download_timeout_seconds=...)`.
+The byte cap is enforced even without Content-Length. Only identity Content-Encoding is
+accepted; signed download URLs are omitted from download error messages.
+
+All requested outputs download into a private staging directory inside `auphonic/outputs`.
+Only after the entire set succeeds are affected filenames replaced. A download or publication
+failure preserves the previous set and leaves unrelated files alone. Publication uses
+rollback for runtime failures, rather than a crash-atomic multi-file filesystem transaction;
+readers should wait for `produce` to finish. `state.json` records downloaded completion only
+after publication succeeds. If rollback itself fails (for example because the disk becomes
+unwritable), the error identifies the retained staging directory containing recovery files.
+Normal success and successfully rolled-back failures remove the owned staging directory.
+Cleanup failures log the retained path without masking the publication result or original error.
