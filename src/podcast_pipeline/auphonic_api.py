@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import base64
+import math
 import os
 import re
 import tempfile
@@ -155,6 +157,11 @@ class AuphonicClient:
         timeout_seconds: float = 300.0,
         transport: httpx.BaseTransport | None = None,
     ) -> None:
+        if transport is not None and not isinstance(transport, httpx.AsyncBaseTransport):
+            raise AuphonicApiError("Auphonic transport must support both sync and async requests")
+        self._timeout_seconds = timeout_seconds
+        self._credentials = credentials
+        self._transport = transport
         self._base_url = credentials.base_url.rstrip("/")
         self._client = httpx.Client(
             timeout=timeout_seconds,
@@ -307,10 +314,32 @@ class AuphonicClient:
                 "`podcast produce --update`."
             ) from exc
 
-    def fetch_production(self, uuid: str) -> AuphonicProduction:
+    def fetch_production(self, uuid: str, *, timeout_seconds: float | None = None) -> AuphonicProduction:
         url = f"{self._base_url}/production/{uuid}.json"
-        response = _request_json(self._client, "GET", url)
+        if timeout_seconds is None:
+            response = _request_json(self._client, "GET", url)
+        else:
+            response = asyncio.run(self._fetch_with_deadline(url, timeout_seconds))
         return _parse_production(response)
+
+    async def _fetch_with_deadline(self, url: str, seconds: float) -> dict[str, Any]:
+        assert self._transport is None or isinstance(self._transport, httpx.AsyncBaseTransport)
+        try:
+            async with asyncio.timeout(seconds):
+                async with httpx.AsyncClient(
+                    timeout=min(self._timeout_seconds, seconds),
+                    follow_redirects=True,
+                    transport=self._transport,
+                    event_hooks={"request": [self._authorize_async]},
+                ) as client:
+                    return _check_response(await client.get(url))
+        except TimeoutError as exc:
+            raise AuphonicApiError("Auphonic production polling timed out.") from exc
+        except httpx.RequestError as exc:
+            raise AuphonicApiError(f"Auphonic API request failed: {exc}") from exc
+
+    async def _authorize_async(self, request: httpx.Request) -> None:
+        _ApiOriginCredentials(self._credentials)(request)
 
     def delete_production(self, uuid: str) -> None:
         """Delete a production from the Auphonic account (irreversible).
@@ -346,10 +375,15 @@ class AuphonicClient:
         Yet`` status is stale, so polling continues instead of downloading the
         previous run's outputs.
         """
+        _positive_finite("poll_interval", poll_interval)
+        _positive_finite("timeout_seconds", timeout_seconds)
         start = time.monotonic()
+        deadline = start + timeout_seconds
+
         seen_running = False
         while True:
-            production = self.fetch_production(uuid)
+            production = self.fetch_production(uuid, timeout_seconds=_poll_remaining(uuid, deadline, timeout_seconds))
+            _poll_remaining(uuid, deadline, timeout_seconds)
             status = _classify_status(production.status, production.status_string)
             if status == "running":
                 seen_running = True
@@ -368,9 +402,7 @@ class AuphonicClient:
                 status = "running"
             if status != "running":
                 raise AuphonicProductionFailedError(_terminal_message(uuid, status, production))
-            if time.monotonic() - start > timeout_seconds:
-                raise AuphonicApiError(f"Auphonic production {uuid} timed out after {timeout_seconds} seconds.")
-            time.sleep(poll_interval)
+            time.sleep(min(poll_interval, _poll_remaining(uuid, deadline, timeout_seconds)))
 
     def list_output_files(self, uuid: str) -> tuple[AuphonicOutputFile, ...]:
         url = f"{self._base_url}/production/{uuid}/output_files.json"
@@ -396,6 +428,18 @@ class AuphonicClient:
             _download_file(self._client, output.url, dest)
             downloaded.append(dest)
         return tuple(downloaded)
+
+
+def _positive_finite(name: str, value: float) -> None:
+    if not math.isfinite(value) or value <= 0:
+        raise AuphonicApiError(f"{name} must be finite and positive")
+
+
+def _poll_remaining(uuid: str, deadline: float, timeout_seconds: float) -> float:
+    seconds = deadline - time.monotonic()
+    if seconds <= 0:
+        raise AuphonicApiError(f"Auphonic production {uuid} timed out after {timeout_seconds} seconds.")
+    return seconds
 
 
 def _request_json(client: httpx.Client, method: str, url: str, **kwargs: Any) -> dict[str, Any]:

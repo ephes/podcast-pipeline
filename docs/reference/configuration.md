@@ -223,3 +223,17 @@ revision with `read_episode_yaml_with_revision()` and pass `expected_revision` t
 `write_episode_yaml()`. A changed or missing document raises `WorkspaceStoreError`;
 reload and reapply the edit. Writing without a revision only creates a new file.
 Manual editors do not participate in the workspace lock.
+
+### CMS control responses and Auphonic polling
+
+Editor API responses (including upload acknowledgements and errors) are limited to 8 MiB,
+with a 60-second monotonic response-body budget (`DjangoCastClient.response_timeout_seconds`).
+Only identity Content-Encoding is accepted. The response cap is independent of uploaded
+media size. CMS error diagnostics retain at most 2,000 characters.
+
+Auphonic polling requires finite positive `poll_interval` and `timeout_seconds` values.
+One monotonic deadline covers fetches, sleeps and start/rerun grace periods. Fetch timeouts
+and the final sleep are capped by the remaining budget; the configured per-request timeout is never increased; late terminal responses are rejected.
+
+Injected Auphonic test transports must support both synchronous and asynchronous requests
+(such as `httpx.MockTransport`); CMS test transports must support asynchronous requests.
