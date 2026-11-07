@@ -191,6 +191,7 @@ def test_keyboard_panel_navigation(page: Page) -> None:
         page.keyboard.press("Enter" if index % 2 else "Space")
         expect(tabs.nth(index)).to_have_attribute("aria-pressed", "true")
         expect(page.locator(f"#panel-{name}")).to_be_visible()
+        expect(page.get_by_role("region", name=name, exact=True)).to_be_visible()
         assert page.locator(".tab-panel:not([hidden])").count() == 1
     page.keyboard.press("Shift+Tab")
     expect(tabs.nth(3)).to_be_focused()
@@ -282,3 +283,40 @@ def test_composition_enter_does_not_submit(page: Page, asset: str, input_id: str
     control.evaluate("el => el.dispatchEvent(new CompositionEvent('compositionend', {bubbles:true}))")
     control.press("Enter")
     page.wait_for_function("key => server.requests.filter(r => r.key === key).length === 1", arg=key)
+
+
+def test_removed_asset_focus_survives_superseding_refresh(page: Page) -> None:
+    pick(page)
+    page.evaluate("server.holds = ['GET /api/assets/description/notes']")
+    first = page.locator('[data-action="delete-candidate"][data-candidate-id="c1"]')
+    first.focus()
+    first.press("Enter")
+    expect(first).to_have_count(0)
+    last = page.locator('[data-action="delete-candidate"][data-candidate-id="c2"]')
+    last.focus()
+    last.press("Enter")
+    page.wait_for_function("server.pending.length === 1")
+    page.evaluate("void loadAssets()")
+    page.wait_for_function("server.pending.length === 2")
+    page.evaluate("server.pending[1].resolve(response({notes:'Current'}))")
+    expect(page.locator("#pick-asset-heading")).to_have_text("description")
+    expect(page.locator("#pick-asset-heading")).to_be_focused()
+    page.evaluate("server.pending[0].resolve(response({notes:'Stale'}))")
+    expect(page.locator("#pick-asset-heading")).to_be_focused()
+
+
+def test_superseded_tag_read_preserves_current_editor_and_focus(page: Page) -> None:
+    pick(page)
+    page.evaluate("""() => {
+      delete state.assets.find(a => a.asset_id === 'cms_tags').selected_tags;
+      server.holds = ['GET /api/assets/cms_tags/tags'];
+    }""")
+    page.locator('#pick-sidebar [data-asset-id="cms_tags"]').click()
+    page.wait_for_function("server.pending.length === 1")
+    current = page.locator('#pick-sidebar [data-asset-id="title_detail"]')
+    current.click()
+    expect(page.locator("#pick-notes")).to_have_attribute("data-asset-id", "title_detail")
+    page.evaluate("server.pending[0].resolve(response({tags:['Stale tag']}))")
+    expect(page.locator("#pick-notes")).to_have_count(1)
+    expect(page.locator("#pick-tag-input")).to_have_count(0)
+    expect(current).to_be_focused()

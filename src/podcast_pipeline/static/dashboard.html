@@ -259,7 +259,7 @@
   <button type="button" class="tab" id="nav-produce" data-tab="produce" aria-controls="panel-produce" aria-pressed="false">Produce</button>
 </nav>
 <div class="content">
-  <div class="tab-panel active" id="panel-overview" aria-labelledby="nav-overview">
+  <div class="tab-panel active" role="region" id="panel-overview" aria-labelledby="nav-overview">
     <div class="card">
       <h3>Pipeline Status</h3>
       <div class="status-grid" id="status-grid">Loading...</div>
@@ -287,7 +287,7 @@
     </div>
   </div>
 
-  <div class="tab-panel" id="panel-draft" aria-labelledby="nav-draft" hidden>
+  <div class="tab-panel" role="region" id="panel-draft" aria-labelledby="nav-draft" hidden>
     <div class="card">
       <h3>Draft Pipeline</h3>
       <p class="progress-text">Run the full draft pipeline or individual steps.</p>
@@ -304,7 +304,7 @@
     </div>
   </div>
 
-  <div class="tab-panel" id="panel-review" aria-labelledby="nav-review" hidden>
+  <div class="tab-panel" role="region" id="panel-review" aria-labelledby="nav-review" hidden>
     <div class="card">
       <h3>Review Loop</h3>
       <p class="progress-text">Run the Creator/Reviewer loop for an asset.</p>
@@ -327,7 +327,7 @@
     </div>
   </div>
 
-  <div class="tab-panel" id="panel-pick" aria-labelledby="nav-pick" hidden>
+  <div class="tab-panel" role="region" id="panel-pick" aria-labelledby="nav-pick" hidden>
     <div class="pick-container" id="pick-container">
       <nav class="pick-sidebar" id="pick-sidebar"></nav>
       <main class="pick-main" id="pick-main">
@@ -336,7 +336,7 @@
     </div>
   </div>
 
-  <div class="tab-panel" id="panel-produce" aria-labelledby="nav-produce" hidden>
+  <div class="tab-panel" role="region" id="panel-produce" aria-labelledby="nav-produce" hidden>
     <div class="card">
       <h3>Auphonic Production</h3>
       <div class="actions-row">
@@ -374,6 +374,7 @@ const noteDrafts = {};
 const noteSaves = new Set();
 const noteAcknowledgements = {};
 let pickRenderGeneration = 0;
+let removedPickFocus = null;
 let assetsLoadGeneration = 0;
 
 const elements = {
@@ -1358,7 +1359,8 @@ async function renderPickMain() {
   const asset = state.assets.find((item) => item.asset_id === state.activePickAsset);
 
   if (!asset) {
-    const focus = capturePickFocus(main);
+    const focus = capturePickFocus(main) || (document.activeElement === document.body ? removedPickFocus : null);
+    removedPickFocus = null;
     main.innerHTML = "";
     main.removeAttribute("aria-busy");
     const empty = document.createElement("p");
@@ -1371,9 +1373,8 @@ async function renderPickMain() {
     return;
   }
 
-  let removedFocus = null;
   if (main.querySelector("#pick-notes")?.dataset.assetId !== asset.asset_id) {
-    removedFocus = capturePickFocus(main);
+    removedPickFocus = capturePickFocus(main) || removedPickFocus;
     main.textContent = `Loading ${asset.asset_id}...`;
   }
   main.setAttribute("aria-busy", "true");
@@ -1398,7 +1399,8 @@ async function renderPickMain() {
 
   if (generation !== pickRenderGeneration || !main.isConnected ||
       state.activePickAsset !== asset.asset_id || !state.assets.includes(asset)) return;
-  const focus = capturePickFocus(main) || (document.activeElement === document.body ? removedFocus : null);
+  const focus = capturePickFocus(main) || (document.activeElement === document.body ? removedPickFocus : null);
+  removedPickFocus = null;
   main.innerHTML = "";
   main.appendChild(createPickAssetHeader(asset.asset_id));
   if (acknowledgedNotes !== noteAcknowledgements[asset.asset_id]) {
