@@ -56,7 +56,9 @@ def page() -> Iterator[Page]:
         browser = playwright.chromium.launch()
         page = browser.new_page()
         page.add_init_script(FAKE_API)
-        page.route("http://dashboard.test/", lambda route: route.fulfill(body=DASHBOARD.read_text()))
+        page.route(
+            "http://dashboard.test/", lambda route: route.fulfill(body=DASHBOARD.read_text(), content_type="text/html")
+        )
         page.goto("http://dashboard.test/")
         page.wait_for_function("state.episodeData !== null")
         yield page
