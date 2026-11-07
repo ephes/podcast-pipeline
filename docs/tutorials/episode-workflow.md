@@ -645,3 +645,12 @@ Metadata shows loading/errors and requires a successfully loaded baseline before
 Use **Retry loading metadata** after a load error; it keeps keyboard focus through retry and
 becomes **Reload metadata** after success. Typing during loading, including intentionally
 clearing hosts, takes precedence over the loaded field values.
+
+### Conflicting local dashboard work
+
+A running draft, summarize, candidates or transcribe job blocks the other three stages and all asset
+review/regenerate/refine jobs. Asset operations block other operations on the same asset, while different
+assets remain independent. Production has separate single-flight admission. Conflicts return HTTP 409 with
+the running stage and job ID, displayed as an error in the dashboard; retry after that job finishes or fails.
+Admission is checked together with job creation under the dashboard context lock, including launch failures.
+This is a local dashboard policy, not a cross-process scheduler or a lock for independent CLI commands.

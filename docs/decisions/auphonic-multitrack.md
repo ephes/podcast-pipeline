@@ -62,3 +62,15 @@ Whole-state writers preserve valid current production UUID/history and refuse in
 existing `state.json` before replacing it. Only a genuinely missing file can be initialized from a default.
 Repair damaged state explicitly from a known-good backup; do not discard it or retry with a default workspace,
 because it can contain the only recoverable record of paid productions.
+
+### Request snapshot ownership
+
+Non-dry-run production acquires the existing per-workspace production lock before loading/validating
+`episode.yaml` and constructing the payload, and keeps it through the paid-operation cycle. It therefore
+uses current metadata and selected inputs at ownership acquisition. The lock remains nonblocking: another
+running production causes immediate rejection, not queuing. Dry runs do not acquire this lock or create
+production state. Other CLI writers are not coordinated by dashboard admission.
+
+A failed real run may leave the `auphonic/.produce.lock` file/directory behind, even after validation or
+credential errors. The file contains no production identity; active OS locking, rather than its presence,
+indicates ownership. A concurrent call reports "already running" before validating its own configuration.
