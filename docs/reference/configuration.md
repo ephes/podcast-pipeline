@@ -222,10 +222,10 @@ cms:
 | `transcript_diarization` | global or episode | Diarization mode of the uploaded Audio. `enabled` (default) gives speaker labels regardless of the site's Voxhelm settings; `inherit` follows them. The transcript is only started automatically when the Audio reports `enabled`. |
 | `audio_file` | episode only | File to upload as the Audio (relative to the workspace or absolute; `.mp3`, `.m4a`, `.ogg`/`.oga` or `.opus`). Default: `auphonic/outputs/<output_basename>.mp3`, else the only MP3 there. Files with the same name and another of these extensions are the further formats. |
 
-`cms/draft.json` in the workspace stores `base_url`, `episode_id`, `audio_id`, `audio_edit_url`, `audio_attached`
+`cms/draft.json` in the workspace stores `base_url`, `parent_id`, `episode_id`, `audio_id`, `audio_edit_url`, `audio_attached`
 (false between an upload and the episode request that attaches it) and `transcript_pending` (an uploaded Audio whose
 transcript was neither started nor listed as a manual step yet) after each step; ids stored for another `base_url`
-are ignored. Delete it to make the next run look the draft up by slug again. See
+are ignored. For an intentional reset, follow the backup-first instructions under "CMS recovery checkpoints" below; preserve any unattached Audio ID before abandoning reuse. See
 "Create the episode draft on the website" in `tutorials/episode-workflow.md` for the requests and the current API
 limitations.
 
@@ -315,3 +315,22 @@ RSS example imports stream at most 8 MiB of uncompressed input and share one who
 across connection, headers, redirects and body reads (`--timeout-seconds`, default 20 seconds).
 At most five redirects are followed without consuming intermediate bodies. Compressed feeds are refused;
 fetch, HTTP, size or deadline errors preserve the previous atomic JSONL export.
+
+### CMS recovery checkpoints
+
+CMS recovery state is validated before mutation: IDs must be positive integers or null and present flags must
+be booleans. `cms/draft.json` now records the resolved `parent_id` as well as the site. Changing podcasts requires
+an explicit reset after checking the old episode and Audio in Wagtail; no old IDs are reused. Legacy state with
+an episode ID is adopted only after verifying its parent. For legacy upload-only state, verify the Audio's
+intended podcast and add its `parent_id`, or explicitly reset the state to start fresh. Valid partial upload
+checkpoints remain resumable. State for a different site remains ignored.
+
+If a remote upload or episode write succeeds but its local checkpoint fails, the error gives the confirmed
+object ID and the fields to merge into `cms/draft.json`. Repair write access and those fields before rerunning,
+preserving the previous state and its other fields. The command stops immediately without retrying the remote
+write. Malformed successful API identities also stop the run; check Wagtail for the remote outcome before retrying.
+
+To reset deliberately, move `cms/draft.json` to a backup after recording any unattached Audio ID for manual
+cleanup/recovery. Reset abandons automatic reuse of those IDs. Alternatively clear both IDs to null when
+abandoning them; a stale parent with no IDs is harmless. A missing stored episode under a matching recorded
+parent falls back to slug lookup; a moved episode or unverifiable legacy episode requires the explicit reset.

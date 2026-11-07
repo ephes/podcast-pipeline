@@ -539,6 +539,7 @@ def test_creates_draft_uploads_one_file_and_lists_manual_steps_in_order(
     state = json.loads((workspace / "cms" / "draft.json").read_text(encoding="utf-8"))
     assert state == {
         "base_url": BASE,
+        "parent_id": PODCAST_ID,
         "episode_id": 141,
         "audio_id": 83,
         "audio_edit_url": "https://cms.test/cms/audio/audio/edit/83/",
