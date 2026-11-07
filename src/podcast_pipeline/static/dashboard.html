@@ -369,6 +369,7 @@ const customDrafts = {};
 const customSaves = new Set();
 const noteDrafts = {};
 const noteSaves = new Set();
+const noteAcknowledgements = {};
 let pickRenderGeneration = 0;
 let assetsLoadGeneration = 0;
 
@@ -1324,6 +1325,7 @@ async function renderPickMain() {
     main.textContent = `Loading ${asset.asset_id}...`;
   }
   main.setAttribute("aria-busy", "true");
+  const acknowledgedNotes = noteAcknowledgements[asset.asset_id];
   let notes = "";
   try {
     const response = await apiJson("GET", `/api/assets/${encodeURIComponent(asset.asset_id)}/notes`);
@@ -1346,6 +1348,9 @@ async function renderPickMain() {
       state.activePickAsset !== asset.asset_id || !state.assets.includes(asset)) return;
   main.innerHTML = "";
   main.appendChild(createPickAssetHeader(asset.asset_id));
+  if (acknowledgedNotes !== noteAcknowledgements[asset.asset_id]) {
+    notes = noteAcknowledgements[asset.asset_id].text;
+  }
   main.appendChild(createPickNotesSection(asset.asset_id, noteDrafts[asset.asset_id]?.text ?? notes));
   if (isTagAsset(asset.asset_id)) {
     main.appendChild(createPickTagsSection(asset));
@@ -1444,11 +1449,8 @@ async function saveNotes(assetId) {
   try {
     await apiJson("PUT", `/api/assets/${encodeURIComponent(assetId)}/notes`, { notes: submitted.text });
     if (noteDrafts[assetId] === submitted) delete noteDrafts[assetId];
-    // Keep a streaming job and newer typing connected; retire only same-asset reads.
-    if (state.activePickAsset === assetId && document.getElementById("pick-notes")?.dataset.assetId === assetId) {
-      ++pickRenderGeneration;
-      elements.pickMain.removeAttribute("aria-busy");
-    }
+    // Reads begun before this acknowledgement use the saved text without discarding their asset updates.
+    noteAcknowledgements[assetId] = submitted;
     alert("Notes saved.");
   } catch (error) {
     alert(`Failed to save notes: ${error instanceof Error ? error.message : String(error)}`);

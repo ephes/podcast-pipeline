@@ -162,3 +162,19 @@ def test_notes_save_preserves_streaming_job(page: Page) -> None:
     expect(page.locator("#pick-regen-log")).to_contain_text("After save")
     assert page.evaluate("originalLog.isConnected")
     expect(page.locator("#pick-regen")).to_be_visible()
+
+
+def test_notes_ack_keeps_pending_candidate_refresh(page: Page) -> None:
+    pick(page)
+    page.locator("#pick-notes").fill("Saved during refresh")
+    page.evaluate("""() => {
+      server.assets[0].candidates.push({...server.assets[0].candidates[0], candidate_id:'c3'});
+      server.holds = ['GET /api/assets/title_detail/notes'];
+      void loadAssets();
+    }""")
+    page.wait_for_function("server.pending.length === 1")
+    page.locator('[data-action="save-notes"]').click()
+    page.wait_for_function("window.lastAlert === 'Notes saved.'")
+    page.evaluate("server.pending[0].resolve(response({notes:'Stale stored notes'}))")
+    expect(page.locator('[data-action="select-candidate"]')).to_have_count(3)
+    expect(page.locator("#pick-notes")).to_have_value("Saved during refresh")
