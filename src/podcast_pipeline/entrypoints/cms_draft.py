@@ -30,7 +30,7 @@ from podcast_pipeline.cms_draft import (
     load_cms_config,
     selected_slug,
 )
-from podcast_pipeline.workspace_store import EpisodeWorkspaceStore, atomic_write_text
+from podcast_pipeline.workspace_store import EpisodeWorkspaceStore, WorkspaceStoreError, atomic_write_text
 
 _EPISODE_TYPE = "cast.Episode"
 _PODCAST_TYPE = "cast.Podcast"
@@ -77,7 +77,13 @@ class _DraftRun:
             raise CmsApiError(
                 recovery + "Stop before rerunning. Repair local write access, then merge these confirmed fields "
                 "into cms/draft.json (preserving its other fields): "
-                + json.dumps({"base_url": state.base_url, "parent_id": state.parent_id, **changes})
+                + json.dumps(
+                    {
+                        "base_url": state.base_url,
+                        "parent_id": state.parent_id,
+                        **{key: None if key == "audio_edit_url" else value for key, value in changes.items()},
+                    }
+                )
             ) from exc
         self.state = state
 
@@ -93,15 +99,24 @@ class _DraftRun:
 
 def run_cms_draft(*, workspace: Path, dry_run: bool, new_audio: bool = False, transcript: bool = False) -> None:
     store = EpisodeWorkspaceStore(workspace)
-    config, plan = _load_plan(store, workspace)
-    if dry_run:
-        typer.echo(json.dumps(_describe_plan(config, plan), indent=2, ensure_ascii=False))
-        return
     try:
-        token = load_cms_token(config.token_env)
-        with _cms_lock(store), DjangoCastClient(config.base_url, token) as client:
-            run = _DraftRun(client, store, config, plan, _read_state(store, config), steps=[])
-            _create_or_update(run, new_audio=new_audio, transcript=transcript)
+        if dry_run:
+            config, plan = _load_plan(store, workspace)
+            state = _read_state(store, config)
+            typer.echo(
+                json.dumps(
+                    _describe_plan(config, plan, state, new_audio=new_audio, transcript=transcript),
+                    indent=2,
+                    ensure_ascii=False,
+                )
+            )
+            return
+        with _cms_lock(store):
+            config, plan = _load_plan(store, workspace)
+            token = load_cms_token(config.token_env)
+            with DjangoCastClient(config.base_url, token) as client:
+                run = _DraftRun(client, store, config, plan, _read_state(store, config), steps=[])
+                _create_or_update(run, new_audio=new_audio, transcript=transcript)
     except CmsApiError as exc:
         raise typer.BadParameter(str(exc)) from exc
 
@@ -138,9 +153,36 @@ def _load_plan(store: EpisodeWorkspaceStore, workspace: Path) -> tuple[CmsConfig
     return config, plan
 
 
-def _describe_plan(config: CmsConfig, plan: CmsDraftPlan) -> dict[str, Any]:
+def _describe_plan(
+    config: CmsConfig, plan: CmsDraftPlan, state: CmsDraftState, *, new_audio: bool, transcript: bool
+) -> dict[str, Any]:
     parent: int | str = config.parent_id if config.parent_id is not None else f"<resolved from GET {PARENTS_PATH}>"
+    bound = state.parent_id is not None and state.parent_id == config.parent_id
+    local_audio_id = state.audio_id if bound and not new_audio else None
     return {
+        "intent": {
+            "audio": "force_upload" if new_audio else "reuse_or_upload",
+            "local_audio_id": local_audio_id,
+            "local_audio_attached": state.audio_attached if local_audio_id is not None else None,
+            "transcript": (
+                "requested"
+                if transcript
+                else "pending"
+                if local_audio_id is not None and state.transcript_pending
+                else "if_audio_uploaded"
+            ),
+            "remote_decisions": (
+                "unresolved: parent verification, episode lookup, Audio availability and API capabilities"
+            ),
+            "recovery": (
+                "blocked: stored podcast differs; explicitly reset cms/draft.json before a live run"
+                if state.parent_id is not None
+                and config.parent_id is not None
+                and state.parent_id != config.parent_id
+                and (state.episode_id or state.audio_id)
+                else "local IDs remain subject to remote parent verification"
+            ),
+        },
         "base_url": config.base_url,
         "token_env": config.token_env,
         "lookup": {"path": POST_LOOKUP_PATH, "params": {"parent": parent, "slug": plan.slug}},
@@ -183,6 +225,7 @@ def _create_or_update(run: _DraftRun, *, new_audio: bool, transcript: bool) -> N
 
     previous_audio_id = _podcast_audio_id(existing)
     payload = plan.episode_payload(audio_id)
+    _revalidate_plan(run)
     if existing is None:
         episode = client.create_episode({"parent": {"id": parent_id}, **payload})
         action = "Created"
@@ -202,6 +245,21 @@ def _create_or_update(run: _DraftRun, *, new_audio: bool, transcript: bool) -> N
     typer.echo(f"Edit:    {client.absolute_url(episode.get('edit_url'))}")
     typer.echo("Nothing was published. Publish with `podcast cms-publish` after checking the preview.")
     _report_steps(run.steps)
+
+
+def _revalidate_plan(run: _DraftRun) -> None:
+    try:
+        current = _load_plan(run.store, run.store.layout.root)
+    except (typer.BadParameter, OSError, ValueError, WorkspaceStoreError) as exc:
+        raise CmsApiError(
+            "CMS inputs changed during setup; retry after checking local selections/config. "
+            "Any uploaded Audio remains checkpointed in cms/draft.json."
+        ) from exc
+    if current != (run.config, run.plan):
+        raise CmsApiError(
+            "CMS inputs changed during setup; retry after checking local selections/config. "
+            "Any uploaded Audio remains checkpointed in cms/draft.json."
+        )
 
 
 def _resolve_parent(client: DjangoCastClient, config: CmsConfig) -> int:
@@ -421,6 +479,7 @@ def _ensure_contributors(run: _DraftRun, episode: dict[str, Any]) -> tuple[dict[
         )
         return episode, False
     if _contributor_refs(episode["contributors"]) != wanted:
+        _revalidate_plan(run)
         episode = run.client.update_episode(
             int(episode["id"]),
             {"contributors": wanted},

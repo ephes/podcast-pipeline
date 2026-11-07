@@ -679,3 +679,30 @@ To reset deliberately, move `cms/draft.json` to a backup after recording any una
 cleanup/recovery. Reset abandons automatic reuse of those IDs. Alternatively clear both IDs to null when
 abandoning them; a stale parent with no IDs is harmless. A missing stored episode under a matching recorded
 parent falls back to slug lookup; a moved episode or unverifiable legacy episode requires the explicit reset.
+
+
+### CMS preview and publication boundaries
+
+`cms-draft --dry-run` includes an `intent` object: normal reuse-or-upload, forced upload with `--new-audio`,
+and an explicit transcript request with `--transcript`. Local recovery IDs and pending transcripts are shown
+when stored `parent_id` matches an explicit `cms.parent_id`. With `parent_title` or automatic parent resolution,
+local IDs remain unresolved in the preview. Legacy upload-only state requires a verified parent binding or the
+backup-first reset before a live run; the preview does not verify that binding. Parent verification, remote
+draft/audio lookup and endpoint capabilities remain unresolved;
+the payloads are conditional request templates. Dry runs do not look up tokens, use the network, take ownership
+or write files.
+
+Implicit CMS audio uses a single filename component for `auphonic.output_basename` or `episode_id`, matching
+Auphonic's directory-separator rules. The preferred MP3, single-MP3 fallback and additional formats must resolve
+inside `auphonic/outputs`, including symlinks. Use episode-local `cms.audio_file` explicitly for a file elsewhere.
+
+Live drafting reads the selected copy and configuration under CMS ownership and rechecks the complete selected
+text/format and effective configuration immediately before episode create/update requests, including contributor
+updates. If inputs change during upload/setup, the command stops with a retry message. An uploaded Audio remains
+checkpointed for the retry; check the new selection/configuration before rerunning. This check does not lock out
+manual edits after the final comparison or roll back an episode request that already succeeded.
+
+API errors show the trusted method, endpoint, HTTP status and allowlisted error/field categories. Redirects show
+only the destination origin (no userinfo, path, query or fragment) and are never followed. Response bodies and raw
+server messages are omitted, including revision-conflict payloads; conflicts still explain checking Wagtail before
+retrying. Checkpoint recovery instructions omit remote edit URLs too.
