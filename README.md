@@ -185,3 +185,9 @@ Drafting rebuilds legacy, interrupted, missing or changed sets instead of accept
 or summary JSON alone. Chunk manifests bind the source transcript and record chunker settings;
 summary manifests bind the chunk manifest and all three summary outputs. A contradictory LLM chunk ID
 fails before that result is saved or reduced. See `docs/explanation/text-pipeline.md` for recovery limits.
+
+Canonical transcription publication validates the complete UTF-8 output and atomically replaces each file.
+Handled publication or metadata failures restore the previous canonical files, YAML and provenance.
+A new transcript without chapters removes the canonical chapters and current-mode chapter pointers;
+manually imported canonical chapters are retired too, so pass `draft --chapters` again to reuse them.
+Other modes remain available. Content-bound draft caches rebuild for changed bytes and survive identical output.

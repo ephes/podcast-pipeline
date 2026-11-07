@@ -82,3 +82,18 @@ Use `podcast pick --workspace ./workspaces/ep_001 --web` or the dashboard to sel
 
 For initialization failures, cleanup and retry behavior, see
 [Initialize a workspace](../tutorials/episode-workflow.md#1-initialize-a-workspace-init).
+
+### Re-transcribing an existing workspace
+
+Successful transcription publishes canonical `transcript.txt` and optional `chapters.txt` through sibling
+atomic replacements. The complete mode output is validated before publication. Handled canonical, YAML or
+provenance write failures restore the previous canonical generation; the previous mode output is restored as well so mode pointers and provenance continue to agree. An unchaptered result removes `inputs.chapters`, `inputs.chapters_<mode>` and the
+canonical chapter file while retaining other modes' files and pointers. This retirement includes manually
+imported chapters from `draft --chapters`: canonical chapters always accompany the latest transcript, so pass
+`--chapters` again on the next draft if the same source chapters should be reused.
+
+Draft chunk manifests bind the canonical transcript bytes, so changing those bytes invalidates reuse of
+chunks and their episode summary. The next draft rebuilds them; identical transcription output keeps the
+completed caches. Failed publication preserves the old canonical source and its usable caches. These
+recoveries cover handled errors, not process death between multiple file replacements; see
+`../explanation/text-pipeline.md` for completion validation and retained backup limits.

@@ -18,7 +18,12 @@ from typing import Any
 import typer
 
 from podcast_pipeline.agent_runners import CLI_DIAGNOSTIC_LIMIT, AgentRunnerError, run_cli_process
-from podcast_pipeline.workspace_store import EpisodeWorkspaceStore, WorkspaceStoreError, atomic_write_text
+from podcast_pipeline.workspace_store import (
+    EpisodeWorkspaceStore,
+    WorkspaceStoreError,
+    atomic_write_text,
+    preserve_files,
+)
 
 
 class TranscriptionMode(StrEnum):
@@ -93,55 +98,87 @@ def run_transcribe(
     )
 
     mode_transcript = mode_dir / "transcript.txt"
-    cache_dir = _run_transcriber_for_mode(
-        command=command,
-        rendered_args=rendered_args,
-        template_args=_args,
-        audio_file=audio_file,
-        mode_dir=mode_dir,
-        mode_transcript=mode_transcript,
-        workspace=workspace,
-        timeout_seconds=timeout,
-    )
-    if not mode_transcript.exists():
-        raise typer.BadParameter(f"Missing transcript output at {mode_transcript}")
-    if mode_transcript.stat().st_size == 0:
-        raise typer.BadParameter(f"Transcript output is empty: {mode_transcript}")
-    if cache_dir is not None:
-        _prune_stale_podcast_transcript_caches(keep=cache_dir)
+    with preserve_files([mode_transcript, mode_dir / "chapters.txt"]):
+        cache_dir = _run_transcriber_for_mode(
+            command=command,
+            rendered_args=rendered_args,
+            template_args=_args,
+            audio_file=audio_file,
+            mode_dir=mode_dir,
+            mode_transcript=mode_transcript,
+            workspace=workspace,
+            timeout_seconds=timeout,
+        )
+        if not mode_transcript.exists():
+            raise typer.BadParameter(f"Missing transcript output at {mode_transcript}")
+        if mode_transcript.stat().st_size == 0:
+            raise typer.BadParameter(f"Transcript output is empty: {mode_transcript}")
+        if cache_dir is not None:
+            _prune_stale_podcast_transcript_caches(keep=cache_dir)
 
-    mode_chapters = mode_dir / "chapters.txt"
-    default_transcript = transcript_root / "transcript.txt"
-    shutil.copyfile(mode_transcript, default_transcript)
-
-    default_chapters: Path | None = None
-    if mode_chapters.exists():
-        default_chapters = transcript_root / "chapters.txt"
-        shutil.copyfile(mode_chapters, default_chapters)
-
-    _update_episode_inputs(
-        store=store,
-        episode_yaml=episode_yaml,
-        mode=mode.value,
-        mode_transcript=mode_transcript,
-        mode_chapters=mode_chapters if mode_chapters.exists() else None,
-        default_transcript=default_transcript,
-        default_chapters=default_chapters,
-    )
-
-    _write_transcribe_provenance(
-        store=store,
-        mode=mode.value,
-        mode_dir=mode_dir,
-        command=command,
-        args=rendered_args,
-        default_transcript=default_transcript,
-        default_chapters=default_chapters,
-        episode_yaml=episode_yaml,
-    )
+        _publish_canonical_transcription(
+            store=store,
+            mode_dir=mode_dir,
+            mode=mode.value,
+            command=command,
+            rendered_args=rendered_args,
+            episode_yaml=episode_yaml,
+        )
 
     typer.echo(f"Workspace: {workspace}")
     typer.echo(f"Transcript ({mode.value}): {mode_transcript}")
+
+
+def _publish_canonical_transcription(
+    *,
+    store: EpisodeWorkspaceStore,
+    mode_dir: Path,
+    mode: str,
+    command: str,
+    rendered_args: list[str],
+    episode_yaml: dict[str, Any],
+) -> None:
+    transcript_root = store.layout.transcript_dir
+    mode_transcript = mode_dir / "transcript.txt"
+    mode_chapters = mode_dir / "chapters.txt"
+    default_transcript = transcript_root / "transcript.txt"
+    canonical_chapters = transcript_root / "chapters.txt"
+    # Validate the complete mode result before changing any canonical output.
+    try:
+        text = mode_transcript.read_bytes().decode("utf-8")
+        chapter_text = mode_chapters.read_bytes().decode("utf-8") if mode_chapters.exists() else None
+    except UnicodeError as exc:
+        raise typer.BadParameter("Transcript and chapter output must be UTF-8 text") from exc
+    if not text.strip():
+        raise typer.BadParameter("Transcript output is empty")
+    default_chapters = canonical_chapters if chapter_text is not None else None
+    with preserve_files(
+        [default_transcript, canonical_chapters, store.layout.episode_yaml, mode_dir / "provenance.json"]
+    ):
+        atomic_write_text(default_transcript, text)
+        if chapter_text is not None:
+            atomic_write_text(canonical_chapters, chapter_text)
+        else:
+            canonical_chapters.unlink(missing_ok=True)
+        _update_episode_inputs(
+            store=store,
+            episode_yaml=episode_yaml,
+            mode=mode,
+            mode_transcript=mode_transcript,
+            mode_chapters=mode_chapters if chapter_text is not None else None,
+            default_transcript=default_transcript,
+            default_chapters=default_chapters,
+        )
+        _write_transcribe_provenance(
+            store=store,
+            mode=mode,
+            mode_dir=mode_dir,
+            command=command,
+            args=rendered_args,
+            default_transcript=default_transcript,
+            default_chapters=default_chapters,
+            episode_yaml=episode_yaml,
+        )
 
 
 def _run_transcriber_for_mode(
@@ -206,6 +243,8 @@ def _run_transcriber_for_mode(
             else:
                 (mode_dir / "chapters.txt").unlink(missing_ok=True)
     else:
+        # Only chapters emitted by this invocation may accompany its transcript.
+        (mode_dir / "chapters.txt").unlink(missing_ok=True)
         _run_transcriber(
             command=command,
             args=rendered_args,
@@ -569,6 +608,9 @@ def _update_episode_inputs(
             inputs[f"chapters_{mode}"] = _relpath(mode_chapters, store.layout.root)
             if default_chapters is not None:
                 inputs["chapters"] = _relpath(default_chapters, store.layout.root)
+        else:
+            inputs.pop(f"chapters_{mode}", None)
+            inputs.pop("chapters", None)
 
         current["inputs"] = inputs
 
