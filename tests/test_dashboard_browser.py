@@ -105,6 +105,10 @@ def test_notes_draft_retention(page: Page) -> None:
     page.evaluate("server.fail = []; server.holds = ['PUT /api/assets/title_detail/notes']")
     page.locator('[data-action="save-notes"]').click()
     page.wait_for_function("server.pending.length === 1")
+    expect(page.locator('[data-action="save-notes"]')).to_be_disabled()
+    count = page.evaluate("server.requests.length")
+    page.evaluate("void saveNotes('title_detail')")
+    assert page.evaluate("server.requests.length") == count
     page.locator("#pick-notes").fill("Newer notes")
     page.evaluate("server.pending[0].resolve(response({}))")
     page.wait_for_function("window.lastAlert === 'Notes saved.'")
@@ -138,3 +142,23 @@ def test_custom_save_owns_only_submitted_draft(page: Page) -> None:
     page.evaluate("server.fail = []")
     page.locator('[data-action="save-custom"]').click()
     page.wait_for_function("!customSaves.has('title_detail') && customDrafts.title_detail.revision === 0")
+
+
+def test_notes_save_preserves_streaming_job(page: Page) -> None:
+    pick(page)
+    page.evaluate("""() => {
+      const log = document.getElementById('pick-regen-log');
+      document.getElementById('pick-regen').style.display = '';
+      window.originalLog = log;
+      streamJob('synthetic', log, document.getElementById('pick-regen-progress'));
+      state.currentJobStreams.synthetic.onmessage({data: JSON.stringify({type:'progress', message:'Before save'})});
+    }""")
+    page.locator("#pick-notes").fill("Updated")
+    page.locator('[data-action="save-notes"]').click()
+    page.wait_for_function("window.lastAlert === 'Notes saved.'")
+    page.evaluate("""state.currentJobStreams.synthetic.onmessage({
+      data: JSON.stringify({type:'progress', message:'After save'})
+    })""")
+    expect(page.locator("#pick-regen-log")).to_contain_text("After save")
+    assert page.evaluate("originalLog.isConnected")
+    expect(page.locator("#pick-regen")).to_be_visible()
