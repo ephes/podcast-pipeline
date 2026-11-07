@@ -21,7 +21,7 @@ from starlette.routing import Route
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from podcast_pipeline.asset_refine_llm import RefineRequest
-from podcast_pipeline.dashboard_context import BackgroundJob, DashboardContext
+from podcast_pipeline.dashboard_context import PROGRESS_TRUNCATED, BackgroundJob, DashboardContext
 from podcast_pipeline.local_web_guard import check_request
 
 _SHUTDOWN_TIMEOUT_SECONDS = 60 * 60  # 1 hour
@@ -30,6 +30,19 @@ _DEFAULT_CANDIDATES = 3
 MAX_CANDIDATES = 10
 _DEFAULT_REVIEW_ITERATIONS = 3
 MAX_REVIEW_ITERATIONS = 10
+MAX_JSON_BODY_BYTES = 64 * 1024
+
+
+def _json_depth_allowed(payload: Any) -> bool:
+    pending = [(payload, 0)]
+    while pending:
+        value, depth = pending.pop()
+        if isinstance(value, (dict, list)):
+            if depth >= 64:
+                return False
+            children = value.values() if isinstance(value, dict) else value
+            pending.extend((child, depth + 1) for child in children)
+    return True
 
 
 def _bounded_int(value: Any, *, default: int, maximum: int) -> int:
@@ -88,13 +101,19 @@ class _DashboardApi:
         self.on_done = on_done
 
     async def _parse_json_object(self, request: Request) -> tuple[dict[str, Any] | None, Response | None]:
-        raw = await request.body()
+        raw = bytearray()
+        async for chunk in request.stream():
+            if len(raw) + len(chunk) > MAX_JSON_BODY_BYTES:
+                return None, JSONResponse({"error": "JSON body exceeds 64 KiB limit"}, status_code=413)
+            raw.extend(chunk)
         try:
-            payload = json.loads(raw)
-        except json.JSONDecodeError:
+            payload = json.loads(raw.decode("utf-8"))
+        except (ValueError, UnicodeError, RecursionError):
             return None, JSONResponse({"error": "Invalid JSON"}, status_code=400)
         if not isinstance(payload, dict):
             return None, JSONResponse({"error": "Expected JSON object"}, status_code=400)
+        if not _json_depth_allowed(payload):
+            return None, JSONResponse({"error": "JSON nesting exceeds 64 levels"}, status_code=400)
         return payload, None
 
     def _start_job(self, stage: str, target: Callable[..., Any], *args: Any) -> Response:
@@ -107,8 +126,12 @@ class _DashboardApi:
                     status_code=409,
                 )
             job = self.ctx.create_job(stage)
-
-        _start_daemon_thread(target, self.ctx, job, *args)
+            try:
+                _start_daemon_thread(target, self.ctx, job, *args)
+            except Exception:
+                job.error = "Could not start background worker"
+                self.ctx.finish_job(job, "failed")
+                return JSONResponse({"error": job.error, "job_id": job.job_id}, status_code=503)
         return JSONResponse({"ok": True, "job_id": job.job_id})
 
     async def serve_html(self, _request: Request) -> Response:
@@ -428,7 +451,8 @@ class _DashboardApi:
                 "job_id": job.job_id,
                 "stage": job.stage,
                 "status": job.status,
-                "progress": [_to_text(line) for line in job.progress],
+                "progress": ([PROGRESS_TRUNCATED] if job.progress_start else [])
+                + [_to_text(line) for line in job.progress],
                 "error": job.error,
                 "result": job.result,
             }
@@ -442,21 +466,32 @@ class _DashboardApi:
             return PlainTextResponse("Job not found", status_code=404)
 
         async def event_generator() -> Any:
-            last_idx = 0
+            try:
+                last_idx = max(0, int(request.headers.get("last-event-id", "0")))
+            except ValueError:
+                last_idx = 0
             while True:
                 if await request.is_disconnected():
                     break
 
                 with self.ctx.lock:
-                    current_progress = list(job.progress)
+                    first_idx = job.progress_start
+                    current_progress = [
+                        (first_idx + index + 1, line)
+                        for index, line in enumerate(job.progress)
+                        if first_idx + index + 1 > last_idx
+                    ]
                     status = job.status
                     error = job.error
 
-                if len(current_progress) > last_idx:
-                    for line in current_progress[last_idx:]:
-                        payload = {"type": "progress", "message": _to_text(line)}
-                        yield f"data: {json.dumps(payload)}\n\n"
-                    last_idx = len(current_progress)
+                if last_idx < first_idx:
+                    payload = {"type": "progress", "message": PROGRESS_TRUNCATED}
+                    yield f"id: {first_idx}\ndata: {json.dumps(payload)}\n\n"
+                    last_idx = first_idx
+                for entry_id, line in current_progress:
+                    payload = {"type": "progress", "message": _to_text(line)}
+                    yield f"id: {entry_id}\ndata: {json.dumps(payload)}\n\n"
+                    last_idx = entry_id
 
                 if status in ("completed", "failed"):
                     result_data: dict[str, Any] = {"type": "done", "status": status}
@@ -643,7 +678,7 @@ class _ProgressCapture(io.StringIO):
         text = _to_text(s)
         if text.strip():
             with self._ctx.lock:
-                self._job.progress.append(text.strip())
+                self._job.append_progress(text.strip())
         return len(text)
 
 
@@ -673,11 +708,11 @@ def _run_regenerate_job(
 
         with ctx.lock:
             ctx.reload_candidates()
-            job.status = "completed"
+            ctx.finish_job(job, "completed")
             job.result = {"candidates": len(new_candidates)}
     except Exception as exc:
         with ctx.lock:
-            job.status = "failed"
+            ctx.finish_job(job, "failed")
             job.error = str(exc)
 
 
@@ -698,11 +733,11 @@ def _run_refine_job(
 
         with ctx.lock:
             ctx.add_candidate(candidate)
-            job.status = "completed"
+            ctx.finish_job(job, "completed")
             job.result = {"candidate_id": str(candidate.candidate_id)}
     except Exception as exc:
         with ctx.lock:
-            job.status = "failed"
+            ctx.finish_job(job, "failed")
             job.error = str(exc)
 
 
@@ -730,10 +765,10 @@ def _run_draft_job(
 
         with ctx.lock:
             ctx.reload_candidates()
-            job.status = "completed"
+            ctx.finish_job(job, "completed")
     except Exception as exc:
         with ctx.lock:
-            job.status = "failed"
+            ctx.finish_job(job, "failed")
             job.error = str(exc)
 
 
@@ -773,10 +808,10 @@ def _run_summarize_job(
             _thread_local.capture = None
 
         with ctx.lock:
-            job.status = "completed"
+            ctx.finish_job(job, "completed")
     except Exception as exc:
         with ctx.lock:
-            job.status = "failed"
+            ctx.finish_job(job, "failed")
             job.error = str(exc)
 
 
@@ -801,10 +836,10 @@ def _run_candidates_job(
 
         with ctx.lock:
             ctx.reload_candidates()
-            job.status = "completed"
+            ctx.finish_job(job, "completed")
     except Exception as exc:
         with ctx.lock:
-            job.status = "failed"
+            ctx.finish_job(job, "failed")
             job.error = str(exc)
 
 
@@ -845,11 +880,11 @@ def _run_review_job(
             ctx.reload_candidates()
             ctx._workspace_state = None  # Force reload
             outcome = protocol_state.decision.outcome if protocol_state.decision else "in_progress"
-            job.status = "completed"
+            ctx.finish_job(job, "completed")
             job.result = {"outcome": outcome}
     except Exception as exc:
         with ctx.lock:
-            job.status = "failed"
+            ctx.finish_job(job, "failed")
             job.error = str(exc)
 
 
@@ -868,10 +903,10 @@ def _run_produce_job(
             _thread_local.capture = None
 
         with ctx.lock:
-            job.status = "completed"
+            ctx.finish_job(job, "completed")
     except Exception as exc:
         with ctx.lock:
-            job.status = "failed"
+            ctx.finish_job(job, "failed")
             job.error = str(exc)
 
 
@@ -897,8 +932,8 @@ def _run_transcribe_job(
             _thread_local.capture = None
 
         with ctx.lock:
-            job.status = "completed"
+            ctx.finish_job(job, "completed")
     except Exception as exc:
         with ctx.lock:
-            job.status = "failed"
+            ctx.finish_job(job, "failed")
             job.error = str(exc)

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import threading
 import uuid
+from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -43,15 +44,37 @@ from podcast_pipeline.tag_assets import (
 from podcast_pipeline.tag_parsing import parse_tag_list
 from podcast_pipeline.workspace_store import EpisodeWorkspaceStore, WorkspaceStoreError
 
+MAX_PROGRESS_BYTES = 128 * 1024
+MAX_PROGRESS_ENTRIES = 1024
+MAX_COMPLETED_JOBS = 64
+PROGRESS_TRUNCATED = "[Earlier progress truncated]"
+
 
 @dataclass
 class BackgroundJob:
     job_id: str
     stage: str
     status: str = "running"
-    progress: list[str] = field(default_factory=list)
+    progress: deque[str] = field(default_factory=deque)
+    progress_start: int = 0
+    progress_bytes: int = 0
     error: str | None = None
     result: dict[str, Any] | None = None
+
+    def append_progress(self, text: str) -> None:
+        """Retain a byte/entry-bounded tail with monotonically increasing entry IDs."""
+        encoded = text.encode("utf-8")
+        if len(encoded) > MAX_PROGRESS_BYTES:
+            self.progress_start += len(self.progress) + 1
+            self.progress.clear()
+            self.progress_bytes = 0
+            text = encoded[-MAX_PROGRESS_BYTES:].decode("utf-8", errors="ignore")
+        self.progress.append(text)
+        self.progress_bytes += len(text.encode("utf-8"))
+        while self.progress_bytes > MAX_PROGRESS_BYTES or len(self.progress) > MAX_PROGRESS_ENTRIES:
+            removed = self.progress.popleft()
+            self.progress_bytes -= len(removed.encode("utf-8"))
+            self.progress_start += 1
 
 
 class DashboardContext:
@@ -467,10 +490,25 @@ class DashboardContext:
         return None
 
     def create_job(self, stage: str) -> BackgroundJob:
+        self.prune_jobs()
         job_id = str(uuid.uuid4())[:8]
         job = BackgroundJob(job_id=job_id, stage=stage)
         self.jobs[job_id] = job
         return job
+
+    def finish_job(self, job: BackgroundJob, status: str) -> None:
+        """Mark terminal status and trim completed history. Caller holds the context lock."""
+        job.status = status
+        # A long-running job that just finished is the newest terminal result,
+        # regardless of when it was admitted.
+        self.jobs.pop(job.job_id, None)
+        self.jobs[job.job_id] = job
+        self.prune_jobs()
+
+    def prune_jobs(self) -> None:
+        terminal = [key for key, job in self.jobs.items() if job.status != "running"]
+        for key in terminal[:-MAX_COMPLETED_JOBS]:
+            del self.jobs[key]
 
     def _read_episode_yaml_safe(self) -> dict[str, Any]:
         if not self.layout.episode_yaml.exists():
