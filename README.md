@@ -199,3 +199,13 @@ paid-production history. Repair the existing file explicitly before retrying. Ca
 metadata is validated before publication under the state lock. Handled text, provenance or final-state write
 failures restore the previous selection files and state; recovery errors retain named sibling backups.
 This covers handled errors, not process death between file replacements.
+
+### Dashboard job conflicts and production inputs
+
+The dashboard admits jobs atomically under its context lock. Draft, summarize, candidates and transcribe
+conflict with one another and with per-asset review/regenerate/refine jobs. Those per-asset operations
+conflict on the same asset; different assets may run independently. Production retains its own single-flight
+admission. A rejected request returns 409 with the conflicting stage and job ID, shown by the existing UI.
+This policy covers one dashboard process, not other dashboards or CLI invocations.
+Real Auphonic operations acquire production ownership before loading current YAML and building the payload;
+concurrent callers are rejected immediately. Dry runs remain read-only and do not acquire that lock.

@@ -3,7 +3,7 @@ from __future__ import annotations
 import fcntl
 import json
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -53,32 +53,31 @@ def run_produce(
     store = EpisodeWorkspaceStore(workspace)
     if not store.layout.episode_yaml.exists():
         raise typer.BadParameter(f"Missing episode.yaml in {workspace}")
-    episode_yaml = store.read_episode_yaml()
     try:
-        payload = build_auphonic_payload(episode_yaml=episode_yaml, workspace=workspace)
-        if cleanup is None:
-            cleanup = resolve_cleanup_superseded(episode_yaml)
-    except AuphonicConfigError as exc:
-        raise typer.BadParameter(str(exc)) from exc
+        # Real production owns its request snapshot and complete paid-operation cycle.
+        # Dry runs remain read-only and never acquire production ownership.
+        with nullcontext() if dry_run else _produce_lock(store):
+            episode_yaml = store.read_episode_yaml()
+            try:
+                payload = build_auphonic_payload(episode_yaml=episode_yaml, workspace=workspace)
+                if cleanup is None:
+                    cleanup = resolve_cleanup_superseded(episode_yaml)
+            except AuphonicConfigError as exc:
+                raise typer.BadParameter(str(exc)) from exc
 
-    if dry_run:
-        if update:
-            payload = _describe_update(_stored_production_uuid(store, episode_yaml), payload)
-        typer.echo(json.dumps(payload, indent=2, sort_keys=True))
-        return
+            if dry_run:
+                if update:
+                    payload = _describe_update(_stored_production_uuid(store, episode_yaml), payload)
+                typer.echo(json.dumps(payload, indent=2, sort_keys=True))
+                return
 
-    try:
-        credentials = load_auphonic_credentials()
-        # Single flight per episode: hold an exclusive lock for the whole
-        # start/wait/download cycle and read the stored production UUID only
-        # after acquiring it, so a concurrent run cannot start a second paid
-        # production for the same workspace.
-        with _produce_lock(store), AuphonicClient(credentials) as client:
-            production = _produce(client, store, episode_yaml, payload, restart=restart, update=update)
-            typer.echo(f"Auphonic production complete: {production.uuid}")
-            typer.echo(f"Auphonic outputs: {store.layout.auphonic_outputs_dir}")
-            if cleanup:
-                _cleanup_after_produce(client, store)
+            credentials = load_auphonic_credentials()
+            with AuphonicClient(credentials) as client:
+                production = _produce(client, store, episode_yaml, payload, restart=restart, update=update)
+                typer.echo(f"Auphonic production complete: {production.uuid}")
+                typer.echo(f"Auphonic outputs: {store.layout.auphonic_outputs_dir}")
+                if cleanup:
+                    _cleanup_after_produce(client, store)
     except AuphonicApiError as exc:
         raise typer.BadParameter(str(exc)) from exc
 

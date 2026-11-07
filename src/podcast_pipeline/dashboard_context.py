@@ -469,10 +469,26 @@ class DashboardContext:
         )
         return error
 
+    @staticmethod
+    def stages_conflict(first: str, second: str) -> bool:
+        if first == second:
+            return True
+        global_stages = {"draft", "summarize", "candidates", "transcribe"}
+        asset_stages = {"review", "regenerate", "refine"}
+        first_kind, _, first_asset = first.partition(":")
+        second_kind, _, second_asset = second.partition(":")
+        first_editorial = first_kind in asset_stages and bool(first_asset)
+        second_editorial = second_kind in asset_stages and bool(second_asset)
+        if first in global_stages and (second in global_stages or second_editorial):
+            return True
+        if second in global_stages and first_editorial:
+            return True
+        return first_editorial and second_editorial and first_asset == second_asset
+
     def running_job(self, stage: str) -> BackgroundJob | None:
-        """Return a still-running job for ``stage``, if any. Call with ``lock`` held."""
+        """Return a running job conflicting with ``stage``. Call with ``lock`` held."""
         for job in self.jobs.values():
-            if job.stage == stage and job.status == "running":
+            if self.stages_conflict(job.stage, stage) and job.status == "running":
                 return job
         return None
 

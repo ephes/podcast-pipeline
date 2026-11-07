@@ -117,12 +117,15 @@ class _DashboardApi:
         return payload, None
 
     def _start_job(self, stage: str, target: Callable[..., Any], *args: Any) -> Response:
-        """Start ``target`` as a background job unless a job for ``stage`` is already running."""
+        """Start ``target`` unless a conflicting dashboard job is running."""
         with self.ctx.lock:
             running = self.ctx.running_job(stage)
             if running is not None:
                 return JSONResponse(
-                    {"error": f"A {stage} job is already running", "job_id": running.job_id},
+                    {
+                        "error": f"A {running.stage} job is already running; conflicts with {stage}",
+                        "job_id": running.job_id,
+                    },
                     status_code=409,
                 )
             job = self.ctx.create_job(stage)
@@ -341,7 +344,7 @@ class _DashboardApi:
         assert payload is not None
 
         asset_id = payload.get("asset_id")
-        if not isinstance(asset_id, str):
+        if not isinstance(asset_id, str) or not asset_id.strip():
             return JSONResponse({"error": "Missing asset_id"}, status_code=400)
         max_iterations = _bounded_int(
             payload.get("max_iterations"), default=_DEFAULT_REVIEW_ITERATIONS, maximum=MAX_REVIEW_ITERATIONS
