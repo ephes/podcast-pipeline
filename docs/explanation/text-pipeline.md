@@ -106,8 +106,19 @@ In the LLM mode, the tag assets (`cms_tags`, `audio_tags`, `itunes_keywords`) ge
 prompt, optional few-shot examples from past episodes (`tags.examples`) and a deterministic post-filter that drops
 excluded terms and host names and caps the count. See `reference/configuration.md` ("Tag assets").
 
-Both modes write candidates to the same workspace paths. The stub generator uses deterministic UUIDs based on asset id
-and variant, so reruns with the same config are stable.
+Both modes write candidates to the same workspace paths. Every stub asset is Markdown, including the heading-wrapped
+slug and tag lists. Descriptions and social copy use key points; titles and slugs use topics. Shownotes use chapter
+headings and key points. The stub does not incorporate `summary_markdown` or call an agent.
+
+Stub UUIDs identify workspace-local slots: generator version, asset id and one-based variant. They are stable across
+processes and hash seeds, independent of source text, chapters, workspace path, candidate count and creation time.
+Changing the generator version changes the IDs and their `stub_asset_generator` provenance references
+(`version:NN`). These are not global content IDs: separate episodes can have identical slot IDs, and changed input
+can replace the content in an existing slot. The default creation time is fixed at `2000-01-01T00:00:00Z`; callers
+of `DraftCandidatesConfig` can supply an explicit timestamp, which is preserved.
+
+`tests/test_asset_candidates_stub.py` covers every asset's semantic markers and format, downstream tag/slug parsing,
+slot uniqueness, version changes and reproducibility in separate interpreters with different hash seeds.
 
 ## Complete cached generations
 
