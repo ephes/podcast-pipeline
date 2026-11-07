@@ -625,3 +625,12 @@ remain unsaved. Notes and custom-text save buttons are disabled while that asset
 newer edits stay marked as unsaved and can be saved after it finishes.
 Drafts live in this browser page only: save before closing or reloading it. Slow reads for an earlier
 asset cannot replace the current editor.
+
+### Dashboard keyboard interaction
+
+Dashboard section buttons are reachable with Tab and Shift-Tab; Enter or Space opens the named
+section, and the pressed state identifies the current section. Only its panel is exposed.
+Pick keeps focus on the equivalent candidate/tag/sidebar control after updates. Deleting a candidate
+moves to the next candidate (or previous at the end), or the current asset heading when it disappears.
+Background refreshes preserve the focused editor's latest text and caret. Enter in refinement/tag
+inputs submits only committed text; composing IME Enter is left to the input method.
