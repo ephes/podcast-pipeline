@@ -275,7 +275,9 @@
           <label for="meta-hosts">Hosts (comma-separated)</label>
           <input type="text" id="meta-hosts" placeholder="Jochen, Dominik">
         </div>
-        <button class="btn btn-sm" id="save-metadata-btn">Save Metadata</button>
+        <button class="btn btn-sm" id="save-metadata-btn" disabled>Save Metadata</button>
+        <button class="btn btn-sm btn-outline" id="retry-metadata-btn" hidden>Retry loading metadata</button>
+        <p id="metadata-status" role="status">Loading metadata...</p>
       </div>
     </div>
     <div class="card" id="active-jobs-card" style="display:none">
@@ -365,6 +367,11 @@ const state = {
   currentJobStreams: {},
   jobPollInterval: null,
 };
+const API_TIMEOUT_MS = 30000;
+let metadataLoaded = false;
+let metadataLoading = false;
+let metadataSaving = false;
+const metadataTouched = new Set();
 const TAG_ASSET_IDS = new Set(["audio_tags", "cms_tags", "itunes_keywords"]);
 const SINGLE_LINE_ASSET_IDS = new Set(["slug", "title_detail", "title_seo", "subtitle_auphonic"]);
 // Unsaved custom-text drafts per asset: {text, basedOn}
@@ -436,27 +443,44 @@ async function parseErrorResponse(resp) {
 }
 
 async function apiJson(method, path, body) {
-  const options = { method, headers: {} };
-  if (method !== "GET") {
-    // The server rejects state-changing requests without a JSON content type.
-    options.headers["Content-Type"] = "application/json";
-  }
-  if (body !== undefined) {
-    options.body = JSON.stringify(body);
-  }
+  const controller = new AbortController();
+  let timer;
+  const deadline = new Promise((_, reject) => {
+    timer = window.setTimeout(() => {
+      const message = method === "GET" ? "Request timed out. Retry when ready." :
+        "Request timed out; outcome unknown. Reload to check whether it completed before retrying.";
+      reject(new Error(message));
+      controller.abort();
+    }, API_TIMEOUT_MS);
+  });
+  async function exchange() {
+    const options = { method, headers: {}, signal: controller.signal };
+    if (method !== "GET") {
+      // The server rejects state-changing requests without a JSON content type.
+      options.headers["Content-Type"] = "application/json";
+    }
+    if (body !== undefined) {
+      options.body = JSON.stringify(body);
+    }
 
-  const resp = await fetch(path, options);
-  if (!resp.ok) {
-    throw new Error(await parseErrorResponse(resp));
+    const resp = await fetch(path, options);
+    if (!resp.ok) {
+      throw new Error(await parseErrorResponse(resp));
+    }
+
+    const text = await resp.text();
+    if (!text) return {};
+
+    try {
+      return JSON.parse(text);
+    } catch (_) {
+      throw new Error(`Invalid JSON response from ${path}`);
+    }
   }
-
-  const text = await resp.text();
-  if (!text) return {};
-
   try {
-    return JSON.parse(text);
-  } catch (_) {
-    throw new Error(`Invalid JSON response from ${path}`);
+    return await Promise.race([exchange(), deadline]);
+  } finally {
+    window.clearTimeout(timer);
   }
 }
 
@@ -584,26 +608,47 @@ async function loadStatus() {
 }
 
 async function loadEpisode() {
+  if (metadataLoading) return;
+  metadataLoading = true;
+  metadataLoaded = false;
+  elements.saveMetadataBtn.disabled = true;
+  const status = document.getElementById("metadata-status");
+  const retry = document.getElementById("retry-metadata-btn");
+  status.textContent = "Loading metadata...";
+  retry.hidden = true;
   try {
     state.episodeData = await apiJson("GET", "/api/episode");
-    elements.metaEpisodeId.value = state.episodeData.episode_id || "";
-    elements.metaHosts.value = (state.episodeData.hosts || []).join(", ");
-  } catch (_) {
-    // Keep metadata controls usable even if load fails.
+    if (!metadataTouched.has("episode_id")) elements.metaEpisodeId.value = state.episodeData.episode_id || "";
+    if (!metadataTouched.has("hosts")) elements.metaHosts.value = (state.episodeData.hosts || []).join(", ");
+    metadataLoaded = true;
+    status.textContent = "Metadata loaded.";
+  } catch (error) {
+    status.textContent = `Metadata not loaded: ${error instanceof Error ? error.message : String(error)} Retry loading before saving.`;
+    retry.hidden = false;
+  } finally {
+    metadataLoading = false;
+    elements.saveMetadataBtn.disabled = !metadataLoaded || metadataSaving;
   }
 }
 
 async function saveMetadata() {
+  if (!metadataLoaded || metadataLoading || metadataSaving) return;
   const episodeId = elements.metaEpisodeId.value.trim();
   const hostsRaw = elements.metaHosts.value.trim();
   const hosts = hostsRaw ? hostsRaw.split(",").map((h) => h.trim()).filter(Boolean) : [];
-
+  const status = document.getElementById("metadata-status");
+  metadataSaving = true;
+  elements.saveMetadataBtn.disabled = true;
+  status.textContent = "Saving metadata...";
   try {
     await apiJson("POST", "/api/episode", { episode_id: episodeId, hosts });
+    status.textContent = "Submitted metadata saved.";
     await loadStatus();
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    alert(`Save failed: ${message}`);
+    status.textContent = `Save failed: ${error instanceof Error ? error.message : String(error)}`;
+  } finally {
+    metadataSaving = false;
+    elements.saveMetadataBtn.disabled = !metadataLoaded || metadataLoading;
   }
 }
 
@@ -1714,6 +1759,9 @@ function wireEvents() {
 
   elements.closeBtn.addEventListener("click", handleDone);
   elements.saveMetadataBtn.addEventListener("click", saveMetadata);
+  document.getElementById("retry-metadata-btn").addEventListener("click", loadEpisode);
+  elements.metaEpisodeId.addEventListener("input", () => metadataTouched.add("episode_id"));
+  elements.metaHosts.addEventListener("input", () => metadataTouched.add("hosts"));
   elements.runDraftBtn.addEventListener("click", runDraft);
   elements.runSummarizeBtn.addEventListener("click", runSummarize);
   elements.runCandidatesBtn.addEventListener("click", runCandidates);
