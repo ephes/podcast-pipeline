@@ -8,12 +8,10 @@ import typer
 
 from podcast_pipeline.domain.models import Candidate
 from podcast_pipeline.pick_core import (
-    build_asset,
-    clear_manual_selection_provenance,
     find_candidate_by_id,
     load_candidates,
     load_workspace,
-    update_workspace_assets,
+    save_candidate_selection,
 )
 from podcast_pipeline.workspace_store import EpisodeWorkspaceStore
 
@@ -55,18 +53,16 @@ def run_pick(
             candidate_id=candidate_id,
             selected_candidate_id=existing.selected_candidate_id if existing else None,
         )
-        selected_path = store.write_selected_text(asset_key, chosen.format, chosen.content)
-        assets_by_id[asset_key] = build_asset(
-            asset_id=asset_key,
-            existing=existing,
+        workspace_state = save_candidate_selection(
+            store=store,
+            workspace=workspace_state,
+            candidate=chosen,
             candidates=candidates,
-            selected_candidate_id=chosen.candidate_id,
+            selected_format=chosen.format,
+            selected_text=chosen.content,
         )
-        workspace_state = update_workspace_assets(
-            clear_manual_selection_provenance(workspace_state, asset_key),
-            assets_by_id,
-        )
-        store.write_state(workspace_state)
+        assets_by_id = {asset.asset_id: asset for asset in workspace_state.assets}
+        selected_path = store.layout.selected_text_path(asset_key, chosen.format)
         selections.append(_Selection(asset_id=asset_key, candidate=chosen, path=selected_path))
 
     typer.echo(f"Workspace: {workspace}")

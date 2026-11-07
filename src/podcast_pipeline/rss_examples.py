@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import asyncio
 import html
 import json
+import math
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
+from time import monotonic
 from typing import Any
 from xml.etree import ElementTree
 
@@ -118,14 +121,57 @@ def write_rss_examples_jsonl(
     atomic_write_text(output_path, content)
 
 
+MAX_RSS_BYTES = 8 * 1024 * 1024
+MAX_RSS_REDIRECTS = 5
+
+
 def _fetch_rss_xml(*, feed_url: str, timeout_seconds: float) -> str:
+    if not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
+        raise RssExamplesError("RSS timeout must be finite and positive")
     try:
-        response = httpx.get(feed_url, timeout=timeout_seconds, follow_redirects=True)
+        return asyncio.run(_read_rss_xml(feed_url=feed_url, timeout_seconds=timeout_seconds))
+    except (TimeoutError, httpx.TimeoutException) as exc:
+        raise RssExamplesError("RSS transfer exceeded its deadline") from exc
     except httpx.RequestError as exc:
-        raise RssExamplesError(f"Failed to fetch RSS feed: {exc}") from exc
+        raise RssExamplesError(f"Failed to fetch RSS feed ({type(exc).__name__})") from exc
+
+
+async def _read_rss_xml(*, feed_url: str, timeout_seconds: float) -> str:
+    # Manual streamed redirects avoid reading unbounded intermediate bodies.
+    deadline = monotonic() + timeout_seconds
+    async with asyncio.timeout(timeout_seconds):
+        async with httpx.AsyncClient(timeout=timeout_seconds, follow_redirects=False) as client:
+            request = client.build_request("GET", feed_url, headers={"Accept-Encoding": "identity"})
+            for _ in range(MAX_RSS_REDIRECTS + 1):
+                response = await client.send(request, stream=True)
+                try:
+                    if monotonic() >= deadline:
+                        raise TimeoutError
+                    if response.next_request is not None:
+                        request = response.next_request
+                        continue
+                    return await _read_rss_body(response, deadline=deadline)
+                finally:
+                    await response.aclose()
+    raise RssExamplesError("RSS feed exceeded redirect limit")
+
+
+async def _read_rss_body(response: httpx.Response, *, deadline: float) -> str:
     if response.status_code >= 400:
         raise RssExamplesError(f"RSS feed request failed with HTTP {response.status_code}.")
-    return response.text
+    if response.headers.get("content-encoding", "identity").strip().lower() != "identity":
+        raise RssExamplesError("RSS feed returned unsupported Content-Encoding; use an uncompressed feed")
+    body = bytearray()
+    async for chunk in response.aiter_raw():
+        if monotonic() >= deadline:
+            raise TimeoutError
+        if len(body) + len(chunk) > MAX_RSS_BYTES:
+            raise RssExamplesError("RSS feed exceeds 8 MiB byte limit")
+        body.extend(chunk)
+    if monotonic() >= deadline:
+        raise TimeoutError
+    # Match HTTPX's text decoding while keeping the allocation bounded.
+    return bytes(body).decode(response.encoding or "utf-8", errors="replace")
 
 
 def _find_channel(root: ElementTree.Element) -> ElementTree.Element | None:

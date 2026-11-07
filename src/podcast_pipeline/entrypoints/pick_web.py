@@ -15,16 +15,14 @@ from podcast_pipeline.domain.models import Candidate, EpisodeWorkspace, TextForm
 from podcast_pipeline.local_web_guard import check_request
 from podcast_pipeline.markdown_html import markdown_to_deterministic_html
 from podcast_pipeline.pick_core import (
-    build_asset,
-    clear_manual_selection_provenance,
     custom_selection_format,
     find_candidate_by_id,
     load_candidates,
     load_workspace,
     read_current_selection,
+    save_candidate_selection,
     save_custom_selection,
     tag_pool_json,
-    update_workspace_assets,
     validate_asset_id,
     write_selected_tags,
 )
@@ -188,27 +186,22 @@ class _ServerContext:
         if match is None:
             return f"candidate_id {candidate_id_str} not found for asset {asset_id}"
 
-        ws = self.workspace_state
-        assets_by_id = {asset.asset_id: asset for asset in ws.assets}
-        existing = assets_by_id.get(asset_id)
-
+        selected_format, selected_text = match.format, match.content
         if asset_id in TAG_ASSET_IDS:
             selected_tags = parse_tag_list(match.content)
             error = tag_cap_error(asset_id, len(selected_tags), self.tag_settings.max_tags)
             if error is not None:
                 return error
-            content = render_selected_tags_markdown(asset_id, selected_tags)
-            self.store.write_selected_text(asset_id, TextFormat.markdown, content)
-        else:
-            self.store.write_selected_text(asset_id, match.format, match.content)
-        assets_by_id[asset_id] = build_asset(
-            asset_id=asset_id,
-            existing=existing,
+            selected_format = TextFormat.markdown
+            selected_text = render_selected_tags_markdown(asset_id, selected_tags)
+        self.workspace_state = save_candidate_selection(
+            store=self.store,
+            workspace=self.workspace_state,
+            candidate=match,
             candidates=candidates,
-            selected_candidate_id=match.candidate_id,
+            selected_format=selected_format,
+            selected_text=selected_text,
         )
-        self.workspace_state = update_workspace_assets(clear_manual_selection_provenance(ws, asset_id), assets_by_id)
-        self.store.write_state(self.workspace_state)
         return None
 
     def select_custom_text(self, asset_id: str, text: str, based_on_candidate_id: str | None) -> str | None:
