@@ -359,16 +359,19 @@ def test_api_deadline_covers_headers_and_body(page: Page, method: str, path: str
     assert "timed out" in message
     if method != "GET":
         assert "outcome unknown" in message
-    assert page.evaluate("server.requests.at(-1).signal.aborted")
-    count = page.evaluate("server.requests.length")
+    request_key = f"{method} {path}"
+    assert page.evaluate("key => server.requests.filter(r => r.key === key).at(-1).signal.aborted", request_key)
+    count = page.evaluate("key => server.requests.filter(r => r.key === key).length", request_key)
     page.evaluate("server.holds = []; server.bodyHolds = []")
     page.evaluate(
         "({method,path}) => apiJson(method, path, method === 'GET' ? undefined : {text:'B'})",
         {"method": method, "path": path},
     )
-    assert page.evaluate("server.requests.length") == count + 1
+    assert page.evaluate("key => server.requests.filter(r => r.key === key).length", request_key) == count + 1
     page.clock.run_for(30001)
-    assert page.evaluate("server.requests.at(-1).signal.aborted") is False  # successful timer was cleared
+    assert (
+        page.evaluate("key => server.requests.filter(r => r.key === key).at(-1).signal.aborted", request_key) is False
+    )  # successful timer was cleared
 
 
 def test_timeout_releases_custom_save_without_repeating_mutation(page: Page) -> None:
