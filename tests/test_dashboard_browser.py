@@ -178,3 +178,107 @@ def test_notes_ack_keeps_pending_candidate_refresh(page: Page) -> None:
     page.evaluate("server.pending[0].resolve(response({notes:'Stale stored notes'}))")
     expect(page.locator('[data-action="select-candidate"]')).to_have_count(3)
     expect(page.locator("#pick-notes")).to_have_value("Saved during refresh")
+
+
+def test_keyboard_panel_navigation(page: Page) -> None:
+    tabs = page.locator("#tabs button")
+    expect(tabs).to_have_count(5)
+    tabs.nth(0).focus()
+    for index, name in enumerate(["overview", "draft", "review", "pick", "produce"]):
+        if index:
+            page.keyboard.press("Tab")
+        expect(tabs.nth(index)).to_be_focused()
+        page.keyboard.press("Enter" if index % 2 else "Space")
+        expect(tabs.nth(index)).to_have_attribute("aria-pressed", "true")
+        expect(page.locator(f"#panel-{name}")).to_be_visible()
+        assert page.locator(".tab-panel:not([hidden])").count() == 1
+    page.keyboard.press("Shift+Tab")
+    expect(tabs.nth(3)).to_be_focused()
+    tabs.nth(1).click()
+    expect(tabs.nth(1)).to_be_focused()
+    expect(page.locator("#panel-draft")).to_be_visible()
+
+
+def test_pick_focus_after_select_tag_switch_and_delete(page: Page) -> None:
+    pick(page)
+    select = page.locator('[data-action="select-candidate"][data-candidate-id="c1"]')
+    select.focus()
+    select.press("Enter")
+    page.wait_for_function("server.requests.some(r => r.key === 'POST /api/select')")
+    page.wait_for_timeout(50)
+    expect(select).to_be_focused()
+    sidebar = page.locator('#pick-sidebar [data-asset-id="cms_tags"]')
+    sidebar.focus()
+    sidebar.press("Enter")
+    expect(page.locator("#pick-tag-input")).to_be_visible()
+    expect(sidebar).to_be_focused()
+    tag = page.locator('[data-action="toggle-tag"]')
+    tag.focus()
+    tag.press("Space")
+    expect(tag).to_have_attribute("aria-pressed", "true")
+    expect(tag).to_be_focused()
+    page.locator('#pick-sidebar [data-asset-id="title_detail"]').click()
+    delete = page.locator('[data-action="delete-candidate"][data-candidate-id="c1"]')
+    delete.focus()
+    delete.press("Enter")
+    expect(delete).to_have_count(0)
+    successor = page.locator('[data-action="delete-candidate"][data-candidate-id="c2"]')
+    expect(successor).to_be_focused()
+    successor.press("Enter")
+    expect(page.locator("#pick-asset-heading")).to_have_text("description")
+    expect(page.locator("#pick-asset-heading")).to_be_focused()
+
+
+def test_background_refresh_preserves_latest_focus_and_caret(page: Page) -> None:
+    pick(page)
+    notes = page.locator("#pick-notes")
+    notes.fill("Draft")
+    page.evaluate("server.holds = ['GET /api/assets/title_detail/notes']; void loadAssets()")
+    page.wait_for_function("server.pending.length === 1")
+    notes.press("End")
+    notes.press("!")
+    page.evaluate("server.pending[0].resolve(response({notes:'Stored'}))")
+    expect(notes).to_have_value("Draft!")
+    expect(notes).to_be_focused()
+    assert notes.evaluate("el => el.selectionStart") == 6
+    page.evaluate("void loadAssets()")
+    page.wait_for_function("server.pending.length === 2")
+    sidebar = page.locator('#pick-sidebar [data-asset-id="description"]')
+    sidebar.click()
+    expect(notes).to_have_attribute("data-asset-id", "description")
+    page.evaluate("server.pending[1].resolve(response({notes:'Stale'}))")
+    page.wait_for_timeout(30)
+    expect(sidebar).to_be_focused()
+    expect(notes).to_have_attribute("data-asset-id", "description")
+
+
+@pytest.mark.parametrize(
+    "asset,input_id,key",
+    [
+        ("title_detail", "pick-refine-instruction", "POST /api/assets/title_detail/refine"),
+        ("cms_tags", "pick-tag-input", "PUT /api/assets/cms_tags/tags"),
+    ],
+)
+def test_composition_enter_does_not_submit(page: Page, asset: str, input_id: str, key: str) -> None:
+    pick(page, asset)
+    control = page.locator(f"#{input_id}")
+    control.fill("Python")
+    for properties in [{"isComposing": True}, {"keyCode": 229}]:
+        prevented = control.evaluate(
+            """(el, properties) => {
+          el.dispatchEvent(new CompositionEvent('compositionstart', {bubbles:true}));
+          const event = new KeyboardEvent('keydown', {key:'Enter', bubbles:true, cancelable:true, ...properties});
+          el.dispatchEvent(event);
+          return event.defaultPrevented;
+        }""",
+            properties,
+        )
+        assert prevented is False
+    control.evaluate("""el => {
+      el.addEventListener('keydown', event => event.preventDefault(), {once:true});
+      el.dispatchEvent(new KeyboardEvent('keydown', {key:'Enter', bubbles:true, cancelable:true}));
+    }""")
+    assert page.evaluate("key => server.requests.filter(r => r.key === key).length", key) == 0
+    control.evaluate("el => el.dispatchEvent(new CompositionEvent('compositionend', {bubbles:true}))")
+    control.press("Enter")
+    page.wait_for_function("key => server.requests.filter(r => r.key === key).length === 1", arg=key)
