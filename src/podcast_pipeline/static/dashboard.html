@@ -26,6 +26,9 @@
           padding: 0 2rem; gap: 0; }
   .tab { padding: 0.6rem 1.2rem; cursor: pointer; border-bottom: 2px solid transparent;
          font-size: 0.85rem; color: var(--text-muted); transition: all 0.15s; }
+  .tab { border: none; background: none; font-family: inherit; border-bottom: 2px solid transparent; }
+  .tab:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+  .tab-panel[hidden] { display: none; }
   .tab:hover { color: var(--text); }
   .tab.active { color: var(--accent); border-bottom-color: var(--accent); font-weight: 600; }
 
@@ -248,15 +251,15 @@
     <button class="btn btn-sm btn-outline" id="close-btn">Close</button>
   </div>
 </header>
-<div class="tabs" id="tabs">
-  <div class="tab active" data-tab="overview">Overview</div>
-  <div class="tab" data-tab="draft">Draft</div>
-  <div class="tab" data-tab="review">Review</div>
-  <div class="tab" data-tab="pick">Pick</div>
-  <div class="tab" data-tab="produce">Produce</div>
-</div>
+<nav class="tabs" id="tabs" aria-label="Dashboard sections">
+  <button type="button" class="tab active" id="nav-overview" data-tab="overview" aria-controls="panel-overview" aria-pressed="true">Overview</button>
+  <button type="button" class="tab" id="nav-draft" data-tab="draft" aria-controls="panel-draft" aria-pressed="false">Draft</button>
+  <button type="button" class="tab" id="nav-review" data-tab="review" aria-controls="panel-review" aria-pressed="false">Review</button>
+  <button type="button" class="tab" id="nav-pick" data-tab="pick" aria-controls="panel-pick" aria-pressed="false">Pick</button>
+  <button type="button" class="tab" id="nav-produce" data-tab="produce" aria-controls="panel-produce" aria-pressed="false">Produce</button>
+</nav>
 <div class="content">
-  <div class="tab-panel active" id="panel-overview">
+  <div class="tab-panel active" id="panel-overview" aria-labelledby="nav-overview">
     <div class="card">
       <h3>Pipeline Status</h3>
       <div class="status-grid" id="status-grid">Loading...</div>
@@ -284,7 +287,7 @@
     </div>
   </div>
 
-  <div class="tab-panel" id="panel-draft">
+  <div class="tab-panel" id="panel-draft" aria-labelledby="nav-draft" hidden>
     <div class="card">
       <h3>Draft Pipeline</h3>
       <p class="progress-text">Run the full draft pipeline or individual steps.</p>
@@ -301,7 +304,7 @@
     </div>
   </div>
 
-  <div class="tab-panel" id="panel-review">
+  <div class="tab-panel" id="panel-review" aria-labelledby="nav-review" hidden>
     <div class="card">
       <h3>Review Loop</h3>
       <p class="progress-text">Run the Creator/Reviewer loop for an asset.</p>
@@ -324,7 +327,7 @@
     </div>
   </div>
 
-  <div class="tab-panel" id="panel-pick">
+  <div class="tab-panel" id="panel-pick" aria-labelledby="nav-pick" hidden>
     <div class="pick-container" id="pick-container">
       <nav class="pick-sidebar" id="pick-sidebar"></nav>
       <main class="pick-main" id="pick-main">
@@ -333,7 +336,7 @@
     </div>
   </div>
 
-  <div class="tab-panel" id="panel-produce">
+  <div class="tab-panel" id="panel-produce" aria-labelledby="nav-produce" hidden>
     <div class="card">
       <h3>Auphonic Production</h3>
       <div class="actions-row">
@@ -529,9 +532,11 @@ function openLogCard(cardEl, logEl, message, progressEl) {
 function switchTab(tabName) {
   document.querySelectorAll(".tab").forEach((tab) => {
     tab.classList.toggle("active", tab.dataset.tab === tabName);
+    tab.setAttribute("aria-pressed", String(tab.dataset.tab === tabName));
   });
   document.querySelectorAll(".tab-panel").forEach((panel) => {
     panel.classList.toggle("active", panel.id === `panel-${tabName}`);
+    panel.hidden = panel.id !== `panel-${tabName}`;
   });
 
   if (tabName === "pick") {
@@ -825,7 +830,43 @@ async function runReview() {
   }
 }
 
+// Capture at replacement time, after reads finish, so intervening typing and focus win.
+function capturePickFocus(container) {
+  const active = document.activeElement;
+  if (!container.contains(active) || active === container) return null;
+  const peers = [...container.querySelectorAll("[data-action]")].filter(item =>
+    item.dataset.action === active.dataset.action && item.dataset.assetId === active.dataset.assetId);
+  return { id: active.id, data: { ...active.dataset }, index: peers.indexOf(active),
+    value: active.value, start: active.selectionStart, end: active.selectionEnd,
+    direction: active.selectionDirection, details: active.closest("details")?.open };
+}
+
+function restorePickFocus(container, saved) {
+  if (!saved) return;
+  const controls = [...container.querySelectorAll("button,input,textarea,select")];
+  let target = controls.find(item => item.id === saved.id &&
+    ["assetId", "action", "candidateId", "tag"].every(key => item.dataset[key] === saved.data[key]));
+  if (!target && saved.data.candidateId) {
+    const peers = controls.filter(item => item.dataset.action === saved.data.action &&
+      item.dataset.assetId === saved.data.assetId);
+    target = peers[Math.min(saved.index, peers.length - 1)];
+  }
+  if (!target && saved.data.tag) {
+    target = controls.find(item => item.dataset.assetId === saved.data.assetId &&
+      item.dataset.tag === saved.data.tag && item.dataset.action === "toggle-tag");
+  }
+  target ||= document.getElementById("pick-asset-heading");
+  if (!target) return;
+  if (saved.details && target.closest("details")) target.closest("details").open = true;
+  if (target.id === saved.id && target.dataset.assetId === saved.data.assetId && saved.value !== undefined) {
+    target.value = saved.value;
+    if (typeof saved.start === "number") target.setSelectionRange(saved.start, saved.end, saved.direction);
+  }
+  target.focus({ preventScroll: true });
+}
+
 function renderPickSidebar() {
+  const focus = capturePickFocus(elements.pickSidebar);
   elements.pickSidebar.innerHTML = "";
 
   state.assets.forEach((asset) => {
@@ -847,6 +888,7 @@ function renderPickSidebar() {
 
     elements.pickSidebar.appendChild(item);
   });
+  restorePickFocus(elements.pickSidebar, focus);
 }
 
 function createPickAssetHeader(assetId) {
@@ -856,7 +898,9 @@ function createPickAssetHeader(assetId) {
   header.style.alignItems = "center";
   header.style.marginBottom = "1rem";
 
-  const title = document.createElement("span");
+  const title = document.createElement("h2");
+  title.id = "pick-asset-heading";
+  title.tabIndex = -1;
   title.style.fontSize = "1.1rem";
   title.style.fontWeight = "600";
   title.textContent = assetId;
@@ -1013,6 +1057,7 @@ function createPickTagsSection(asset) {
   const input = document.createElement("input");
   input.type = "text";
   input.id = "pick-tag-input";
+  input.dataset.assetId = asset.asset_id;
   input.className = "field-grow";
   input.placeholder = tagEditorPlaceholder(asset.asset_id);
   addRow.appendChild(input);
@@ -1301,6 +1346,7 @@ function createPickRegenSection(assetId) {
 }
 
 function selectPickAsset(assetId) {
+  if (!state.assets.some(asset => asset.asset_id === assetId)) return;
   state.activePickAsset = assetId;
   renderPickSidebar();
   renderPickMain();
@@ -1312,16 +1358,22 @@ async function renderPickMain() {
   const asset = state.assets.find((item) => item.asset_id === state.activePickAsset);
 
   if (!asset) {
+    const focus = capturePickFocus(main);
     main.innerHTML = "";
     main.removeAttribute("aria-busy");
     const empty = document.createElement("p");
     empty.style.color = "var(--text-muted)";
     empty.textContent = "Select an asset from the sidebar.";
+    empty.id = "pick-asset-heading";
+    empty.tabIndex = -1;
     main.appendChild(empty);
+    restorePickFocus(main, focus);
     return;
   }
 
+  let removedFocus = null;
   if (main.querySelector("#pick-notes")?.dataset.assetId !== asset.asset_id) {
+    removedFocus = capturePickFocus(main);
     main.textContent = `Loading ${asset.asset_id}...`;
   }
   main.setAttribute("aria-busy", "true");
@@ -1346,6 +1398,7 @@ async function renderPickMain() {
 
   if (generation !== pickRenderGeneration || !main.isConnected ||
       state.activePickAsset !== asset.asset_id || !state.assets.includes(asset)) return;
+  const focus = capturePickFocus(main) || (document.activeElement === document.body ? removedFocus : null);
   main.innerHTML = "";
   main.appendChild(createPickAssetHeader(asset.asset_id));
   if (acknowledgedNotes !== noteAcknowledgements[asset.asset_id]) {
@@ -1370,6 +1423,7 @@ async function renderPickMain() {
   main.appendChild(createPickRegenSection(asset.asset_id));
   main.removeAttribute("aria-busy");
   refreshPickSaveState();
+  restorePickFocus(main, focus);
 }
 
 async function loadAssets() {
@@ -1379,10 +1433,10 @@ async function loadAssets() {
     const assets = await apiJson("GET", "/api/assets");
     if (generation !== assetsLoadGeneration) return;
     state.assets = assets;
-    renderPickSidebar();
 
     if (state.assets.length === 0) {
       state.activePickAsset = null;
+      renderPickSidebar();
       await renderPickMain();
       return;
     }
@@ -1392,6 +1446,7 @@ async function loadAssets() {
       state.activePickAsset = state.assets[0].asset_id;
     }
 
+    renderPickSidebar();
     await renderPickMain();
   } catch (error) {
     if (generation !== assetsLoadGeneration) return;
@@ -1549,7 +1604,8 @@ async function addTagsFromInput(assetId) {
   if (tags.length === 0) return;
   const ok = await addTags(assetId, tags);
   if (ok) {
-    input.value = "";
+    const current = document.getElementById("pick-tag-input");
+    if (current?.dataset.assetId === assetId && current.value === raw) current.value = "";
   }
 }
 
@@ -1767,6 +1823,7 @@ function wireEvents() {
 
   elements.pickMain.addEventListener("keydown", (event) => {
     const target = event.target;
+    if (event.defaultPrevented || event.isComposing || event.keyCode === 229) return;
     if (!(target instanceof HTMLInputElement)) return;
     if (target.id === "pick-refine-instruction" && event.key === "Enter") {
       event.preventDefault();
