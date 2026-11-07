@@ -22,13 +22,12 @@ from podcast_pipeline.domain.models import Candidate, EpisodeWorkspace, TextForm
 from podcast_pipeline.markdown_html import markdown_to_deterministic_html
 from podcast_pipeline.pick_core import (
     MANUAL_SELECTION_PROVENANCE_KIND,
-    build_asset,
-    clear_manual_selection_provenance,
     custom_selection_format,
     find_candidate_by_id,
     load_candidates,
     load_workspace,
     read_current_selection,
+    save_candidate_selection,
     save_custom_selection,
     tag_pool_json,
     update_workspace_assets,
@@ -284,30 +283,23 @@ class DashboardContext:
             return f"candidate_id {candidate_id_str} not found for asset {asset_id}"
 
         ws = self._ensure_workspace_state()
-        assets_by_id = {asset.asset_id: asset for asset in ws.assets}
-        existing = assets_by_id.get(asset_id)
-
+        selected_format, selected_text = match.format, match.content
         if _is_tag_asset(asset_id):
             selected_tags = parse_tag_list(match.content)
             tag_settings, _hosts = load_episode_tag_settings(self.workspace)
             error = tag_cap_error(asset_id, len(selected_tags), tag_settings.max_tags)
             if error is not None:
                 return error
-            self.store.write_selected_text(
-                asset_id,
-                TextFormat.markdown,
-                render_selected_tags_markdown(asset_id, selected_tags),
-            )
-        else:
-            self.store.write_selected_text(asset_id, match.format, match.content)
-        assets_by_id[asset_id] = build_asset(
-            asset_id=asset_id,
-            existing=existing,
+            selected_format = TextFormat.markdown
+            selected_text = render_selected_tags_markdown(asset_id, selected_tags)
+        self._workspace_state = save_candidate_selection(
+            store=self.store,
+            workspace=ws,
+            candidate=match,
             candidates=asset_candidates,
-            selected_candidate_id=match.candidate_id,
+            selected_format=selected_format,
+            selected_text=selected_text,
         )
-        self._workspace_state = update_workspace_assets(clear_manual_selection_provenance(ws, asset_id), assets_by_id)
-        self.store.write_state(self._workspace_state)
         return None
 
     def select_custom_text(self, asset_id: str, text: str, based_on_candidate_id: str | None) -> str | None:
@@ -399,35 +391,30 @@ class DashboardContext:
         if match is None:
             return f"candidate_id {candidate_id_str} not found for asset {asset_id}"
 
-        self.store.delete_candidate_files(asset_id, candidate_uuid)
-
-        remaining_candidates = [
-            candidate for candidate in asset_candidates if candidate.candidate_id != candidate_uuid
-        ]
-        if remaining_candidates:
-            candidates[asset_id] = remaining_candidates
-        else:
-            candidates.pop(asset_id, None)
-
-        ws = self._ensure_workspace_state()
-        assets_by_id = {asset.asset_id: asset for asset in ws.assets}
-        existing = assets_by_id.get(asset_id)
-        if existing is not None:
+        def update(current: EpisodeWorkspace) -> EpisodeWorkspace:
+            self.store.delete_candidate_files(asset_id, candidate_uuid)
+            assets_by_id = {asset.asset_id: asset for asset in current.assets}
+            existing = assets_by_id.get(asset_id)
+            if existing is None:
+                return current
             selected_candidate_id = existing.selected_candidate_id
             if selected_candidate_id == candidate_uuid:
                 selected_candidate_id = None
                 self.store.clear_selected_text(asset_id)
-            updated_asset = existing.model_copy(
+            assets_by_id[asset_id] = existing.model_copy(
                 update={
-                    "candidates": [
-                        candidate for candidate in existing.candidates if candidate.candidate_id != candidate_uuid
-                    ],
+                    "candidates": [c for c in existing.candidates if c.candidate_id != candidate_uuid],
                     "selected_candidate_id": selected_candidate_id,
                 }
             )
-            assets_by_id[asset_id] = updated_asset
-            self._workspace_state = update_workspace_assets(ws, assets_by_id)
-            self.store.write_state(self._workspace_state)
+            return update_workspace_assets(current, assets_by_id)
+
+        self._workspace_state = self.store.update_state(update, default=self._ensure_workspace_state())
+        remaining_candidates = [c for c in asset_candidates if c.candidate_id != candidate_uuid]
+        if remaining_candidates:
+            candidates[asset_id] = remaining_candidates
+        else:
+            candidates.pop(asset_id, None)
 
         return None
 

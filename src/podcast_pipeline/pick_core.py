@@ -223,15 +223,17 @@ def write_selected_tags(
     error = tag_cap_error(asset_id, max(len(normalized), len(parse_tag_list(content))), max_tags)
     if error is not None:
         return workspace_state, error
-    store.write_selected_text(asset_id, TextFormat.markdown, content)
-    assets_by_id = {asset.asset_id: asset for asset in workspace_state.assets}
-    existing = assets_by_id.get(asset_id)
-    if existing is None or existing.selected_candidate_id is None:
-        return workspace_state, None
-    assets_by_id[asset_id] = existing.model_copy(update={"selected_candidate_id": None})
-    updated = update_workspace_assets(workspace_state, assets_by_id)
-    store.write_state(updated)
-    return updated, None
+
+    def update(current: EpisodeWorkspace) -> EpisodeWorkspace:
+        store.write_selected_text(asset_id, TextFormat.markdown, content)
+        assets_by_id = {asset.asset_id: asset for asset in current.assets}
+        existing = assets_by_id.get(asset_id)
+        if existing is None or existing.selected_candidate_id is None:
+            return current
+        assets_by_id[asset_id] = existing.model_copy(update={"selected_candidate_id": None})
+        return update_workspace_assets(current, assets_by_id)
+
+    return store.update_state(update, default=workspace_state), None
 
 
 def find_candidate_by_id(candidates: list[Candidate], candidate_id: UUID) -> Candidate | None:
@@ -342,28 +344,56 @@ def save_custom_selection(
     normalized = normalize_custom_selection_text(asset_id, text)
     fmt = custom_selection_format(asset_id)
 
-    store.write_selected_text(asset_id, fmt, normalized)
+    def update(current: EpisodeWorkspace) -> EpisodeWorkspace:
+        store.write_selected_text(asset_id, fmt, normalized)
 
-    created_at = datetime.now(UTC)
-    provenance = ProvenanceRef(kind=MANUAL_SELECTION_PROVENANCE_KIND, ref=asset_id, created_at=created_at)
-    store.write_provenance_json(
-        provenance,
-        {
-            "asset_id": asset_id,
-            "format": fmt.value,
-            "based_on_candidate_id": str(based_on.candidate_id) if based_on is not None else None,
-            "edited": based_on is None or based_on.content.strip() != normalized.strip(),
-        },
-    )
+        created_at = datetime.now(UTC)
+        provenance = ProvenanceRef(kind=MANUAL_SELECTION_PROVENANCE_KIND, ref=asset_id, created_at=created_at)
+        store.write_provenance_json(
+            provenance,
+            {
+                "asset_id": asset_id,
+                "format": fmt.value,
+                "based_on_candidate_id": str(based_on.candidate_id) if based_on is not None else None,
+                "edited": based_on is None or based_on.content.strip() != normalized.strip(),
+            },
+        )
 
-    assets_by_id = {asset.asset_id: asset for asset in workspace.assets}
-    assets_by_id[asset_id] = build_asset(
-        asset_id=asset_id,
-        existing=assets_by_id.get(asset_id),
-        candidates=candidates,
-        selected_candidate_id=None,
-    )
-    updated = update_workspace_assets(clear_manual_selection_provenance(workspace, asset_id), assets_by_id)
-    updated = updated.model_copy(update={"provenance": [*updated.provenance, provenance]})
-    store.write_state(updated)
-    return updated
+        assets_by_id = {asset.asset_id: asset for asset in current.assets}
+        assets_by_id[asset_id] = build_asset(
+            asset_id=asset_id,
+            existing=assets_by_id.get(asset_id),
+            candidates=candidates,
+            selected_candidate_id=None,
+        )
+        updated = update_workspace_assets(clear_manual_selection_provenance(current, asset_id), assets_by_id)
+        updated = updated.model_copy(update={"provenance": [*updated.provenance, provenance]})
+        return updated
+
+    return store.update_state(update, default=workspace)
+
+
+def save_candidate_selection(
+    *,
+    store: EpisodeWorkspaceStore,
+    workspace: EpisodeWorkspace,
+    candidate: Candidate,
+    candidates: list[Candidate],
+    selected_format: TextFormat,
+    selected_text: str,
+) -> EpisodeWorkspace:
+    """Publish one candidate selection against current state under the state lock."""
+    asset_id = candidate.asset_id
+
+    def update(current: EpisodeWorkspace) -> EpisodeWorkspace:
+        store.write_selected_text(asset_id, selected_format, selected_text)
+        assets_by_id = {asset.asset_id: asset for asset in current.assets}
+        assets_by_id[asset_id] = build_asset(
+            asset_id=asset_id,
+            existing=assets_by_id.get(asset_id),
+            candidates=candidates,
+            selected_candidate_id=candidate.candidate_id,
+        )
+        return update_workspace_assets(clear_manual_selection_provenance(current, asset_id), assets_by_id)
+
+    return store.update_state(update, default=workspace)

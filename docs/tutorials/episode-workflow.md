@@ -604,3 +604,15 @@ Each job retains the latest 128 KiB / 1024 progress entries; oversized writes re
 JSON/SSE responses include an earlier-progress-truncated notice when history was evicted.
 SSE progress IDs increase monotonically and support `Last-Event-ID` reconnects across eviction.
 The dashboard retains at most 64 terminal jobs plus all running jobs; evicted job URLs return 404.
+
+### Concurrent selections and RSS imports
+
+Candidate, custom-text and curated-tag selections, dashboard deletion and review completion reload state
+under the stable workspace state lock. Reviews needing human input keep the published selection.
+Only the intended asset/selection provenance changes; its output files are published under the same lock.
+Concurrent changes to different assets survive stale UI/CLI state, including Auphonic history.
+For the same asset, the last writer to acquire the lock wins and its artifacts match its metadata.
+RSS example imports stream at most 8 MiB of uncompressed input and share one whole-transfer deadline
+across connection, headers, redirects and body reads (`--timeout-seconds`, default 20 seconds).
+At most five redirects are followed without consuming intermediate bodies. Compressed feeds are refused;
+fetch, HTTP, size or deadline errors preserve the previous atomic JSONL export.

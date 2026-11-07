@@ -17,7 +17,7 @@ from podcast_pipeline.domain.models import (
     ReviewVerdict,
     TextFormat,
 )
-from podcast_pipeline.pick_core import clear_manual_selection_provenance
+from podcast_pipeline.pick_core import build_asset, clear_manual_selection_provenance
 from podcast_pipeline.review_loop_engine import (
     CreatorInput,
     CreatorOutput,
@@ -194,11 +194,6 @@ def _write_loop_artifacts(
     if protocol_state.iterations:
         final_iteration = protocol_state.iterations[-1]
         if protocol_state.decision is not None and protocol_state.decision.outcome == LoopOutcome.converged:
-            store.write_selected_text(
-                asset_id,
-                final_iteration.candidate.format,
-                final_iteration.candidate.content,
-            )
             selected_candidate_id = final_iteration.candidate.candidate_id
 
     _write_workspace_state(
@@ -216,27 +211,29 @@ def _write_workspace_state(
     protocol_state: LoopProtocolState,
     selected_candidate_id: UUID | None,
 ) -> None:
-    workspace = _load_workspace(store)
-    kind = _asset_kind(asset_id)
-    asset = Asset(
-        asset_id=asset_id,
-        kind=kind,
-        candidates=[it.candidate for it in protocol_state.iterations],
-        reviews=[it.review for it in protocol_state.iterations],
-        selected_candidate_id=selected_candidate_id,
-    )
-    if selected_candidate_id is not None:
-        workspace = clear_manual_selection_provenance(workspace, asset_id)
-    assets = _upsert_asset(list(workspace.assets), asset)
-    updated = workspace.model_copy(update={"assets": assets})
-    store.write_state(updated)
+    def update(workspace: EpisodeWorkspace) -> EpisodeWorkspace:
+        existing = next((asset for asset in workspace.assets if asset.asset_id == asset_id), None)
+        # A loop needing human input updates its candidates, not the published selection.
+        selected = (
+            selected_candidate_id
+            if selected_candidate_id is not None
+            else (existing.selected_candidate_id if existing is not None else None)
+        )
+        asset = build_asset(
+            asset_id=asset_id,
+            existing=existing,
+            candidates=[it.candidate for it in protocol_state.iterations],
+            selected_candidate_id=selected,
+        ).model_copy(update={"reviews": [it.review for it in protocol_state.iterations]})
+        if selected_candidate_id is not None:
+            final_candidate = protocol_state.iterations[-1].candidate
+            store.write_selected_text(asset_id, final_candidate.format, final_candidate.content)
+            workspace = clear_manual_selection_provenance(workspace, asset_id)
+        assets = _upsert_asset(list(workspace.assets), asset)
+        return workspace.model_copy(update={"assets": assets})
 
-
-def _load_workspace(store: EpisodeWorkspaceStore) -> EpisodeWorkspace:
-    if store.layout.state_json.exists():
-        return store.read_state()
-    episode_id = _episode_id_from_yaml(store)
-    return EpisodeWorkspace(episode_id=episode_id, root_dir=".")
+    default = EpisodeWorkspace(episode_id=_episode_id_from_yaml(store), root_dir=".")
+    store.update_state(update, default=default)
 
 
 def _episode_id_from_yaml(store: EpisodeWorkspaceStore) -> str:
@@ -246,13 +243,6 @@ def _episode_id_from_yaml(store: EpisodeWorkspaceStore) -> str:
         if isinstance(episode_id, str) and episode_id.strip():
             return episode_id
     return store.layout.root.name
-
-
-def _asset_kind(asset_id: str) -> AssetKind | None:
-    try:
-        return AssetKind(asset_id)
-    except ValueError:
-        return None
 
 
 def _upsert_asset(assets: list[Asset], updated: Asset) -> list[Asset]:

@@ -466,6 +466,23 @@ class EpisodeWorkspaceStore:
             self._write_state_unlocked(updated)
             return updated
 
+    def update_state(
+        self,
+        update: Callable[[EpisodeWorkspace], EpisodeWorkspace],
+        *,
+        default: EpisodeWorkspace,
+    ) -> EpisodeWorkspace:
+        """Reload and update state under its stable lock; callbacks must not reacquire it.
+
+        Selection callbacks publish their artifacts here as well, serializing metadata
+        and output with other selection writers. Same-asset changes are last-lock-writer wins.
+        """
+        with self._state_lock():
+            current = self.read_state() if self.layout.state_json.exists() else default
+            updated = EpisodeWorkspace.model_validate(update(current).model_dump())
+            self._write_state_unlocked(updated)
+            return updated
+
     def write_candidate(self, candidate: Candidate) -> Path:
         path = self.layout.candidate_json_path(
             candidate.asset_id,
