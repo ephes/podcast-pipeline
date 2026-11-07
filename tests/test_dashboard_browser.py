@@ -14,14 +14,17 @@ window.server = {
       candidate_id, format: 'plain', content: 'Synthetic copy', content_html: '<p>Synthetic copy</p>'
     })), selected_tags: [], tag_pool: [{tag: 'Python', count: 2}], selected_text: ''
   })),
-  requests: [], pending: [], holds: [], fail: [], notes: {},
+  requests: [], pending: [], holds: [], bodyHolds: [], fail: [], notes: {}, jobStatus: {},
 };
 window.response = body => ({ok: true, text: async () => JSON.stringify(body)});
 window.fetch = async (path, options = {}) => {
   const method = options.method || 'GET';
   const body = options.body ? JSON.parse(options.body) : {};
   const key = method + ' ' + path;
-  server.requests.push({key, body});
+  server.requests.push({key, body, signal: options.signal});
+  if (server.bodyHolds.includes(key)) {
+    return {ok: true, text: () => new Promise((resolve, reject) => server.pending.push({key, resolve, reject, body}))};
+  }
   if (server.holds.includes(key)) {
     return new Promise((resolve, reject) => server.pending.push({key, resolve, reject, body}));
   }
@@ -29,6 +32,7 @@ window.fetch = async (path, options = {}) => {
   if (path === '/api/assets') return response(server.assets);
   if (path === '/api/status') return response({stages: {}});
   if (path === '/api/jobs') return response([]);
+  if (path.startsWith('/api/jobs/')) return response(server.jobStatus);
   if (path === '/api/episode') return response({episode_id: 'synthetic', hosts: ['Host']});
   if (path.endsWith('/notes')) {
     if (method === 'PUT') server.notes[path] = body.notes;
@@ -51,16 +55,21 @@ window.confirm = () => true;
 
 
 @pytest.fixture
-def page() -> Iterator[Page]:
+def page(request: pytest.FixtureRequest) -> Iterator[Page]:
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch()
         page = browser.new_page()
-        page.add_init_script(FAKE_API)
+        held_episode = getattr(request, "param", False)
+        setup = "\nserver.holds = ['GET /api/episode'];" if held_episode else ""
+        page.add_init_script(FAKE_API + setup)
         page.route(
             "http://dashboard.test/", lambda route: route.fulfill(body=DASHBOARD.read_text(), content_type="text/html")
         )
         page.goto("http://dashboard.test/")
-        page.wait_for_function("state.episodeData !== null")
+        if held_episode:
+            page.wait_for_function("server.pending.length === 1")
+        else:
+            page.wait_for_function("state.episodeData !== null")
         yield page
         browser.close()
 
@@ -320,3 +329,117 @@ def test_superseded_tag_read_preserves_current_editor_and_focus(page: Page) -> N
     expect(page.locator("#pick-notes")).to_have_count(1)
     expect(page.locator("#pick-tag-input")).to_have_count(0)
     expect(current).to_be_focused()
+
+
+@pytest.mark.parametrize(
+    "method,path,body",
+    [
+        ("GET", "/api/jobs/synthetic", False),
+        ("GET", "/api/assets/title_detail/notes", True),
+        ("PUT", "/api/assets/title_detail/selection", False),
+        ("PUT", "/api/assets/title_detail/selection", True),
+    ],
+)
+def test_api_deadline_covers_headers_and_body(page: Page, method: str, path: str, body: bool) -> None:
+    page.clock.install()
+    page.evaluate(
+        """({method,path,body}) => {
+      const key = method + ' ' + path;
+      server[body ? 'bodyHolds' : 'holds'] = [key];
+      window.deadlineResult = null;
+      void apiJson(method, path, method === 'GET' ? undefined : {text:'A'})
+        .catch(error => { window.deadlineResult = error.message; });
+    }""",
+        {"method": method, "path": path, "body": body},
+    )
+    page.wait_for_function("server.pending.length === 1")
+    page.clock.run_for(30001)
+    page.wait_for_function("window.deadlineResult !== null", timeout=1000)
+    message = page.evaluate("window.deadlineResult")
+    assert "timed out" in message
+    if method != "GET":
+        assert "outcome unknown" in message
+    assert page.evaluate("server.requests.at(-1).signal.aborted")
+    count = page.evaluate("server.requests.length")
+    page.evaluate("server.holds = []; server.bodyHolds = []")
+    page.evaluate(
+        "({method,path}) => apiJson(method, path, method === 'GET' ? undefined : {text:'B'})",
+        {"method": method, "path": path},
+    )
+    assert page.evaluate("server.requests.length") == count + 1
+    page.clock.run_for(30001)
+    assert page.evaluate("server.requests.at(-1).signal.aborted") is False  # successful timer was cleared
+
+
+def test_timeout_releases_custom_save_without_repeating_mutation(page: Page) -> None:
+    pick(page)
+    page.clock.install()
+    page.evaluate("server.bodyHolds = ['PUT /api/assets/title_detail/selection']")
+    page.locator("#pick-custom-text").fill("A")
+    page.locator('[data-action="save-custom"]').click()
+    page.wait_for_function("server.pending.length === 1")
+    page.clock.run_for(30001)
+    expect(page.locator('[data-action="save-custom"]')).to_be_enabled()
+    expect(page.locator("#pick-custom-error")).to_contain_text("outcome unknown")
+    expect(page.locator("#pick-custom-text")).to_have_value("A")
+    assert page.evaluate("server.requests.filter(r => r.key.endsWith('/selection')).length") == 1
+    page.evaluate("server.bodyHolds = []")
+    page.locator("#pick-custom-text").fill("B")
+    page.locator('[data-action="save-custom"]').click()
+    page.wait_for_function("server.requests.filter(r => r.key.endsWith('/selection')).length === 2")
+
+
+def test_stalled_health_check_can_recover(page: Page) -> None:
+    page.clock.install()
+    page.evaluate("""() => {
+      server.holds = ['GET /api/jobs/synthetic'];
+      window.finished = false;
+      streamJob('synthetic', elements.draftLog, elements.draftProgress, () => { window.finished = true; });
+      void state.currentJobStreams.synthetic.onerror();
+    }""")
+    page.wait_for_function("server.pending.length === 1")
+    page.clock.run_for(30001)
+    page.evaluate("""() => {
+      server.holds = [];
+      server.jobStatus = {status: 'completed'};
+      void state.currentJobStreams.synthetic.onerror();
+    }""")
+    page.wait_for_function("window.finished", timeout=1000)
+    assert page.evaluate("server.requests.filter(r => r.key === 'GET /api/jobs/synthetic').length") == 2
+    assert page.evaluate("server.requests.some(r => r.key === 'POST /api/draft')") is False
+
+
+@pytest.mark.parametrize("page", [True], indirect=True)
+def test_metadata_load_preserves_typing_and_intentional_clear(page: Page) -> None:
+    expect(page.locator("#save-metadata-btn")).to_be_disabled()
+    expect(page.locator("#metadata-status")).to_contain_text("Loading")
+    page.locator("#meta-episode-id").fill("Typed title")
+    page.locator("#meta-hosts").fill("Temporary")
+    page.locator("#meta-hosts").fill("")
+    page.evaluate("server.pending[0].resolve(response({episode_id:'Stored', hosts:['Stored host']}))")
+    expect(page.locator("#save-metadata-btn")).to_be_enabled()
+    expect(page.locator("#meta-episode-id")).to_have_value("Typed title")
+    expect(page.locator("#meta-hosts")).to_have_value("")
+    page.locator("#save-metadata-btn").click()
+    page.wait_for_function("server.requests.some(r => r.key === 'POST /api/episode')")
+    assert page.evaluate("server.requests.find(r => r.key === 'POST /api/episode').body") == {
+        "episode_id": "Typed title",
+        "hosts": [],
+    }
+
+
+@pytest.mark.parametrize("page", [True], indirect=True)
+def test_metadata_failure_requires_baseline_and_explicit_retry(page: Page) -> None:
+    page.evaluate("server.pending[0].reject(new Error('Synthetic read failure'))")
+    expect(page.locator("#metadata-status")).to_contain_text("Synthetic read failure")
+    expect(page.locator("#save-metadata-btn")).to_be_disabled()
+    page.evaluate("saveMetadata()")
+    assert page.evaluate("server.requests.some(r => r.key === 'POST /api/episode')") is False
+    page.locator("#meta-episode-id").fill("Retained draft")
+    page.evaluate("server.holds = []")
+    page.locator("#retry-metadata-btn").click()
+    expect(page.locator("#save-metadata-btn")).to_be_enabled()
+    expect(page.locator("#meta-episode-id")).to_have_value("Retained draft")
+    expect(page.locator("#meta-hosts")).to_have_value("Host")
+    page.locator("#save-metadata-btn").click()
+    page.wait_for_function("server.requests.some(r => r.key === 'POST /api/episode')")
