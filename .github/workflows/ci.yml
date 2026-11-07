@@ -31,5 +31,8 @@ jobs:
       - name: Typecheck
         run: just typecheck
 
+      - name: Install browser
+        run: uv run playwright install --with-deps chromium
+
       - name: Test
         run: just test
