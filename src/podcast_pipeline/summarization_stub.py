@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from dataclasses import dataclass
@@ -8,7 +9,7 @@ from pathlib import Path
 from podcast_pipeline.domain.intermediate_formats import ChunkSummary, EpisodeSummary
 from podcast_pipeline.domain.models import ProvenanceRef
 from podcast_pipeline.markdown_html import markdown_to_deterministic_html
-from podcast_pipeline.workspace_store import EpisodeWorkspaceLayout
+from podcast_pipeline.workspace_store import EpisodeWorkspaceLayout, atomic_write_text, preserve_files
 
 
 @dataclass(frozen=True)
@@ -204,14 +205,41 @@ def write_episode_summary_artifacts(
     json_path.parent.mkdir(parents=True, exist_ok=True)
 
     dumped = json.dumps(episode_summary.model_dump(mode="json"), indent=2, sort_keys=True) + "\n"
-    json_path.write_text(dumped, encoding="utf-8")
 
     md_text = episode_summary.summary_markdown
     if not md_text.endswith("\n"):
         md_text += "\n"
-    md_path.write_text(md_text, encoding="utf-8")
 
     html_text = _wrap_html_document(markdown_to_deterministic_html(md_text))
-    html_path.write_text(html_text, encoding="utf-8")
+    files = {json_path: dumped, md_path: md_text, html_path: html_text}
+    marker = layout.episode_summary_dir / "complete.json"
+    chunk_manifest = layout.transcript_chunks_dir / "complete.json"
+    manifest = {
+        "version": 1,
+        "chunks_sha256": hashlib.sha256(chunk_manifest.read_bytes()).hexdigest() if chunk_manifest.exists() else None,
+        "files": {path.name: hashlib.sha256(text.encode("utf-8")).hexdigest() for path, text in files.items()},
+    }
+    with preserve_files([*files, marker]):
+        for path, text in files.items():
+            atomic_write_text(path, text)
+        atomic_write_text(marker, json.dumps(manifest, sort_keys=True) + "\n")
 
     return json_path, md_path, html_path
+
+
+def episode_summary_is_complete(layout: EpisodeWorkspaceLayout) -> bool:
+    try:
+        marker = json.loads((layout.episode_summary_dir / "complete.json").read_text(encoding="utf-8"))
+        chunks = (layout.transcript_chunks_dir / "complete.json").read_bytes()
+        if marker["version"] != 1 or marker["chunks_sha256"] != hashlib.sha256(chunks).hexdigest():
+            return False
+        paths = [
+            layout.episode_summary_json_path(),
+            layout.episode_summary_markdown_path(),
+            layout.episode_summary_html_path(),
+        ]
+        return set(marker["files"]) == {path.name for path in paths} and all(
+            marker["files"][path.name] == hashlib.sha256(path.read_bytes()).hexdigest() for path in paths
+        )
+    except (OSError, ValueError, KeyError, TypeError):
+        return False

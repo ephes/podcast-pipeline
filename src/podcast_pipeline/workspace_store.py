@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import stat
 import tempfile
 from collections.abc import Callable, Iterator, Mapping
@@ -105,6 +106,64 @@ def _atomic_write_text(path: Path, text: str) -> None:
 
 def atomic_write_text(path: Path, text: str) -> None:
     _atomic_write_text(path, text)
+
+
+def _restore_preserved_files(backups: dict[Path, Path | None], retained: set[Path]) -> list[str]:
+    failures: list[str] = []
+    for path, saved in reversed(list(backups.items())):
+        try:
+            if saved is None:
+                path.unlink(missing_ok=True)
+            else:
+                os.replace(saved, path)
+                retained.discard(saved)
+        except OSError as exc:
+            failures.append(f"{path}: {exc}; backup: {saved}")
+    return failures
+
+
+@contextmanager
+def preserve_files(paths: list[Path]) -> Iterator[None]:
+    """Restore named files after a handled failure; callers own serialization.
+
+    Backups live beside their targets for same-filesystem rename recovery. This
+    is not a crash transaction: process death can leave a mixed set and backups.
+    """
+    backups: dict[Path, Path | None] = {}
+    retained: set[Path] = set()
+    try:
+        for path in dict.fromkeys(paths):
+            path.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                with (
+                    path.open("rb") as source,
+                    tempfile.NamedTemporaryFile(
+                        dir=path.parent,
+                        prefix=f".{path.name}.backup-",
+                        delete=False,
+                    ) as target,
+                ):
+                    backup = Path(target.name)
+                    backups[path] = backup
+                    shutil.copyfileobj(source, target)
+                    os.fchmod(target.fileno(), stat.S_IMODE(os.fstat(source.fileno()).st_mode))
+            except FileNotFoundError:
+                backups[path] = None
+        try:
+            yield
+        except BaseException as original:
+            retained.update(saved for saved in backups.values() if saved is not None)
+            failures = _restore_preserved_files(backups, retained)
+            if failures:
+                message = "Artifact recovery failed: " + "; ".join(failures)
+                original.add_note(message)
+                if isinstance(original, Exception):
+                    raise WorkspaceStoreError(message) from original
+            raise
+    finally:
+        for saved in backups.values():
+            if saved is not None and saved not in retained:
+                saved.unlink(missing_ok=True)
 
 
 def _publish_markdown_selection(markdown_path: Path, html_path: Path, content: str) -> None:

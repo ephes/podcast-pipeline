@@ -177,3 +177,11 @@ Metadata shows loading/errors and requires a successfully loaded baseline before
 Use **Retry loading metadata** after a load error; it keeps keyboard focus through retry and
 becomes **Reload metadata** after success. Typing during loading, including intentionally
 clearing hosts, takes precedence over the loaded field values.
+
+### Draft cache completion
+
+Transcript chunks and episode summaries use `complete.json` manifests with SHA-256 file identities.
+Drafting rebuilds legacy, interrupted, missing or changed sets instead of accepting a surviving prefix
+or summary JSON alone. Chunk manifests bind the source transcript and record chunker settings;
+summary manifests bind the chunk manifest and all three summary outputs. A contradictory LLM chunk ID
+fails before that result is saved or reduced. See `docs/explanation/text-pipeline.md` for recovery limits.

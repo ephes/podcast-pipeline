@@ -1,10 +1,15 @@
 from __future__ import annotations
 
 import bisect
+import hashlib
 import json
+import os
 import re
-from dataclasses import dataclass
+import shutil
+import tempfile
+from dataclasses import asdict, dataclass
 from pathlib import Path
+from uuid import uuid4
 
 from podcast_pipeline.domain.intermediate_formats import TranscriptChunkMeta
 from podcast_pipeline.workspace_store import EpisodeWorkspaceLayout
@@ -169,22 +174,74 @@ def write_transcript_chunks(
     transcript_path: Path,
     config: ChunkerConfig,
 ) -> list[TranscriptChunkMeta]:
-    transcript_text = transcript_path.read_text(encoding="utf-8")
+    transcript_bytes = transcript_path.read_bytes()
+    transcript_text = transcript_bytes.decode("utf-8")
     chunks = chunk_transcript_text(transcript_text, config=config)
 
+    destination = layout.transcript_chunks_dir
+    destination.parent.mkdir(parents=True, exist_ok=True)
     metas: list[TranscriptChunkMeta] = []
-    for chunk in chunks:
-        text_path = layout.transcript_chunk_text_path(chunk.chunk_id)
-        meta_path = layout.transcript_chunk_meta_json_path(chunk.chunk_id)
-
-        text_path.parent.mkdir(parents=True, exist_ok=True)
-        text_path.write_text(chunk.text, encoding="utf-8")
-
-        text_relpath = text_path.relative_to(layout.root).as_posix()
-        meta = TranscriptChunkMeta(chunk_id=chunk.chunk_id, text_relpath=text_relpath)
-
-        dumped = json.dumps(meta.model_dump(mode="json"), indent=2, sort_keys=True) + "\n"
-        meta_path.write_text(dumped, encoding="utf-8")
-        metas.append(meta)
-
+    with tempfile.TemporaryDirectory(dir=destination.parent, prefix=".chunks-") as temp:
+        staged = Path(temp) / "new"
+        staged.mkdir()
+        files: dict[str, str] = {}
+        for chunk in chunks:
+            text_path = layout.transcript_chunk_text_path(chunk.chunk_id)
+            meta_path = layout.transcript_chunk_meta_json_path(chunk.chunk_id)
+            meta = TranscriptChunkMeta(
+                chunk_id=chunk.chunk_id,
+                text_relpath=text_path.relative_to(layout.root).as_posix(),
+            )
+            for path, text in (
+                (text_path, chunk.text),
+                (meta_path, json.dumps(meta.model_dump(mode="json"), indent=2, sort_keys=True) + "\n"),
+            ):
+                (staged / path.name).write_text(text, encoding="utf-8")
+                files[path.name] = hashlib.sha256(text.encode("utf-8")).hexdigest()
+            metas.append(meta)
+        manifest = {
+            "version": 1,
+            "source_sha256": hashlib.sha256(transcript_bytes).hexdigest(),
+            "config": asdict(config),
+            "chunk_ids": [meta.chunk_id for meta in metas],
+            "files": files,
+        }
+        (staged / "complete.json").write_text(json.dumps(manifest, sort_keys=True) + "\n", encoding="utf-8")
+        backup = destination.parent / f".chunks-previous-{uuid4().hex}"
+        if destination.exists():
+            os.replace(destination, backup)
+        try:
+            os.replace(staged, destination)
+        except BaseException:
+            if backup.exists():
+                try:
+                    os.replace(backup, destination)
+                except BaseException as recovery_error:
+                    recovery_error.add_note(f"Previous chunks retained at {backup}")
+                    raise
+            raise
+        if backup.exists():
+            shutil.rmtree(backup)
     return metas
+
+
+def discover_complete_chunk_ids(layout: EpisodeWorkspaceLayout) -> list[int]:
+    """Ignore interrupted/legacy chunks and sets built from another transcript."""
+    directory = layout.transcript_chunks_dir
+    try:
+        manifest = json.loads((directory / "complete.json").read_text(encoding="utf-8"))
+        source = (layout.transcript_dir / "transcript.txt").read_bytes()
+        ids = manifest["chunk_ids"]
+        if manifest["version"] != 1 or manifest["source_sha256"] != hashlib.sha256(source).hexdigest():
+            return []
+        if not isinstance(ids, list) or ids != list(range(1, len(ids) + 1)):
+            return []
+        expected = {f"chunk_{i:04d}{ext}" for i in ids for ext in (".txt", ".json")}
+        if set(manifest["files"]) != expected:
+            return []
+        for name in expected:
+            if hashlib.sha256((directory / name).read_bytes()).hexdigest() != manifest["files"][name]:
+                return []
+        return ids
+    except (OSError, ValueError, KeyError, TypeError):
+        return []

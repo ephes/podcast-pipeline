@@ -49,6 +49,8 @@ def summarize_transcript_chunks_llm(
         )
 
         summary = ChunkSummary.model_validate(payload)
+        if summary.chunk_id != chunk_id:
+            raise ValueError(f"Chunk summary identity does not match requested chunk {chunk_id}")
 
         out_path = layout.chunk_summary_json_path(chunk_id)
         out_path.parent.mkdir(parents=True, exist_ok=True)
