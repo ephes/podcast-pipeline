@@ -121,3 +121,14 @@ Custom transcribers must write UTF-8, nonblank `transcript.txt` (and optionally 
 the supplied `--output-dir` / `{output_dir}`, which is a fresh temporary directory for each invocation.
 Only successful fresh output is published; missing, empty or failed custom output keeps the previous transcript.
 Custom wrappers must not hard-code the workspace transcript path.
+
+### Dashboard request and history limits
+
+Dashboard JSON requests are streamed with a 64 KiB body ceiling (413 on overflow), regardless of
+Content-Length. Invalid UTF-8, malformed JSON or nesting beyond 64 levels returns 400 before work starts;
+local host/origin checks run before body consumption. A worker launch failure records a failed job,
+returns 503 and permits immediate retry while preserving single-flight admission.
+Each job retains the latest 128 KiB / 1024 progress entries; oversized writes retain a UTF-8 tail.
+JSON/SSE responses include an earlier-progress-truncated notice when history was evicted.
+SSE progress IDs increase monotonically and support `Last-Event-ID` reconnects across eviction.
+The dashboard retains at most 64 terminal jobs plus all running jobs; evicted job URLs return 404.
