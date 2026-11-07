@@ -639,4 +639,4 @@ def test_run_transcribe_fails_instead_of_importing_stale_output(
         )
 
     assert not stale_cache_output.exists()
-    assert not (mode_dir / "transcript.txt").exists()
+    assert (mode_dir / "transcript.txt").read_text() == "stale workspace transcript"
