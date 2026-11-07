@@ -452,11 +452,9 @@ class EpisodeWorkspaceStore:
             os.close(fd)  # closing the descriptor releases the lock
 
     def _stored_auphonic_fields(self) -> dict[str, Any]:
-        if not self.layout.state_json.exists():
-            return {}
         try:
             stored = self.read_state()
-        except WorkspaceStoreError:
+        except FileNotFoundError:
             return {}
         if stored.auphonic_production_uuid is None and not stored.auphonic_productions:
             return {}
@@ -530,17 +528,26 @@ class EpisodeWorkspaceStore:
         update: Callable[[EpisodeWorkspace], EpisodeWorkspace],
         *,
         default: EpisodeWorkspace,
+        artifact_paths: list[Path] | None = None,
     ) -> EpisodeWorkspace:
         """Reload and update state under its stable lock; callbacks must not reacquire it.
 
         Selection callbacks publish their artifacts here as well, serializing metadata
         and output with other selection writers. Same-asset changes are last-lock-writer wins.
+        With artifact_paths, handled callback/state-write errors restore those files and
+        state together. Callbacks must validate intended metadata before publishing.
         """
         with self._state_lock():
             current = self.read_state() if self.layout.state_json.exists() else default
-            updated = EpisodeWorkspace.model_validate(update(current).model_dump())
-            self._write_state_unlocked(updated)
-            return updated
+            # Back up affected outputs under the same lock as the current state.
+            with (
+                preserve_files([self.layout.state_json, *artifact_paths])
+                if artifact_paths
+                else contextlib.nullcontext()
+            ):
+                updated = EpisodeWorkspace.model_validate(update(current).model_dump())
+                self._write_state_unlocked(updated)
+                return updated
 
     def write_candidate(self, candidate: Candidate) -> Path:
         path = self.layout.candidate_json_path(

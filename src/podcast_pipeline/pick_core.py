@@ -344,11 +344,25 @@ def save_custom_selection(
     normalized = normalize_custom_selection_text(asset_id, text)
     fmt = custom_selection_format(asset_id)
 
-    def update(current: EpisodeWorkspace) -> EpisodeWorkspace:
-        store.write_selected_text(asset_id, fmt, normalized)
+    created_at = datetime.now(UTC)
+    provenance = ProvenanceRef(kind=MANUAL_SELECTION_PROVENANCE_KIND, ref=asset_id, created_at=created_at)
 
-        created_at = datetime.now(UTC)
-        provenance = ProvenanceRef(kind=MANUAL_SELECTION_PROVENANCE_KIND, ref=asset_id, created_at=created_at)
+    def update(current: EpisodeWorkspace) -> EpisodeWorkspace:
+        assets_by_id = {asset.asset_id: asset for asset in current.assets}
+        assets_by_id[asset_id] = build_asset(
+            asset_id=asset_id,
+            existing=assets_by_id.get(asset_id),
+            candidates=candidates,
+            selected_candidate_id=None,
+        )
+        updated = update_workspace_assets(clear_manual_selection_provenance(current, asset_id), assets_by_id)
+        updated = EpisodeWorkspace.model_validate(
+            updated.model_copy(
+                update={"provenance": [*updated.provenance, provenance]},
+            ).model_dump()
+        )
+        # Validate intended metadata before publishing text and provenance.
+        store.write_selected_text(asset_id, fmt, normalized)
         store.write_provenance_json(
             provenance,
             {
@@ -358,19 +372,11 @@ def save_custom_selection(
                 "edited": based_on is None or based_on.content.strip() != normalized.strip(),
             },
         )
-
-        assets_by_id = {asset.asset_id: asset for asset in current.assets}
-        assets_by_id[asset_id] = build_asset(
-            asset_id=asset_id,
-            existing=assets_by_id.get(asset_id),
-            candidates=candidates,
-            selected_candidate_id=None,
-        )
-        updated = update_workspace_assets(clear_manual_selection_provenance(current, asset_id), assets_by_id)
-        updated = updated.model_copy(update={"provenance": [*updated.provenance, provenance]})
         return updated
 
-    return store.update_state(update, default=workspace)
+    paths = [store.layout.selected_text_path(asset_id, fmt) for fmt in TextFormat]
+    paths.append(store.layout.provenance_json_path(provenance.kind, provenance.ref))
+    return store.update_state(update, default=workspace, artifact_paths=paths)
 
 
 def save_candidate_selection(
@@ -386,7 +392,6 @@ def save_candidate_selection(
     asset_id = candidate.asset_id
 
     def update(current: EpisodeWorkspace) -> EpisodeWorkspace:
-        store.write_selected_text(asset_id, selected_format, selected_text)
         assets_by_id = {asset.asset_id: asset for asset in current.assets}
         assets_by_id[asset_id] = build_asset(
             asset_id=asset_id,
@@ -394,6 +399,14 @@ def save_candidate_selection(
             candidates=candidates,
             selected_candidate_id=candidate.candidate_id,
         )
-        return update_workspace_assets(clear_manual_selection_provenance(current, asset_id), assets_by_id)
+        updated = EpisodeWorkspace.model_validate(
+            update_workspace_assets(
+                clear_manual_selection_provenance(current, asset_id),
+                assets_by_id,
+            ).model_dump()
+        )
+        store.write_selected_text(asset_id, selected_format, selected_text)
+        return updated
 
-    return store.update_state(update, default=workspace)
+    paths = [store.layout.selected_text_path(asset_id, fmt) for fmt in TextFormat]
+    return store.update_state(update, default=workspace, artifact_paths=paths)

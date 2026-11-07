@@ -191,3 +191,11 @@ Handled publication or metadata failures restore the previous canonical files, Y
 A new transcript without chapters removes the canonical chapters and current-mode chapter pointers;
 manually imported canonical chapters are retired too, so pass `draft --chapters` again to reuse them.
 Other modes remain available. Content-bound draft caches rebuild for changed bytes and survive identical output.
+
+### Durable state and selections
+
+Normal writers refuse invalid or unreadable existing `state.json`; they never initialize over damaged
+paid-production history. Repair the existing file explicitly before retrying. Candidate/custom selection
+metadata is validated before publication under the state lock. Handled text, provenance or final-state write
+failures restore the previous selection files and state; recovery errors retain named sibling backups.
+This covers handled errors, not process death between file replacements.
