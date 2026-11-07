@@ -279,7 +279,7 @@ def test_dashboard_tag_failure_preserves_selection(
 
     def fail_replace(source: str | Path, target: str | Path) -> None:
         nonlocal called
-        if Path(target) == paths[1]:
+        if Path(target) == paths[1] and not called:
             called = True
             raise OSError("injected dashboard publication failure")
         original_replace(source, target)

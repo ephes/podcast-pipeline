@@ -55,3 +55,10 @@ pre-mixed FLAC almost went to Auphonic before the producer stopped it.
   per-track algorithms) without uploading them again, `podcast produce --update` edits the stored production and
   starts it again. It never sends `reset_data` (which deletes a multitrack production's tracks and stems) or
   `multi_input_files` (which an update appends as extra tracks); per-track settings go to each track's own endpoint.
+
+### Damaged state is not missing state
+
+Whole-state writers preserve valid current production UUID/history and refuse invalid or unreadable
+existing `state.json` before replacing it. Only a genuinely missing file can be initialized from a default.
+Repair damaged state explicitly from a known-good backup; do not discard it or retry with a default workspace,
+because it can contain the only recoverable record of paid productions.

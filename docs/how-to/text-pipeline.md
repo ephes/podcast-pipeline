@@ -97,3 +97,12 @@ chunks and their episode summary. The next draft rebuilds them; identical transc
 completed caches. Failed publication preserves the old canonical source and its usable caches. These
 recoveries cover handled errors, not process death between multiple file replacements; see
 `../explanation/text-pipeline.md` for completion validation and retained backup limits.
+
+### Selection commit failures
+
+Candidate and custom-text saves reload current state under the stable workspace state lock, prepare and
+validate the intended metadata, and preserve the affected selected text formats, manual provenance and
+`state.json` before publishing. A handled provenance, serialization or final state-replacement failure restores
+the previous usable selection. Retry after fixing the write error. A recovery error names retained sibling
+backups; repair those before retrying. This is rollback for handled failures, not a multi-file rename transaction:
+process death can leave mixed files and backups, requiring inspection against `state.json` and provenance.
