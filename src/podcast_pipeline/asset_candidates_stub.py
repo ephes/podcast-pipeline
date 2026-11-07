@@ -306,8 +306,8 @@ def _render_asset_content(
         raise ValueError(f"Unsupported asset kind: {kind}")
 
     chapters_clean = _render_chapters(chapters)
-    key_points = episode_summary.key_points
-    topics = episode_summary.topics
+    key_points = [point.strip() for point in episode_summary.key_points if point.strip()]
+    topics = [topic.strip() for topic in episode_summary.topics if topic.strip()]
 
     title_topic_a = _first(
         _pick(topics, variant=variant, limit=1),

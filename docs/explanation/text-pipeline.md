@@ -120,6 +120,27 @@ of `DraftCandidatesConfig` can supply an explicit timestamp, which is preserved.
 `tests/test_asset_candidates_stub.py` covers every asset's semantic markers and format, downstream tag/slug parsing,
 slot uniqueness, version changes and reproducibility in separate interpreters with different hash seeds.
 
+### Stub source boundaries
+
+Key points and topics are stripped and blank entries are ignored before rotation, so whitespace-only input now uses
+the same fallbacks as empty input instead of producing empty keyword lists or stray `-` tags. The source summary
+and chapter sequences are not changed. Duplicate entries retain their positions during rotation; the downstream
+tag reader strips and deduplicates tags with case folding, retaining the first spelling. Variants wrap around the
+source length, so a singleton can appear twice in a short summary or title. Repeated copy is expected in this stub.
+
+Empty topics use `podcasting` / `automation` for titles, `podcasting-automation` for the slug and
+`podcast, audio, automation` for iTunes keywords. CMS/audio tag lists use the `(none)` placeholder. Empty key points
+use `A quick tour of the episode.` for descriptions and social copy, the episode title for the subtitle, and
+`A new episode is out.` / `We cover practical takeaways.` for short summaries. Stub slugs retain only ASCII a-z,
+digits and hyphens, with `episode` as the fallback when no ASCII content survives; Unicode text elsewhere is kept.
+
+Chapter lines are stripped, blanks removed, and the original order retained. Shownotes include the first 12 chapters
+as headings, each with up to three rotated key points; without chapters they have a `Notes` section with up to six
+key points. Description and YouTube chapter lists include all chapters, or `(no chapters provided)` when empty.
+The existing Markdown renderer escapes raw HTML and refuses unsafe link schemes, while retaining supported links,
+inline code and punctuation. These rules are exercised from the generator through the production HTML renderer in
+`tests/test_asset_candidates_stub_boundaries.py`, alongside empty, whitespace, Unicode and repeated-source cases.
+
 ## Complete cached generations
 
 `transcript/chunks/complete.json` version 1 records `source_sha256`, `config`, ordered `chunk_ids`
