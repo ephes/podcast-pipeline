@@ -174,5 +174,6 @@ A timed-out change has an unknown outcome: reload and check the stored selection
 deliberately retrying. The dashboard never automatically repeats a mutation. Failed requests release
 pending controls and preserve drafts; interrupted job streams can retry their health lookup.
 Metadata shows loading/errors and requires a successfully loaded baseline before Save is available.
-Use **Retry loading metadata** after a load error. Typing during loading, including intentionally
+Use **Retry loading metadata** after a load error; it keeps keyboard focus through retry and
+becomes **Reload metadata** after success. Typing during loading, including intentionally
 clearing hosts, takes precedence over the loaded field values.

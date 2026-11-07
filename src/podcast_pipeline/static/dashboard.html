@@ -615,18 +615,22 @@ async function loadEpisode() {
   const status = document.getElementById("metadata-status");
   const retry = document.getElementById("retry-metadata-btn");
   status.textContent = "Loading metadata...";
-  retry.hidden = true;
+  // Keep Retry focusable while pending; the loading guard ignores repeat activation.
+  retry.setAttribute("aria-disabled", "true");
   try {
     state.episodeData = await apiJson("GET", "/api/episode");
     if (!metadataTouched.has("episode_id")) elements.metaEpisodeId.value = state.episodeData.episode_id || "";
     if (!metadataTouched.has("hosts")) elements.metaHosts.value = (state.episodeData.hosts || []).join(", ");
     metadataLoaded = true;
     status.textContent = "Metadata loaded.";
+    retry.textContent = "Reload metadata";
   } catch (error) {
-    status.textContent = `Metadata not loaded: ${error instanceof Error ? error.message : String(error)} Retry loading before saving.`;
+    status.textContent = `Metadata not loaded: ${error instanceof Error ? error.message : String(error)}`;
+    retry.textContent = "Retry loading metadata";
     retry.hidden = false;
   } finally {
     metadataLoading = false;
+    retry.setAttribute("aria-disabled", "false");
     elements.saveMetadataBtn.disabled = !metadataLoaded || metadataSaving;
   }
 }

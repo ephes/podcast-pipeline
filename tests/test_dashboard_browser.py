@@ -443,3 +443,26 @@ def test_metadata_failure_requires_baseline_and_explicit_retry(page: Page) -> No
     expect(page.locator("#meta-hosts")).to_have_value("Host")
     page.locator("#save-metadata-btn").click()
     page.wait_for_function("server.requests.some(r => r.key === 'POST /api/episode')")
+
+
+@pytest.mark.parametrize("page", [True], indirect=True)
+def test_metadata_retry_keeps_keyboard_focus(page: Page) -> None:
+    page.evaluate("server.pending[0].reject(new Error('First failure'))")
+    retry = page.locator("#retry-metadata-btn")
+    expect(retry).to_be_visible()
+    retry.focus()
+    retry.press("Enter")
+    page.wait_for_function("server.pending.length === 2")
+    expect(retry).to_be_focused()
+    expect(retry).to_have_attribute("aria-disabled", "true")
+    retry.press("Enter")
+    assert page.evaluate("server.pending.length") == 2
+    page.evaluate("server.pending[1].reject(new Error('Second failure'))")
+    expect(page.locator("#metadata-status")).to_contain_text("Second failure")
+    expect(retry).to_be_focused()
+    expect(retry).to_have_attribute("aria-disabled", "false")
+    page.evaluate("server.holds = []")
+    retry.press("Enter")
+    expect(page.locator("#save-metadata-btn")).to_be_enabled()
+    expect(retry).to_be_focused()
+    expect(retry).to_have_text("Reload metadata")
