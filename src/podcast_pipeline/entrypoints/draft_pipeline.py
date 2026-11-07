@@ -10,8 +10,8 @@ import typer
 
 from podcast_pipeline.entrypoints.draft_candidates import run_draft_candidates
 from podcast_pipeline.entrypoints.summarize_demo import run_summarize_demo
-from podcast_pipeline.summarization_stub import StubSummarizerConfig
-from podcast_pipeline.transcript_chunker import ChunkerConfig
+from podcast_pipeline.summarization_stub import StubSummarizerConfig, episode_summary_is_complete
+from podcast_pipeline.transcript_chunker import ChunkerConfig, discover_complete_chunk_ids
 from podcast_pipeline.workspace_store import EpisodeWorkspaceStore
 
 
@@ -31,19 +31,7 @@ def _copy_chapters_into_workspace(*, workspace: Path, chapters: Path) -> None:
 
 
 def _discover_chunk_ids(store: EpisodeWorkspaceStore) -> list[int]:
-    """Find existing chunk files in the workspace and return sorted chunk ids."""
-    chunks_dir = store.layout.transcript_chunks_dir
-    if not chunks_dir.exists():
-        return []
-    ids: list[int] = []
-    for path in sorted(chunks_dir.glob("chunk_*.txt")):
-        stem = path.stem
-        try:
-            chunk_id = int(stem.replace("chunk_", ""))
-            ids.append(chunk_id)
-        except ValueError:
-            continue
-    return sorted(ids)
+    return discover_complete_chunk_ids(store.layout)
 
 
 def _load_chapters_lines(store: EpisodeWorkspaceStore) -> list[str]:
@@ -211,7 +199,7 @@ def _run_llm_pipeline(
 
     # Check if episode summary already exists
     summary_path = store.layout.episode_summary_json_path()
-    if summary_path.exists():
+    if episode_summary_is_complete(store.layout):
         typer.echo("Episode summary already exists, skipping summarization", err=True)
         from podcast_pipeline.domain.intermediate_formats import EpisodeSummary
 

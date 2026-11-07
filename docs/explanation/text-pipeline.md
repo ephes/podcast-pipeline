@@ -108,3 +108,27 @@ excluded terms and host names and caps the count. See `reference/configuration.m
 
 Both modes write candidates to the same workspace paths. The stub generator uses deterministic UUIDs based on asset id
 and variant, so reruns with the same config are stable.
+
+## Complete cached generations
+
+`transcript/chunks/complete.json` version 1 records `source_sha256`, `config`, ordered `chunk_ids`
+and a `files` map of text/metadata basenames to SHA-256 digests. Chunks are written in a sibling staging
+directory, then the previous directory is moved aside and the completed directory renamed into place.
+A handled publication error restores the previous directory. Discovery rejects legacy prefixes,
+missing or changed members and sets whose source no longer matches `transcript/transcript.txt`.
+
+`summaries/episode/complete.json` version 1 records `chunks_sha256` (the chunk manifest digest)
+and `files` digests for JSON, Markdown and HTML. All outputs are rendered before publication;
+individual files use atomic replacement and the completion marker is written last. Handled write
+failures restore the previous files and their permissions. If recovery itself fails, remaining files
+are still restored where possible, the error identifies retained sibling backups for manual repair. A summary JSON alone is never a reusable completed generation.
+Rerun draft to rebuild incomplete legacy sets. Explicit contradictory LLM chunk identities are rejected;
+omitted identities are supplied from the request.
+
+These are local recovery boundaries, not multi-file atomic transactions or cross-process scheduling.
+Process death between renames can leave an incomplete generation (and sibling staging/backup files);
+completion validation prevents its reuse, and a retry rebuilds it. The deterministic dry-run golden
+fixture includes both manifests; new failure fixtures use invented transcript and summary text.
+
+Changing chunker settings alone does not invalidate an existing complete set; re-ingest the transcript
+to deliberately rebuild with different settings. The manifest records the settings used for provenance.

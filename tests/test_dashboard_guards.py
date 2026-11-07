@@ -25,6 +25,7 @@ from podcast_pipeline.domain.models import Asset, AssetKind, Candidate, EpisodeW
 from podcast_pipeline.entrypoints import dashboard_web, produce
 from podcast_pipeline.entrypoints.pick_web import _PickWebHandler, _ServerContext
 from podcast_pipeline.local_web_guard import check_request
+from podcast_pipeline.transcript_chunker import ChunkerConfig, write_transcript_chunks
 from podcast_pipeline.workspace_store import EpisodeWorkspaceStore
 
 _PORT = 8765
@@ -529,9 +530,10 @@ def test_timed_out_summarize_job_fails_and_frees_the_stage(tmp_path: Path, monke
     workspace.mkdir()
     store = EpisodeWorkspaceStore(workspace)
     store.write_episode_yaml({"episode_id": "ep1"})
-    chunk_path = store.layout.transcript_chunk_text_path(1)
-    chunk_path.parent.mkdir(parents=True, exist_ok=True)
-    chunk_path.write_text("Hello world transcript chunk.", encoding="utf-8")
+    transcript_path = store.layout.transcript_dir / "transcript.txt"
+    transcript_path.parent.mkdir(parents=True, exist_ok=True)
+    transcript_path.write_text("Hello world transcript chunk.", encoding="utf-8")
+    write_transcript_chunks(layout=store.layout, transcript_path=transcript_path, config=ChunkerConfig())
 
     config_path = tmp_path / "config.yaml"
     config_path.write_text("agents:\n  drafter:\n    command: sleep\n    args: ['30']\n", encoding="utf-8")

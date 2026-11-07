@@ -6,6 +6,7 @@ from typing import Any
 
 import pytest
 
+from podcast_pipeline.domain.intermediate_formats import EpisodeSummary
 from podcast_pipeline.domain.models import AssetKind
 from podcast_pipeline.entrypoints.draft_pipeline import (
     _clear_stale_artifacts,
@@ -13,8 +14,8 @@ from podcast_pipeline.entrypoints.draft_pipeline import (
     _ingest_transcript,
     run_draft_pipeline,
 )
-from podcast_pipeline.summarization_stub import StubSummarizerConfig
-from podcast_pipeline.transcript_chunker import ChunkerConfig
+from podcast_pipeline.summarization_stub import StubSummarizerConfig, write_episode_summary_artifacts
+from podcast_pipeline.transcript_chunker import ChunkerConfig, write_transcript_chunks
 from podcast_pipeline.workspace_store import EpisodeWorkspaceStore
 
 
@@ -35,7 +36,7 @@ def test_discover_chunk_ids_finds_existing(tmp_path: Path) -> None:
     chunks_dir.mkdir(parents=True)
     (chunks_dir / "chunk_0001.txt").write_text("hello\n")
     (chunks_dir / "chunk_0002.txt").write_text("world\n")
-    assert _discover_chunk_ids(store) == [1, 2]
+    assert _discover_chunk_ids(store) == []  # a legacy prefix has no completion manifest
 
 
 def test_clear_stale_artifacts_removes_chunks_and_summaries(tmp_path: Path) -> None:
@@ -197,7 +198,9 @@ def test_run_draft_pipeline_non_dry_run_new_workspace(
     assert fake_runner.call_count > 0
 
 
+@pytest.mark.parametrize("incomplete", [False, True])
 def test_run_draft_pipeline_reuses_existing_summary(
+    incomplete: bool,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -212,22 +215,19 @@ def test_run_draft_pipeline_reuses_existing_summary(
     transcript_dir = store.layout.transcript_dir
     transcript_dir.mkdir(parents=True)
     (transcript_dir / "transcript.txt").write_text("Hallo welt.\n")
-    chunks_dir = store.layout.transcript_chunks_dir
-    chunks_dir.mkdir(parents=True)
-    (chunks_dir / "chunk_0001.txt").write_text("Hallo welt.\n")
-
-    # Pre-populate episode summary
-    summary_dir = store.layout.episode_summary_dir
-    summary_dir.mkdir(parents=True)
-    summary_data = {
-        "version": 1,
-        "summary_markdown": "# Existing\n\nAlready done\n",
-        "key_points": ["existing"],
-        "topics": ["existing_topic"],
-    }
-    store.layout.episode_summary_json_path().write_text(
-        json.dumps(summary_data, indent=2) + "\n",
+    write_transcript_chunks(
+        layout=store.layout, transcript_path=transcript_dir / "transcript.txt", config=ChunkerConfig()
     )
+    write_episode_summary_artifacts(
+        layout=store.layout,
+        episode_summary=EpisodeSummary(
+            summary_markdown="# Existing\n\nAlready done\n",
+            key_points=["existing"],
+            topics=["existing_topic"],
+        ),
+    )
+    if incomplete:
+        store.layout.episode_summary_html_path().unlink()
 
     fake_runner = _FakeRunner()
 
@@ -256,10 +256,12 @@ def test_run_draft_pipeline_reuses_existing_summary(
 
     # Summary should still contain the pre-existing content (not overwritten)
     summary = json.loads(store.layout.episode_summary_json_path().read_text())
-    assert summary["summary_markdown"] == "# Existing\n\nAlready done\n"
+    assert summary["summary_markdown"] == (
+        "# Episode\n\nStub episode\n" if incomplete else "# Existing\n\nAlready done\n"
+    )
 
     # Runner should only have been called for asset candidates (13), not for summarization
-    assert fake_runner.call_count == len(AssetKind)
+    assert fake_runner.call_count == len(AssetKind) + (2 if incomplete else 0)
 
 
 def test_run_draft_pipeline_transcript_override_invalidates_cache(
