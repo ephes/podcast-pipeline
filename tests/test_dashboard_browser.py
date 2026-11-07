@@ -469,3 +469,31 @@ def test_metadata_retry_keeps_keyboard_focus(page: Page) -> None:
     expect(page.locator("#save-metadata-btn")).to_be_enabled()
     expect(retry).to_be_focused()
     expect(retry).to_have_text("Reload metadata")
+
+
+@pytest.mark.parametrize("page", [True], indirect=True)
+@pytest.mark.parametrize("save_timeout", [False, True])
+def test_metadata_reload_cannot_hide_pending_save_failure(page: Page, save_timeout: bool) -> None:
+    page.evaluate("server.pending[0].reject(new Error('Initial load failed'))")
+    reload = page.locator("#retry-metadata-btn")
+    expect(reload).to_be_visible()
+    page.evaluate("server.holds = []")
+    reload.click()
+    expect(page.locator("#save-metadata-btn")).to_be_enabled()
+    if save_timeout:
+        page.clock.install()
+    page.evaluate("server.holds = ['POST /api/episode']")
+    page.locator("#save-metadata-btn").click()
+    page.wait_for_function("server.pending.length === 2")
+    expect(reload).to_have_attribute("aria-disabled", "true")
+    reload.focus()
+    reload.press("Enter")
+    assert page.evaluate("server.requests.filter(r => r.key === 'GET /api/episode').length") == 2
+    if save_timeout:
+        page.clock.run_for(30001)
+        expect(page.locator("#metadata-status")).to_contain_text("outcome unknown")
+    else:
+        page.evaluate("server.pending[1].reject(new Error('Synthetic save failure'))")
+        expect(page.locator("#metadata-status")).to_contain_text("Synthetic save failure")
+    expect(reload).to_have_attribute("aria-disabled", "false")
+    expect(reload).to_be_focused()

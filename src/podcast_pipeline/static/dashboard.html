@@ -29,6 +29,7 @@
   .tab { border: none; background: none; font-family: inherit; border-bottom: 2px solid transparent; }
   .tab:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
   .tab-panel[hidden] { display: none; }
+  .btn[aria-disabled="true"] { opacity: 0.6; cursor: progress; }
   .tab:hover { color: var(--text); }
   .tab.active { color: var(--accent); border-bottom-color: var(--accent); font-weight: 600; }
 
@@ -608,7 +609,7 @@ async function loadStatus() {
 }
 
 async function loadEpisode() {
-  if (metadataLoading) return;
+  if (metadataLoading || metadataSaving) return;
   metadataLoading = true;
   metadataLoaded = false;
   elements.saveMetadataBtn.disabled = true;
@@ -642,6 +643,7 @@ async function saveMetadata() {
   const hosts = hostsRaw ? hostsRaw.split(",").map((h) => h.trim()).filter(Boolean) : [];
   const status = document.getElementById("metadata-status");
   metadataSaving = true;
+  document.getElementById("retry-metadata-btn").setAttribute("aria-disabled", "true");
   elements.saveMetadataBtn.disabled = true;
   status.textContent = "Saving metadata...";
   try {
@@ -652,6 +654,7 @@ async function saveMetadata() {
     status.textContent = `Save failed: ${error instanceof Error ? error.message : String(error)}`;
   } finally {
     metadataSaving = false;
+    document.getElementById("retry-metadata-btn").setAttribute("aria-disabled", String(metadataLoading));
     elements.saveMetadataBtn.disabled = !metadataLoaded || metadataLoading;
   }
 }
