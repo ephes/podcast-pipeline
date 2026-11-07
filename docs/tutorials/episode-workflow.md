@@ -616,3 +616,12 @@ RSS example imports stream at most 8 MiB of uncompressed input and share one who
 across connection, headers, redirects and body reads (`--timeout-seconds`, default 20 seconds).
 At most five redirects are followed without consuming intermediate bodies. Compressed feeds are refused;
 fetch, HTTP, size or deadline errors preserve the previous atomic JSONL export.
+
+### Dashboard drafts
+
+The dashboard keeps unsaved editorial notes and custom text per asset while you switch assets,
+refresh candidates or refine text. A save acknowledges only the submitted revision; newer edits
+remain unsaved. Notes and custom-text save buttons are disabled while that asset has a save pending;
+newer edits stay marked as unsaved and can be saved after it finishes.
+Drafts live in this browser page only: save before closing or reloading it. Slow reads for an earlier
+asset cannot replace the current editor.

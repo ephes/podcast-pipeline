@@ -366,6 +366,12 @@ const TAG_ASSET_IDS = new Set(["audio_tags", "cms_tags", "itunes_keywords"]);
 const SINGLE_LINE_ASSET_IDS = new Set(["slug", "title_detail", "title_seo", "subtitle_auphonic"]);
 // Unsaved custom-text drafts per asset: {text, basedOn}
 const customDrafts = {};
+const customSaves = new Set();
+const noteDrafts = {};
+const noteSaves = new Set();
+const noteAcknowledgements = {};
+let pickRenderGeneration = 0;
+let assetsLoadGeneration = 0;
 
 const elements = {
   tabs: document.getElementById("tabs"),
@@ -1070,7 +1076,7 @@ function createPickTagsSection(asset) {
 function customDraft(asset) {
   if (!customDrafts[asset.asset_id]) {
     const text = asset.custom_selected ? (asset.selected_text || "").trimEnd() : "";
-    customDrafts[asset.asset_id] = { text, basedOn: null };
+    customDrafts[asset.asset_id] = { text, basedOn: null, revision: 0 };
   }
   return customDrafts[asset.asset_id];
 }
@@ -1129,6 +1135,10 @@ function createPickCustomSection(asset) {
   textarea.value = draft.text;
   section.appendChild(textarea);
 
+  const status = document.createElement("p");
+  status.id = "pick-custom-status";
+  status.setAttribute("role", "status");
+  section.appendChild(status);
   section.appendChild(createRefineRow(asset, draft));
 
   const error = document.createElement("div");
@@ -1214,35 +1224,57 @@ function startCustomFromCandidate(assetId, candidateId) {
   const asset = state.assets.find((item) => item.asset_id === assetId);
   const candidate = asset?.candidates.find((item) => item.candidate_id === candidateId);
   if (!asset || !candidate) return;
-  customDrafts[assetId] = { ...customDraft(asset), text: editableCandidateText(asset, candidate), basedOn: candidateId };
+  customDrafts[assetId] = { ...customDraft(asset), text: editableCandidateText(asset, candidate), basedOn: candidateId, textDirty: true, revision: customDraft(asset).revision + 1 };
   const textarea = document.getElementById("pick-custom-text");
   if (!textarea) return;
   textarea.value = customDrafts[assetId].text;
   textarea.focus();
   textarea.scrollIntoView({ block: "center" });
+  refreshPickSaveState();
+}
+
+function refreshPickSaveState() {
+  const assetId = elements.pickMain.querySelector("#pick-notes")?.dataset.assetId;
+  if (!assetId) return;
+  for (const [action, pending] of [["save-custom", customSaves], ["save-notes", noteSaves]]) {
+    const button = elements.pickMain.querySelector(`[data-action="${action}"]`);
+    if (button) button.disabled = pending.has(assetId);
+  }
+  const status = document.getElementById("pick-custom-status");
+  if (status) status.textContent = customSaves.has(assetId) ?
+    "Saving submitted text; newer edits remain unsaved." :
+    customDrafts[assetId]?.textDirty ? "Unsaved custom text." : "";
 }
 
 async function saveCustomSelection(assetId) {
+  if (customSaves.has(assetId)) return;
   const asset = state.assets.find((item) => item.asset_id === assetId);
   const textarea = document.getElementById("pick-custom-text");
   const errorEl = document.getElementById("pick-custom-error");
-  if (!asset || !textarea) return;
+  if (!asset || !textarea || textarea.dataset.assetId !== assetId) return;
   const draft = customDraft(asset);
   draft.text = textarea.value;
   if (draft.basedOn && !asset.candidates.some((item) => item.candidate_id === draft.basedOn)) {
     draft.basedOn = null; // the candidate it started from was deleted meanwhile
   }
   if (errorEl) errorEl.textContent = "";
+  const submitted = { ...draft };
+  customSaves.add(assetId);
+  refreshPickSaveState();
   try {
     await apiJson("PUT", `/api/assets/${encodeURIComponent(assetId)}/selection`, {
       text: draft.text,
       based_on_candidate_id: draft.basedOn,
     });
+    if (draft.text === submitted.text && draft.basedOn === submitted.basedOn) draft.textDirty = false;
+    if (customDrafts[assetId] === draft && draft.revision === submitted.revision) delete customDrafts[assetId];
   } catch (error) {
-    if (errorEl) errorEl.textContent = error instanceof Error ? error.message : String(error);
+    if (errorEl?.isConnected) errorEl.textContent = error instanceof Error ? error.message : String(error);
     return;
+  } finally {
+    customSaves.delete(assetId);
+    refreshPickSaveState();
   }
-  delete customDrafts[assetId];
   await loadAssets();
   await loadStatus();
 }
@@ -1275,11 +1307,13 @@ function selectPickAsset(assetId) {
 }
 
 async function renderPickMain() {
+  const generation = ++pickRenderGeneration;
   const main = elements.pickMain;
   const asset = state.assets.find((item) => item.asset_id === state.activePickAsset);
 
-  main.innerHTML = "";
   if (!asset) {
+    main.innerHTML = "";
+    main.removeAttribute("aria-busy");
     const empty = document.createElement("p");
     empty.style.color = "var(--text-muted)";
     empty.textContent = "Select an asset from the sidebar.";
@@ -1287,6 +1321,11 @@ async function renderPickMain() {
     return;
   }
 
+  if (main.querySelector("#pick-notes")?.dataset.assetId !== asset.asset_id) {
+    main.textContent = `Loading ${asset.asset_id}...`;
+  }
+  main.setAttribute("aria-busy", "true");
+  const acknowledgedNotes = noteAcknowledgements[asset.asset_id];
   let notes = "";
   try {
     const response = await apiJson("GET", `/api/assets/${encodeURIComponent(asset.asset_id)}/notes`);
@@ -1295,6 +1334,7 @@ async function renderPickMain() {
     notes = "";
   }
 
+  if (generation !== pickRenderGeneration || !main.isConnected) return;
   if (isTagAsset(asset.asset_id) && !Array.isArray(asset.selected_tags)) {
     try {
       const tagsResponse = await apiJson("GET", `/api/assets/${encodeURIComponent(asset.asset_id)}/tags`);
@@ -1304,8 +1344,14 @@ async function renderPickMain() {
     }
   }
 
+  if (generation !== pickRenderGeneration || !main.isConnected ||
+      state.activePickAsset !== asset.asset_id || !state.assets.includes(asset)) return;
+  main.innerHTML = "";
   main.appendChild(createPickAssetHeader(asset.asset_id));
-  main.appendChild(createPickNotesSection(asset.asset_id, notes));
+  if (acknowledgedNotes !== noteAcknowledgements[asset.asset_id]) {
+    notes = noteAcknowledgements[asset.asset_id].text;
+  }
+  main.appendChild(createPickNotesSection(asset.asset_id, noteDrafts[asset.asset_id]?.text ?? notes));
   if (isTagAsset(asset.asset_id)) {
     main.appendChild(createPickTagsSection(asset));
     const raw = document.createElement("details");
@@ -1322,11 +1368,17 @@ async function renderPickMain() {
     main.appendChild(createPickCustomSection(asset));
   }
   main.appendChild(createPickRegenSection(asset.asset_id));
+  main.removeAttribute("aria-busy");
+  refreshPickSaveState();
 }
 
 async function loadAssets() {
+  const generation = ++assetsLoadGeneration;
+  ++pickRenderGeneration;
   try {
-    state.assets = await apiJson("GET", "/api/assets");
+    const assets = await apiJson("GET", "/api/assets");
+    if (generation !== assetsLoadGeneration) return;
+    state.assets = assets;
     renderPickSidebar();
 
     if (state.assets.length === 0) {
@@ -1342,7 +1394,9 @@ async function loadAssets() {
 
     await renderPickMain();
   } catch (error) {
+    if (generation !== assetsLoadGeneration) return;
     elements.pickSidebar.innerHTML = "";
+    elements.pickMain.removeAttribute("aria-busy");
     elements.pickMain.innerHTML = `<p style="color:var(--error)">${esc(error instanceof Error ? error.message : String(error))}</p>`;
   }
 }
@@ -1385,14 +1439,24 @@ async function handlePickDelete(assetId, candidateId) {
 }
 
 async function saveNotes(assetId) {
+  if (noteSaves.has(assetId)) return;
   const textarea = document.getElementById("pick-notes");
-  if (!textarea) return;
+  if (!textarea || textarea.dataset.assetId !== assetId) return;
+  const submitted = noteDrafts[assetId] || { text: textarea.value };
+  noteSaves.add(assetId);
+  refreshPickSaveState();
 
   try {
-    await apiJson("PUT", `/api/assets/${encodeURIComponent(assetId)}/notes`, { notes: textarea.value });
+    await apiJson("PUT", `/api/assets/${encodeURIComponent(assetId)}/notes`, { notes: submitted.text });
+    if (noteDrafts[assetId] === submitted) delete noteDrafts[assetId];
+    // Reads begun before this acknowledgement use the saved text without discarding their asset updates.
+    noteAcknowledgements[assetId] = submitted;
     alert("Notes saved.");
   } catch (error) {
     alert(`Failed to save notes: ${error instanceof Error ? error.message : String(error)}`);
+  } finally {
+    noteSaves.delete(assetId);
+    refreshPickSaveState();
   }
 }
 
@@ -1638,9 +1702,10 @@ function wireEvents() {
 
     if (action === "clear-custom") {
       if (assetId) {
-        customDrafts[assetId] = { ...customDrafts[assetId], text: "", basedOn: null };
+        customDrafts[assetId] = { ...customDrafts[assetId], text: "", basedOn: null, textDirty: true, revision: (customDrafts[assetId]?.revision || 0) + 1 };
         const textarea = document.getElementById("pick-custom-text");
         if (textarea) textarea.value = "";
+        refreshPickSaveState();
       }
       return;
     }
@@ -1689,9 +1754,15 @@ function wireEvents() {
     const target = event.target;
     const asset = state.assets.find((item) => item.asset_id === target.dataset?.assetId);
     if (!asset) return;
-    if (target.id === "pick-custom-text") customDraft(asset).text = target.value;
+    if (target.id === "pick-notes") noteDrafts[asset.asset_id] = { text: target.value };
+    if (["pick-custom-text", "pick-refine-instruction", "pick-refine-source"].includes(target.id)) customDraft(asset).revision++;
+    if (target.id === "pick-custom-text") {
+      customDraft(asset).text = target.value;
+      customDraft(asset).textDirty = true;
+    }
     if (target.id === "pick-refine-instruction") customDraft(asset).instruction = target.value;
     if (target.id === "pick-refine-source") customDraft(asset).refineSource = target.value;
+    refreshPickSaveState();
   });
 
   elements.pickMain.addEventListener("keydown", (event) => {
