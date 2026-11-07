@@ -581,3 +581,15 @@ Link URLs may contain balanced parentheses, so links such as
 `[Python](https://en.wikipedia.org/wiki/Python_(programming_language))` stay whole. A single `*` only starts emphasis
 before non-whitespace and not between two letters or digits, so `2*3*4` and `a * b * c` stay literal; intraword
 emphasis such as `foo*bar*` is not supported.
+
+### Subprocess output and transcription limits
+
+Agent and transcription commands have independent 8 MiB stdout and 1 MiB stderr byte ceilings.
+Overflow fails the step and kills/reaps the owned process group, as do timeout and interruption;
+nonzero-exit diagnostics retain only the final 4096 characters. Normal stdout is preserved within the limit.
+Transcription defaults to a finite 7200-second (two-hour) deadline; `podcast transcribe --timeout`
+overrides it with finite positive seconds. This deadline is separate from the agent timeout.
+Custom transcribers must write UTF-8, nonblank `transcript.txt` (and optionally `chapters.txt`) into
+the supplied `--output-dir` / `{output_dir}`, which is a fresh temporary directory for each invocation.
+Only successful fresh output is published; missing, empty or failed custom output keeps the previous transcript.
+Custom wrappers must not hard-code the workspace transcript path.

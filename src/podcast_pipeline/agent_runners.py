@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import signal
 import subprocess
+import threading
+import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, BinaryIO
 from uuid import UUID, uuid5
 
 from podcast_pipeline.agent_cli_config import AgentCliBundle, AgentCliConfig, resolve_agent_timeout
@@ -39,42 +42,123 @@ class AgentRunnerError(RuntimeError):
     pass
 
 
+CLI_STDOUT_LIMIT = 8 * 1024 * 1024
+CLI_STDERR_LIMIT = 1024 * 1024
+CLI_DIAGNOSTIC_LIMIT = 4096
+
+
 def run_cli_process(
     command: list[str],
     *,
     input: str,
     cwd: str | None,
     timeout: float,
+    env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
-    """Run *command* with *input* on stdin in its own process group.
-
-    On timeout the whole process group is killed (not just the direct child), so
-    helpers the CLI spawned cannot keep writing to the workspace after the caller
-    has reported the step as failed. Re-raises :class:`subprocess.TimeoutExpired`.
-    """
+    """Drain both pipes with byte limits and kill/reap the owned group on failure."""
+    if not math.isfinite(timeout) or timeout <= 0:
+        raise ValueError("process timeout must be finite and positive")
+    deadline = time.monotonic() + timeout
     with subprocess.Popen(
         command,
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
-        text=True,
         cwd=cwd,
+        env=env,
         start_new_session=True,
+        bufsize=0,  # Raw pipes: close must not wait on a blocked buffered reader lock.
     ) as process:
+        assert process.stdin is not None and process.stdout is not None and process.stderr is not None
+        buffers = [bytearray(), bytearray()]
+        failures: list[BaseException] = []
+        done = [threading.Event(), threading.Event()]
+
+        threads = [
+            threading.Thread(
+                target=_drain_cli_pipe,
+                args=(process.stdout, buffers[0], failures, done[0], CLI_STDOUT_LIMIT, "stdout"),
+                daemon=True,
+            ),
+            threading.Thread(
+                target=_drain_cli_pipe,
+                args=(process.stderr, buffers[1], failures, done[1], CLI_STDERR_LIMIT, "stderr"),
+                daemon=True,
+            ),
+            threading.Thread(target=_feed_cli_pipe, args=(process.stdin, input), daemon=True),
+        ]
         try:
-            stdout, stderr = process.communicate(input, timeout=timeout)
-        except BaseException:  # TimeoutExpired, KeyboardInterrupt, ...
+            for thread in threads:
+                thread.start()
+            _wait_for_cli(process, failures, done, command, timeout, deadline)
+        except BaseException:
             _kill_process_group(process)
             raise
-        return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
+        finally:
+            for thread in threads:
+                if thread.ident is not None:
+                    thread.join(timeout=0.05)
+        return subprocess.CompletedProcess(
+            command, process.returncode, buffers[0].decode(errors="replace"), buffers[1].decode(errors="replace")
+        )
 
 
-def _kill_process_group(process: subprocess.Popen[str]) -> None:
+def _drain_cli_pipe(
+    pipe: BinaryIO,
+    buffer: bytearray,
+    failures: list[BaseException],
+    done: threading.Event,
+    limit: int,
+    label: str,
+) -> None:
+    try:
+        while chunk := pipe.read(65536):
+            if len(buffer) + len(chunk) > limit:
+                raise AgentRunnerError(f"CLI {label} exceeded {limit} byte limit")
+            buffer.extend(chunk)
+    except BaseException as exc:
+        failures.append(exc)
+    finally:
+        done.set()
+
+
+def _feed_cli_pipe(pipe: BinaryIO, text: str) -> None:
+    try:
+        remaining = memoryview(text.encode())
+        while remaining:
+            written = pipe.write(remaining)
+            if written is None:
+                raise OSError("stdin write made no progress")
+            remaining = remaining[written:]
+        pipe.close()
+    except (BrokenPipeError, OSError):
+        pass
+
+
+def _wait_for_cli(
+    process: subprocess.Popen[bytes],
+    failures: list[BaseException],
+    done: list[threading.Event],
+    command: list[str],
+    timeout: float,
+    deadline: float,
+) -> None:
+    while True:
+        if failures:
+            raise failures[0]
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise subprocess.TimeoutExpired(command, timeout)
+        if process.poll() is not None and all(event.is_set() for event in done):
+            return
+        time.sleep(min(0.01, remaining))
+
+
+def _kill_process_group(process: subprocess.Popen[bytes]) -> None:
     try:
         os.killpg(process.pid, signal.SIGKILL)
     except (ProcessLookupError, PermissionError):
         process.kill()
-    # Do not wait on the pipes: a descendant that escaped the group could hold them open.
     process.wait()
 
 
@@ -97,7 +181,7 @@ def run_agent_cli(
     except subprocess.TimeoutExpired as exc:
         raise AgentRunnerError(f"{label} CLI timed out after {timeout_seconds:g} s") from exc
     if result.returncode != 0:
-        detail = (result.stderr or "").strip()
+        detail = (result.stderr or "")[-CLI_DIAGNOSTIC_LIMIT:].strip()
         if detail:
             detail = f" {detail}"
         raise AgentRunnerError(f"{label} CLI failed with exit code {result.returncode}.{detail}")

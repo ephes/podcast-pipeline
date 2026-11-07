@@ -109,3 +109,15 @@ Core Pydantic models live in `podcast_pipeline.domain` and are intended to back 
 Chapter times are finite, nonnegative seconds. An optional `end_sec` must exceed `start_sec`.
 Infinity and NaN are rejected on construction, JSON loading and assignment, so accepted chapter times
 round-trip through JSON without becoming null.
+
+### Subprocess output and transcription limits
+
+Agent and transcription commands have independent 8 MiB stdout and 1 MiB stderr byte ceilings.
+Overflow fails the step and kills/reaps the owned process group, as do timeout and interruption;
+nonzero-exit diagnostics retain only the final 4096 characters. Normal stdout is preserved within the limit.
+Transcription defaults to a finite 7200-second (two-hour) deadline; `podcast transcribe --timeout`
+overrides it with finite positive seconds. This deadline is separate from the agent timeout.
+Custom transcribers must write UTF-8, nonblank `transcript.txt` (and optionally `chapters.txt`) into
+the supplied `--output-dir` / `{output_dir}`, which is a fresh temporary directory for each invocation.
+Only successful fresh output is published; missing, empty or failed custom output keeps the previous transcript.
+Custom wrappers must not hard-code the workspace transcript path.

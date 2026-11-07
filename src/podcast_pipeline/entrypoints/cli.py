@@ -98,6 +98,10 @@ def transcribe(
             ),
         ),
     ] = None,
+    timeout: Annotated[
+        float,
+        typer.Option(help="Transcription deadline in finite positive seconds (default: two hours)."),
+    ] = 7200.0,
 ) -> None:
     """Run transcription for a workspace; recommended with podcast-transcript + Voxhelm."""
     from podcast_pipeline.entrypoints.transcribe import TranscribeConfig, TranscriptionMode, run_transcribe
@@ -107,7 +111,7 @@ def transcribe(
     except ValueError as exc:
         raise typer.BadParameter("mode must be 'draft' or 'final'") from exc
 
-    config = TranscribeConfig(command=command, args=tuple(arg) if arg else None)
+    config = TranscribeConfig(command=command, args=tuple(arg) if arg else None, timeout_seconds=timeout)
     run_transcribe(
         workspace=workspace,
         mode=resolved_mode,

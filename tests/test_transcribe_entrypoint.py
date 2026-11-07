@@ -299,7 +299,7 @@ def test_run_transcriber_wraps_timeout(tmp_path: Path, monkeypatch: pytest.Monke
     def fake_run(*_args: object, **_kwargs: object) -> subprocess.CompletedProcess[str]:
         raise subprocess.TimeoutExpired(cmd="podcast-transcript", timeout=12.5)
 
-    monkeypatch.setattr(transcribe.subprocess, "run", fake_run)
+    monkeypatch.setattr(transcribe, "run_cli_process", fake_run)
 
     with pytest.raises(typer.BadParameter) as exc:
         transcribe._run_transcriber(
@@ -353,8 +353,10 @@ def test_run_transcribe_keeps_legacy_wrapper_args_for_custom_commands(
         "--mode",
         "draft",
         "--output-dir",
-        str(workspace.resolve() / "transcript" / "draft"),
+        args[3],
     ]
+    assert Path(args[3]).parent == workspace.resolve() / "transcript" / "draft"
+    assert Path(args[3]).name.startswith(".transcribe-")
     assert args[4:] == ["--foo", "bar"]
     assert captured["cwd"] == workspace.resolve()
 
@@ -375,8 +377,7 @@ def test_run_transcribe_skips_audio_resolution_for_custom_commands_without_audio
         timeout_seconds: float | None,
         env: dict[str, str] | None = None,
     ) -> None:
-        output_dir = workspace / "transcript" / "draft"
-        output_dir.mkdir(parents=True, exist_ok=True)
+        output_dir = Path(args[args.index("--output-dir") + 1])
         (output_dir / "transcript.txt").write_text("legacy custom output", encoding="utf-8")
 
     monkeypatch.setattr(transcribe, "_run_transcriber", fake_run_transcriber)
@@ -543,7 +544,7 @@ def test_run_transcribe_does_not_set_transcript_dir_for_custom_commands(
         env: dict[str, str] | None = None,
     ) -> None:
         envs.append(env)
-        output_dir = workspace / "transcript" / "draft"
+        output_dir = Path(args[args.index("--output-dir") + 1])
         (output_dir / "transcript.txt").write_text("custom", encoding="utf-8")
 
     monkeypatch.setattr(transcribe, "_run_transcriber", fake_run_transcriber)
