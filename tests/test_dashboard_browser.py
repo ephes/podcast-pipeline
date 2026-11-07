@@ -191,7 +191,7 @@ def test_keyboard_panel_navigation(page: Page) -> None:
         page.keyboard.press("Enter" if index % 2 else "Space")
         expect(tabs.nth(index)).to_have_attribute("aria-pressed", "true")
         expect(page.locator(f"#panel-{name}")).to_be_visible()
-        expect(page.get_by_role("region", name=name, exact=True)).to_be_visible()
+        expect(page.get_by_role("region", name=name.title(), exact=True)).to_be_visible()
         assert page.locator(".tab-panel:not([hidden])").count() == 1
     page.keyboard.press("Shift+Tab")
     expect(tabs.nth(3)).to_be_focused()
