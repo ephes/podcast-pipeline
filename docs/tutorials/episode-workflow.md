@@ -634,3 +634,14 @@ Pick keeps focus on the equivalent candidate/tag/sidebar control after updates. 
 moves to the next candidate (or previous at the end), or the current asset heading when it disappears.
 Background refreshes preserve the focused editor's latest text and caret. Enter in refinement/tag
 inputs submits only committed text; composing IME Enter is left to the input method.
+
+### Dashboard loading and retry
+
+Browser API requests have a 30-second total deadline, including reading the response body.
+A timed-out change has an unknown outcome: reload and check the stored selection or job state before
+deliberately retrying. The dashboard never automatically repeats a mutation. Failed requests release
+pending controls and preserve drafts; interrupted job streams can retry their health lookup.
+Metadata shows loading/errors and requires a successfully loaded baseline before Save is available.
+Use **Retry loading metadata** after a load error; it keeps keyboard focus through retry and
+becomes **Reload metadata** after success. Typing during loading, including intentionally
+clearing hosts, takes precedence over the loaded field values.
