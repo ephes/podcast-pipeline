@@ -621,6 +621,7 @@ fetch, HTTP, size or deadline errors preserve the previous atomic JSONL export.
 
 The dashboard keeps unsaved editorial notes and custom text per asset while you switch assets,
 refresh candidates or refine text. A save acknowledges only the submitted revision; newer edits
-remain unsaved. Repeated custom-text saves for the same asset are ignored while a save is pending.
+remain unsaved. Notes and custom-text save buttons are disabled while that asset has a save pending;
+newer edits stay marked as unsaved and can be saved after it finishes.
 Drafts live in this browser page only: save before closing or reloading it. Slow reads for an earlier
 asset cannot replace the current editor.
