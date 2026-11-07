@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import re
 import shutil
@@ -11,10 +12,12 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
 from string import Formatter
+from tempfile import TemporaryDirectory
 from typing import Any
 
 import typer
 
+from podcast_pipeline.agent_runners import CLI_DIAGNOSTIC_LIMIT, AgentRunnerError, run_cli_process
 from podcast_pipeline.workspace_store import EpisodeWorkspaceStore, WorkspaceStoreError, atomic_write_text
 
 
@@ -42,7 +45,14 @@ _HASH_READ_CHUNK_BYTES = 1024 * 1024
 class TranscribeConfig:
     command: str = "transcribe"
     args: tuple[str, ...] | None = None
-    timeout_seconds: float | None = None
+    timeout_seconds: float | None = 7200.0
+
+
+def _transcription_timeout(value: float | None) -> float:
+    timeout = 7200.0 if value is None else value
+    if not math.isfinite(timeout) or timeout <= 0:
+        raise typer.BadParameter("transcription timeout must be finite and positive")
+    return timeout
 
 
 def run_transcribe(
@@ -51,6 +61,7 @@ def run_transcribe(
     mode: TranscriptionMode,
     config: TranscribeConfig,
 ) -> None:
+    timeout = _transcription_timeout(config.timeout_seconds)
     workspace = workspace.expanduser()
     if not workspace.exists():
         raise typer.BadParameter(f"workspace does not exist: {workspace}")
@@ -85,11 +96,12 @@ def run_transcribe(
     cache_dir = _run_transcriber_for_mode(
         command=command,
         rendered_args=rendered_args,
+        template_args=_args,
         audio_file=audio_file,
         mode_dir=mode_dir,
         mode_transcript=mode_transcript,
         workspace=workspace,
-        timeout_seconds=config.timeout_seconds,
+        timeout_seconds=timeout,
     )
     if not mode_transcript.exists():
         raise typer.BadParameter(f"Missing transcript output at {mode_transcript}")
@@ -136,6 +148,7 @@ def _run_transcriber_for_mode(
     *,
     command: str,
     rendered_args: list[str],
+    template_args: tuple[str, ...],
     audio_file: Path | None,
     mode_dir: Path,
     mode_transcript: Path,
@@ -158,13 +171,48 @@ def _run_transcriber_for_mode(
         workspace_output_before = _file_signature(mode_transcript)
         env = {**os.environ, "TRANSCRIPT_DIR": str(cache_dir)}
 
-    _run_transcriber(
-        command=command,
-        args=rendered_args,
-        cwd=workspace,
-        timeout_seconds=timeout_seconds,
-        env=env,
-    )
+    if cache_dir is None:
+        # Custom commands must write into this invocation's fresh output directory.
+        with TemporaryDirectory(prefix=".transcribe-", dir=mode_dir) as staging:
+            staged = Path(staging)
+            staged_args = _render_args(
+                template_args,
+                mode=mode_dir.name,
+                output_dir=staged,
+                workspace=workspace,
+                audio_file=audio_file,
+            )
+            _run_transcriber(
+                command=command,
+                args=staged_args,
+                cwd=workspace,
+                timeout_seconds=timeout_seconds,
+                env=env,
+            )
+            output = staged / "transcript.txt"
+            if not output.is_file():
+                raise typer.BadParameter(f"Missing transcript output at {output}")
+            try:
+                text = output.read_text(encoding="utf-8")
+                chapters = staged / "chapters.txt"
+                chapter_text = chapters.read_text(encoding="utf-8") if chapters.is_file() else None
+            except UnicodeError as exc:
+                raise typer.BadParameter("Transcript and chapter output must be UTF-8 text") from exc
+            if not text.strip():
+                raise typer.BadParameter("Transcript output is empty")
+            atomic_write_text(mode_transcript, text)
+            if chapter_text is not None:
+                atomic_write_text(mode_dir / "chapters.txt", chapter_text)
+            else:
+                (mode_dir / "chapters.txt").unlink(missing_ok=True)
+    else:
+        _run_transcriber(
+            command=command,
+            args=rendered_args,
+            cwd=workspace,
+            timeout_seconds=timeout_seconds,
+            env=env,
+        )
 
     if cache_dir is not None and audio_file is not None:
         if _file_signature(mode_transcript) == workspace_output_before:
@@ -265,22 +313,22 @@ def _run_transcriber(
     env: dict[str, str] | None = None,
 ) -> None:
     try:
-        result = subprocess.run(
+        result = run_cli_process(
             [command, *args],
-            text=True,
-            capture_output=True,
-            check=False,
+            input="",
             cwd=str(cwd),
-            timeout=timeout_seconds,
+            timeout=_transcription_timeout(timeout_seconds),
             env=env,
         )
     except FileNotFoundError as exc:
         raise typer.BadParameter(f"Transcribe command not found: {command}") from exc
+    except AgentRunnerError as exc:
+        raise typer.BadParameter(str(exc)) from exc
     except subprocess.TimeoutExpired as exc:
         raise typer.BadParameter(f"Transcribe command timed out after {exc.timeout} seconds.") from exc
 
     if result.returncode != 0:
-        detail = (result.stderr or "").strip()
+        detail = (result.stderr or "")[-CLI_DIAGNOSTIC_LIMIT:].strip()
         if detail:
             detail = f" {detail}"
         raise typer.BadParameter(f"Transcribe command failed with exit code {result.returncode}.{detail}")
