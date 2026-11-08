@@ -209,3 +209,13 @@ admission. A rejected request returns 409 with the conflicting stage and job ID,
 This policy covers one dashboard process, not other dashboards or CLI invocations.
 Real Auphonic operations acquire production ownership before loading current YAML and building the payload;
 concurrent callers are rejected immediately. Dry runs remain read-only and do not acquire that lock.
+
+
+### Candidate publication and production statuses
+
+Candidate JSON becomes discoverable only after its text and derived HTML are rendered and published.
+Handled render or publication failures restore the entire previous artifact set (or remove a new set),
+using the workspace state lock and sibling backups. Process death between replacements is outside this guarantee.
+Auphonic numeric production statuses accept only 0–999 or one to three ASCII digits; malformed numeric
+statuses and booleans raise a safe API error. Unknown admitted codes remain running even with a Done label,
+so polling and cleanup cannot mistake them for completion.

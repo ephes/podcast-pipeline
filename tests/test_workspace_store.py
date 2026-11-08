@@ -6,6 +6,7 @@ from uuid import UUID
 
 import pytest
 
+from podcast_pipeline import workspace_store
 from podcast_pipeline.domain.models import (
     Candidate,
     EpisodeWorkspace,
@@ -142,3 +143,58 @@ def test_layout_rejects_path_separators(tmp_path: Path) -> None:
     layout = EpisodeWorkspaceLayout(root=tmp_path)
     with pytest.raises(ValueError):
         layout.candidate_json_path("a/b", UUID("01234567-89ab-cdef-0123-456789abcdef"))
+
+
+@pytest.mark.parametrize("existing", [False, True], ids=["create", "rewrite"])
+@pytest.mark.parametrize("failure", ["render", "md", "html", "json"])
+def test_candidate_failure_restores_complete_set(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, existing: bool, failure: str
+) -> None:
+    store = EpisodeWorkspaceStore(tmp_path)
+    candidate = Candidate(asset_id="description", format=TextFormat.markdown, content="# Before")
+    if existing:
+        store.write_candidate(candidate)
+    paths = [
+        store.layout.candidate_json_path(candidate.asset_id, candidate.candidate_id),
+        store.layout.candidate_text_path(candidate.asset_id, candidate.candidate_id, TextFormat.markdown),
+        store.layout.candidate_text_path(candidate.asset_id, candidate.candidate_id, TextFormat.html),
+    ]
+    before = {path: path.read_bytes() if path.exists() else None for path in paths}
+    replace = workspace_store.os.replace
+    failed = False
+
+    def fail_replace(source: str | Path, dest: str | Path) -> None:
+        nonlocal failed
+        # Fail once so recovery itself is available; include failure after replacement.
+        if not failed and str(dest).endswith("." + failure):
+            failed = True
+            replace(source, dest)
+            raise OSError("synthetic publication failure")
+        replace(source, dest)
+
+    def fail_render(content: str) -> str:
+        raise ValueError("synthetic render failure")
+
+    if failure == "render":
+        monkeypatch.setattr(workspace_store, "markdown_to_deterministic_html", fail_render)
+    else:
+        monkeypatch.setattr(workspace_store.os, "replace", fail_replace)
+    with pytest.raises((OSError, ValueError), match="synthetic"):
+        store.write_candidate(candidate.model_copy(update={"content": "# After"}))
+    assert {path: path.read_bytes() if path.exists() else None for path in paths} == before
+    assert not list(tmp_path.rglob("*.backup-*"))
+
+
+def test_candidate_json_is_published_last(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    store = EpisodeWorkspaceStore(tmp_path)
+    candidate = Candidate(asset_id="description", format=TextFormat.markdown, content="# Hello")
+    write = workspace_store._atomic_write_text
+    published: list[str] = []
+
+    def record(path: Path, text: str) -> None:
+        write(path, text)
+        published.append(path.suffix)
+
+    monkeypatch.setattr(workspace_store, "_atomic_write_text", record)
+    store.write_candidate(candidate)
+    assert published == [".md", ".html", ".json"]

@@ -555,15 +555,19 @@ class EpisodeWorkspaceStore:
             candidate.candidate_id,
         )
         dumped = json.dumps(candidate.model_dump(mode="json"), indent=2, sort_keys=True) + "\n"
-        _atomic_write_text(path, dumped)
         text_path = self.layout.candidate_text_path(candidate.asset_id, candidate.candidate_id, candidate.format)
         content = candidate.content
         if not content.endswith("\n"):
             content += "\n"
-        _atomic_write_text(text_path, content)
+        artifacts = {text_path: content}
         if candidate.format == TextFormat.markdown:
             html_path = self.layout.candidate_text_path(candidate.asset_id, candidate.candidate_id, TextFormat.html)
-            _atomic_write_text(html_path, markdown_to_deterministic_html(content))
+            artifacts[html_path] = markdown_to_deterministic_html(content)
+        # Serialize/render first, then publish JSON last: it makes candidates discoverable.
+        artifacts[path] = dumped
+        with self._state_lock(), preserve_files(list(artifacts)):
+            for artifact_path, text in artifacts.items():
+                _atomic_write_text(artifact_path, text)
         return path
 
     def read_candidate(self, asset_id: str, candidate_id: UUID) -> Candidate:

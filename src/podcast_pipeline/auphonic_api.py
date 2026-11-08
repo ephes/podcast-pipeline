@@ -847,12 +847,18 @@ def _optional_str(value: object) -> str | None:
 
 
 def _status_code(status: object) -> int | None:
+    error = "Auphonic API returned invalid production status."
     if isinstance(status, bool):
-        return None
+        raise AuphonicApiError(error)
     if isinstance(status, int):
-        return status
+        if 0 <= status <= 999:
+            return status
+        raise AuphonicApiError(error)
     if isinstance(status, str) and status.strip().isdigit():
-        return int(status.strip())
+        value = status.strip()
+        if not value.isascii() or len(value) > 3:
+            raise AuphonicApiError(error)
+        return int(value)
     return None
 
 

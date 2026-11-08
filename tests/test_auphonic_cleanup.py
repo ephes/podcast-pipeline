@@ -734,3 +734,31 @@ def test_auto_cleanup_local_state_failures_are_warnings(
     fake.missing.discard("prod-1")
     with pytest.raises(typer.BadParameter, match="state.json is read-only"):
         produce.run_auphonic_cleanup(workspace=workspace, dry_run=False)
+
+
+@pytest.mark.parametrize("status", ["9" * 5000, "²", True, False], ids=["huge", "unicode", "true", "false"])
+@pytest.mark.parametrize("invalid_current", [False, True])
+def test_invalid_status_prevents_cleanup_deletion(tmp_path: Path, status: object, invalid_current: bool) -> None:
+    store = EpisodeWorkspaceStore(tmp_path)
+    _state_with_history(store, _record("old", SUPERSEDED), _downloaded("current"))
+    before = store.layout.state_json.read_bytes()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        invalid = request.url.path.endswith("/current.json") == invalid_current
+        return _ok(
+            {
+                "uuid": "current" if invalid_current else "old",
+                "status": status if invalid else 3,
+                "status_string": "Done",
+            }
+        )
+
+    recorder = _Recorder(handler)
+    with _client(recorder) as client:
+        if invalid_current:
+            with pytest.raises(AuphonicApiError, match="invalid production status"):
+                produce.cleanup_superseded(client, store)
+        else:
+            assert produce.cleanup_superseded(client, store).failed == ("old",)
+    assert all(method == "GET" for method, _ in recorder.calls)
+    assert store.layout.state_json.read_bytes() == before
