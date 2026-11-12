@@ -736,7 +736,9 @@ def test_auto_cleanup_local_state_failures_are_warnings(
         produce.run_auphonic_cleanup(workspace=workspace, dry_run=False)
 
 
-@pytest.mark.parametrize("status", ["9" * 5000, "²", True, False], ids=["huge", "unicode", "true", "false"])
+@pytest.mark.parametrize(
+    "status", ["9" * 5000, "²", True, False, 3.0, 1000], ids=["huge", "unicode", "true", "false", "float", "range"]
+)
 @pytest.mark.parametrize("invalid_current", [False, True])
 def test_invalid_status_prevents_cleanup_deletion(tmp_path: Path, status: object, invalid_current: bool) -> None:
     store = EpisodeWorkspaceStore(tmp_path)

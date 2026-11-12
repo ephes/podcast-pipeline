@@ -217,5 +217,5 @@ Candidate JSON becomes discoverable only after its text and derived HTML are ren
 Handled render or publication failures restore the entire previous artifact set (or remove a new set),
 using the workspace state lock and sibling backups. Process death between replacements is outside this guarantee.
 Auphonic numeric production statuses accept only 0–999 or one to three ASCII digits; malformed numeric
-statuses and booleans raise a safe API error. Unknown admitted codes remain running even with a Done label,
+statuses, floats and booleans raise a safe API error. Unknown admitted codes remain running even with a Done label,
 so polling and cleanup cannot mistake them for completion.

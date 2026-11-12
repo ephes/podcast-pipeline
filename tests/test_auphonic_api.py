@@ -1298,7 +1298,9 @@ def test_produce_marks_downloaded_only_after_complete_set(
         assert store.read_state().auphonic_productions[-1].outputs_downloaded_at is not None
 
 
-@pytest.mark.parametrize("status", ["9" * 5000, "²", True, False], ids=["huge", "unicode", "true", "false"])
+@pytest.mark.parametrize(
+    "status", ["9" * 5000, "²", True, False, 3.0, 1000], ids=["huge", "unicode", "true", "false", "float", "range"]
+)
 def test_polling_rejects_invalid_status_without_mutation(status: object) -> None:
     recorder = _Recorder(lambda request: _ok({"uuid": "u1", "status": status, "status_string": "Done"}))
     with _client(recorder) as client, pytest.raises(AuphonicApiError, match="invalid production status") as error:
