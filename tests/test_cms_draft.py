@@ -539,6 +539,7 @@ def test_creates_draft_uploads_one_file_and_lists_manual_steps_in_order(
     state = json.loads((workspace / "cms" / "draft.json").read_text(encoding="utf-8"))
     assert state == {
         "base_url": BASE,
+        "parent_id": PODCAST_ID,
         "episode_id": 141,
         "audio_id": 83,
         "audio_edit_url": "https://cms.test/cms/audio/audio/edit/83/",
@@ -637,7 +638,7 @@ def test_failed_create_keeps_uploaded_audio_for_the_rerun(
     workspace = _workspace(tmp_path)
     _config(tmp_path, monkeypatch)
     fake.fail_episode_create = True
-    with pytest.raises(typer.BadParameter, match=r"HTTP 400: validation_error\n  slug: Slug 'python-315'"):
+    with pytest.raises(typer.BadParameter, match=r"HTTP 400: validation_error\n  slug: duplicate"):
         _run(workspace)
     fake.fail_episode_create = False
 
@@ -812,7 +813,7 @@ def test_redirects_are_not_followed(tmp_path: Path, monkeypatch: pytest.MonkeyPa
     workspace = _workspace(tmp_path)
     _config(tmp_path, monkeypatch)
     fake.redirect_all = True
-    with pytest.raises(typer.BadParameter, match="redirected to https://elsewhere.test/api/"):
+    with pytest.raises(typer.BadParameter, match="redirected to https://elsewhere.test"):
         _run(workspace)
     assert {request.url.host for request in fake.requests} == {"cms.test"}
 

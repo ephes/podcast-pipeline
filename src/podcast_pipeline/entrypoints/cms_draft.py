@@ -30,7 +30,7 @@ from podcast_pipeline.cms_draft import (
     load_cms_config,
     selected_slug,
 )
-from podcast_pipeline.workspace_store import EpisodeWorkspaceStore, atomic_write_text
+from podcast_pipeline.workspace_store import EpisodeWorkspaceStore, WorkspaceStoreError, atomic_write_text
 
 _EPISODE_TYPE = "cast.Episode"
 _PODCAST_TYPE = "cast.Podcast"
@@ -42,6 +42,7 @@ class CmsDraftState:
     """What ``cms/draft.json`` remembers between runs, so a re-run updates instead of duplicating."""
 
     base_url: str
+    parent_id: int | None = None
     episode_id: int | None = None
     audio_id: int | None = None
     audio_edit_url: str | None = None
@@ -63,9 +64,28 @@ class _DraftRun:
     steps: list[str]
     _audio_patch_supported: bool | None = None
 
-    def save(self, **changes: Any) -> None:
-        self.state = replace(self.state, **changes)
-        _write_state(self.store, self.state)
+    def save(self, *, checkpoint: str | None = None, **changes: Any) -> None:
+        state = replace(self.state, **changes)
+        try:
+            _write_state(self.store, state)
+        except OSError as exc:
+            recovery = (
+                f"{checkpoint} succeeded remotely, but could not checkpoint cms/draft.json. "
+                if checkpoint
+                else "Could not save CMS recovery state in cms/draft.json. "
+            )
+            raise CmsApiError(
+                recovery + "Stop before rerunning. Repair local write access, then merge these confirmed fields "
+                "into cms/draft.json (preserving its other fields): "
+                + json.dumps(
+                    {
+                        "base_url": state.base_url,
+                        "parent_id": state.parent_id,
+                        **{key: None if key == "audio_edit_url" else value for key, value in changes.items()},
+                    }
+                )
+            ) from exc
+        self.state = state
 
     def audio_patch_supported(self, audio_id: int) -> bool:
         if self._audio_patch_supported is None:
@@ -79,15 +99,24 @@ class _DraftRun:
 
 def run_cms_draft(*, workspace: Path, dry_run: bool, new_audio: bool = False, transcript: bool = False) -> None:
     store = EpisodeWorkspaceStore(workspace)
-    config, plan = _load_plan(store, workspace)
-    if dry_run:
-        typer.echo(json.dumps(_describe_plan(config, plan), indent=2, ensure_ascii=False))
-        return
     try:
-        token = load_cms_token(config.token_env)
-        with _cms_lock(store), DjangoCastClient(config.base_url, token) as client:
-            run = _DraftRun(client, store, config, plan, _read_state(store, config), steps=[])
-            _create_or_update(run, new_audio=new_audio, transcript=transcript)
+        if dry_run:
+            config, plan = _load_plan(store, workspace)
+            state = _read_state(store, config)
+            typer.echo(
+                json.dumps(
+                    _describe_plan(config, plan, state, new_audio=new_audio, transcript=transcript),
+                    indent=2,
+                    ensure_ascii=False,
+                )
+            )
+            return
+        with _cms_lock(store):
+            config, plan = _load_plan(store, workspace)
+            token = load_cms_token(config.token_env)
+            with DjangoCastClient(config.base_url, token) as client:
+                run = _DraftRun(client, store, config, plan, _read_state(store, config), steps=[])
+                _create_or_update(run, new_audio=new_audio, transcript=transcript)
     except CmsApiError as exc:
         raise typer.BadParameter(str(exc)) from exc
 
@@ -124,9 +153,36 @@ def _load_plan(store: EpisodeWorkspaceStore, workspace: Path) -> tuple[CmsConfig
     return config, plan
 
 
-def _describe_plan(config: CmsConfig, plan: CmsDraftPlan) -> dict[str, Any]:
+def _describe_plan(
+    config: CmsConfig, plan: CmsDraftPlan, state: CmsDraftState, *, new_audio: bool, transcript: bool
+) -> dict[str, Any]:
     parent: int | str = config.parent_id if config.parent_id is not None else f"<resolved from GET {PARENTS_PATH}>"
+    bound = state.parent_id is not None and state.parent_id == config.parent_id
+    local_audio_id = state.audio_id if bound and not new_audio else None
     return {
+        "intent": {
+            "audio": "force_upload" if new_audio else "reuse_or_upload",
+            "local_audio_id": local_audio_id,
+            "local_audio_attached": state.audio_attached if local_audio_id is not None else None,
+            "transcript": (
+                "requested"
+                if transcript
+                else "pending"
+                if local_audio_id is not None and state.transcript_pending
+                else "if_audio_uploaded"
+            ),
+            "remote_decisions": (
+                "unresolved: parent verification, episode lookup, Audio availability and API capabilities"
+            ),
+            "recovery": (
+                "blocked: stored podcast differs; explicitly reset cms/draft.json before a live run"
+                if state.parent_id is not None
+                and config.parent_id is not None
+                and state.parent_id != config.parent_id
+                and (state.episode_id or state.audio_id)
+                else "local IDs remain subject to remote parent verification"
+            ),
+        },
         "base_url": config.base_url,
         "token_env": config.token_env,
         "lookup": {"path": POST_LOOKUP_PATH, "params": {"parent": parent, "slug": plan.slug}},
@@ -157,6 +213,8 @@ def _dry_run_episode(plan: CmsDraftPlan) -> dict[str, Any]:
 def _create_or_update(run: _DraftRun, *, new_audio: bool, transcript: bool) -> None:
     client, plan = run.client, run.plan
     parent_id = _resolve_parent(client, run.config)
+    _validate_parent_binding(client, run.state, parent_id)
+    run.state = replace(run.state, parent_id=parent_id)
     existing = _find_existing_episode(client, run.state, parent_id=parent_id, slug=plan.slug)
     if existing is not None:
         _refuse_live(existing)
@@ -167,6 +225,7 @@ def _create_or_update(run: _DraftRun, *, new_audio: bool, transcript: bool) -> N
 
     previous_audio_id = _podcast_audio_id(existing)
     payload = plan.episode_payload(audio_id)
+    _revalidate_plan(run)
     if existing is None:
         episode = client.create_episode({"parent": {"id": parent_id}, **payload})
         action = "Created"
@@ -175,7 +234,7 @@ def _create_or_update(run: _DraftRun, *, new_audio: bool, transcript: bool) -> N
             int(existing["id"]), payload, base_revision_id=int(existing["latest_revision_id"])
         )
         action = "Updated"
-    run.save(episode_id=int(episode["id"]), audio_attached=True)
+    run.save(checkpoint=f"{action} episode {episode['id']}", episode_id=int(episode["id"]), audio_attached=True)
     typer.echo(f"{action} draft episode {episode['id']} ({plan.slug}).")
     if previous_audio_id not in {None, audio_id}:
         typer.echo(f"The previous Audio {previous_audio_id} is no longer used by the draft; delete it in Wagtail.")
@@ -186,6 +245,21 @@ def _create_or_update(run: _DraftRun, *, new_audio: bool, transcript: bool) -> N
     typer.echo(f"Edit:    {client.absolute_url(episode.get('edit_url'))}")
     typer.echo("Nothing was published. Publish with `podcast cms-publish` after checking the preview.")
     _report_steps(run.steps)
+
+
+def _revalidate_plan(run: _DraftRun) -> None:
+    try:
+        current = _load_plan(run.store, run.store.layout.root)
+    except (typer.BadParameter, OSError, ValueError, WorkspaceStoreError) as exc:
+        raise CmsApiError(
+            "CMS inputs changed during setup; retry after checking local selections/config. "
+            "Any uploaded Audio remains checkpointed in cms/draft.json."
+        ) from exc
+    if current != (run.config, run.plan):
+        raise CmsApiError(
+            "CMS inputs changed during setup; retry after checking local selections/config. "
+            "Any uploaded Audio remains checkpointed in cms/draft.json."
+        )
 
 
 def _resolve_parent(client: DjangoCastClient, config: CmsConfig) -> int:
@@ -222,10 +296,12 @@ def _find_existing_episode(
         episode = client.get_episode(state.episode_id)
         if episode is not None and _parent_id(episode) == parent_id:
             return episode
-        typer.echo(
-            f"Episode {state.episode_id} from cms/draft.json is not under podcast {parent_id}; "
-            "looking the draft up by slug."
-        )
+        if episode is not None or state.parent_id != parent_id:
+            raise CmsApiError(
+                "Stored episode is missing or belongs to another podcast; explicitly reset by moving "
+                "cms/draft.json to a backup after recording any unattached Audio ID."
+            )
+        # A deleted episode with a verified parent binding can safely be looked up by slug.
     post = client.find_post(parent_id=parent_id, slug=slug)
     if post is None:
         return None
@@ -292,6 +368,7 @@ def _audio_for_draft(
     # Remember the Audio and its pending work before the episode request: if that fails, a re-run attaches this
     # Audio instead of uploading again, and still adds its formats and starts (or lists) its transcript.
     run.save(
+        checkpoint=f"Upload of Audio {audio_id}",
         audio_id=audio_id,
         audio_edit_url=_audio_edit_url(run, audio),
         audio_attached=False,
@@ -402,6 +479,7 @@ def _ensure_contributors(run: _DraftRun, episode: dict[str, Any]) -> tuple[dict[
         )
         return episode, False
     if _contributor_refs(episode["contributors"]) != wanted:
+        _revalidate_plan(run)
         episode = run.client.update_episode(
             int(episode["id"]),
             {"contributors": wanted},
@@ -444,7 +522,7 @@ def _start_transcript(run: _DraftRun, episode: dict[str, Any], *, forced: bool, 
     supported = run.client.supports_transcript_generation(episode_id)
     if ready and supported:
         run.client.start_transcript_generation(episode_id)
-        run.save(transcript_pending=False)
+        run.save(checkpoint=f"Transcript generation for episode {episode_id}", transcript_pending=False)
         typer.echo("Transcript generation enqueued (Voxhelm).")
         return
     if ready:
@@ -485,6 +563,7 @@ def _publish(
 ) -> None:
     state = _read_state(store, config)
     parent_id = _resolve_parent(client, config)
+    _validate_parent_binding(client, state, parent_id)
     episode = _find_existing_episode(client, state, parent_id=parent_id, slug=slug)
     if episode is None:
         raise CmsApiError(f"No draft episode {slug!r} found; run `podcast cms-draft` first.")
@@ -512,12 +591,24 @@ def _read_state(store: EpisodeWorkspaceStore, config: CmsConfig) -> CmsDraftStat
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
         raise CmsApiError(f"Could not read {path}: {exc}") from exc
-    if not isinstance(data, dict) or data.get("base_url") != config.base_url:
+    if not isinstance(data, dict) or not isinstance(data.get("base_url"), str) or not data["base_url"]:
+        raise CmsApiError("Invalid CMS recovery state in cms/draft.json: expected an object with base_url.")
+    if data["base_url"] != config.base_url:
         return empty
+    for field in ("parent_id", "episode_id", "audio_id"):
+        value = data.get(field)
+        if value is not None and (type(value) is not int or value < 1):
+            raise CmsApiError(
+                f"Invalid CMS recovery state in cms/draft.json: {field} must be a positive integer or null."
+            )
+    for field in ("audio_attached", "transcript_pending"):
+        if field in data and type(data[field]) is not bool:
+            raise CmsApiError(f"Invalid CMS recovery state in cms/draft.json: {field} must be a boolean.")
     return CmsDraftState(
         base_url=config.base_url,
-        episode_id=_optional_id(data.get("episode_id")),
-        audio_id=_optional_id(data.get("audio_id")),
+        parent_id=data.get("parent_id"),
+        episode_id=data.get("episode_id"),
+        audio_id=data.get("audio_id"),
         audio_edit_url=_optional_text(data.get("audio_edit_url")),
         audio_attached=data.get("audio_attached") is not False,
         transcript_pending=data.get("transcript_pending") is True,
@@ -529,6 +620,7 @@ def _write_state(store: EpisodeWorkspaceStore, state: CmsDraftState) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     data = {
         "base_url": state.base_url,
+        "parent_id": state.parent_id,
         "episode_id": state.episode_id,
         "audio_id": state.audio_id,
         "audio_edit_url": state.audio_edit_url,
@@ -538,10 +630,22 @@ def _write_state(store: EpisodeWorkspaceStore, state: CmsDraftState) -> None:
     atomic_write_text(path, json.dumps(data, indent=2) + "\n")
 
 
-def _optional_id(value: object) -> int | None:
-    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
-        return None
-    return value
+def _validate_parent_binding(client: DjangoCastClient, state: CmsDraftState, parent_id: int) -> None:
+    if state.episode_id is None and state.audio_id is None:
+        return
+    if state.parent_id is not None:
+        if state.parent_id == parent_id:
+            return
+    elif state.episode_id is not None:
+        episode = client.get_episode(state.episode_id)
+        if episode is not None and _parent_id(episode) == parent_id:
+            return
+    raise CmsApiError(
+        "CMS recovery state does not identify this podcast; explicitly reset by moving cms/draft.json to a backup "
+        "after checking the old episode/Audio in Wagtail and recording any unattached Audio ID. "
+        "A reset deliberately abandons automatic reuse. Legacy upload-only state requires a verified parent_id "
+        "before reuse."
+    )
 
 
 def _optional_text(value: object) -> str | None:

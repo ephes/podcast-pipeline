@@ -116,6 +116,7 @@ class CmsDraftPlan:
     extra_audio_files: tuple[AudioFile, ...]
     contributors: tuple[ContributorRef, ...] = ()
     unmapped_hosts: tuple[str, ...] = ()
+    selected_copy: tuple[tuple[TextFormat, str] | None, ...] = ()
     hosts_listed: bool = True
     """Whether episode.yaml names the episode's speakers (``hosts``); without them contributors cannot be checked."""
 
@@ -196,13 +197,28 @@ def build_cms_draft_plan(
     config: CmsConfig,
 ) -> CmsDraftPlan:
     layout = EpisodeWorkspaceLayout(root=workspace)
+    selections = {
+        asset: read_current_selection(layout, asset)
+        for asset in (
+            "title_detail",
+            "title_seo",
+            "slug",
+            "description",
+            "shownotes",
+            "summary_short",
+            "cms_tags",
+            "itunes_keywords",
+            "subtitle_auphonic",
+        )
+    }
+    selected_text = {asset: selection[1] if selection is not None else None for asset, selection in selections.items()}
 
-    title = _first_line(_selected(layout, "title_detail")) or _first_line(_selected(layout, "title_seo"))
+    title = _first_line(selected_text.get("title_detail")) or _first_line(selected_text.get("title_seo"))
     if title is None:
         raise CmsConfigError("No selected title: pick title_detail (or title_seo) first.")
-    slug = selected_slug(workspace)
+    slug = _validate_selected_slug(selected_text["slug"])
 
-    description = read_current_selection(layout, "description")
+    description = selections["description"]
     if description is None:
         raise CmsConfigError("No selected description: pick the description asset first (it becomes the overview).")
     overview_html = link_hosts(
@@ -210,21 +226,21 @@ def build_cms_draft_plan(
         hosts=_episode_hosts(episode_yaml),
         host_links=config.host_links or {},
     )
-    shownotes = read_current_selection(layout, "shownotes")
+    shownotes = selections["shownotes"]
     detail_html = config.detail_intro_html + (_to_html(*shownotes) if shownotes is not None else "")
 
     episode_fields: dict[str, Any] = {
         "title": title,
         "slug": slug,
-        "seo_title": _first_line(_selected(layout, "title_seo")) or "",
-        "search_description": _plain_text(_selected(layout, "summary_short")),
-        "tags": parse_tag_list(_selected(layout, "cms_tags")),
-        "keywords": ",".join(parse_tag_list(_selected(layout, "itunes_keywords"))),
+        "seo_title": _first_line(selected_text.get("title_seo")) or "",
+        "search_description": _plain_text(selected_text.get("summary_short")),
+        "tags": parse_tag_list(selected_text.get("cms_tags")),
+        "keywords": ",".join(parse_tag_list(selected_text.get("itunes_keywords"))),
         "explicit": config.explicit,
     }
 
     audio_file = resolve_audio_file(episode_yaml=episode_yaml, workspace=workspace, config=config)
-    subtitle = _first_line(_selected(layout, "subtitle_auphonic")) or _first_line(_selected(layout, "summary_short"))
+    subtitle = _first_line(selected_text.get("subtitle_auphonic")) or _first_line(selected_text.get("summary_short"))
     audio = AudioUpload(
         file=audio_file,
         title=title,
@@ -233,6 +249,10 @@ def build_cms_draft_plan(
         collection=config.audio_collection,
         diarization_mode=config.transcript_diarization,
     )
+    extra_audio_files = _extra_audio_files(audio_file)
+    if config.audio_file is None:
+        for item in extra_audio_files:
+            _contained_output(item.path, layout.auphonic_outputs_dir)
     hosts = _episode_hosts(episode_yaml) or []
     known = config.contributors or {}
     return CmsDraftPlan(
@@ -242,15 +262,20 @@ def build_cms_draft_plan(
         overview_html=overview_html,
         detail_html=detail_html,
         audio=audio,
-        extra_audio_files=_extra_audio_files(audio_file),
+        extra_audio_files=extra_audio_files,
         contributors=tuple(known[name] for name in hosts if name in known),
         unmapped_hosts=tuple(name for name in hosts if name not in known),
+        selected_copy=tuple(selections.values()),
         hosts_listed=bool(hosts),
     )
 
 
 def selected_slug(workspace: Path) -> str:
-    slug = _first_line(_selected(EpisodeWorkspaceLayout(root=workspace), "slug"))
+    return _validate_selected_slug(_selected(EpisodeWorkspaceLayout(root=workspace), "slug"))
+
+
+def _validate_selected_slug(text: str | None) -> str:
+    slug = _first_line(text)
     if slug is None:
         raise CmsConfigError("No selected slug: pick the slug asset first.")
     try:
@@ -270,11 +295,14 @@ def resolve_audio_file(*, episode_yaml: Mapping[str, Any], workspace: Path, conf
 
     outputs = EpisodeWorkspaceLayout(root=workspace).auphonic_outputs_dir
     basename = _output_basename(episode_yaml) or workspace.name
+    _validate_output_basename(basename)
     preferred = outputs / f"{basename}.mp3"
+    _contained_output(preferred, outputs)
     if preferred.is_file():
         return AudioFile(field="mp3", path=preferred)
     mp3s = sorted(outputs.glob("*.mp3")) if outputs.is_dir() else []
     if len(mp3s) == 1:
+        _contained_output(mp3s[0], outputs)
         return AudioFile(field="mp3", path=mp3s[0])
     if mp3s:
         names = ", ".join(path.name for path in mp3s)
@@ -306,12 +334,24 @@ def _extra_audio_files(primary: AudioFile) -> tuple[AudioFile, ...]:
     return tuple(AudioFile(field=field, path=found[field]) for field in _AUDIO_FIELD_ORDER if field in found)
 
 
+def _validate_output_basename(basename: str) -> None:
+    # Match Auphonic's output component rules, including Windows separators on every platform.
+    if "/" in basename or "\\" in basename or basename in {".", ".."} or "\0" in basename:
+        raise CmsConfigError("Implicit CMS output basename must be a file name without directories.")
+
+
+def _contained_output(path: Path, outputs: Path) -> None:
+    if not path.resolve().is_relative_to(outputs.resolve()):
+        raise CmsConfigError("Implicit CMS audio resolves outside auphonic/outputs; set cms.audio_file explicitly.")
+
+
 def _output_basename(episode_yaml: Mapping[str, Any]) -> str | None:
     auphonic = episode_yaml.get("auphonic")
-    if isinstance(auphonic, Mapping):
-        value = auphonic.get("output_basename")
-        if isinstance(value, str) and value.strip():
-            return value.strip()
+    if isinstance(auphonic, Mapping) and auphonic.get("output_basename") is not None:
+        value = auphonic["output_basename"]
+        if not isinstance(value, str) or not value.strip():
+            raise CmsConfigError("auphonic.output_basename must be a non-empty string")
+        return value.strip()
     episode_id = episode_yaml.get("episode_id")
     if isinstance(episode_id, str) and episode_id.strip():
         return episode_id.strip()

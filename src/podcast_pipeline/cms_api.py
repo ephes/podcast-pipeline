@@ -33,6 +33,7 @@ import os
 import time
 from collections.abc import Mapping
 from typing import Any
+from urllib.parse import urlsplit
 
 import httpx
 
@@ -50,7 +51,50 @@ EPISODE_TRANSCRIPT_PATH = "api/editor/episodes/{id}/transcript/"
 _AUDIO_CONTENT_TYPES = {"mp3": "audio/mpeg", "m4a": "audio/mp4", "oga": "audio/ogg", "opus": "audio/ogg"}
 _AUDIO_PAGE_SIZE = 200
 _MAX_CONTROL_BYTES = 8 * 1024 * 1024
-_MAX_ERROR_CHARS = 2000
+_ERROR_CODES = frozenset(
+    {
+        "validation_error",
+        "not_found",
+        "permission_denied",
+        "not_authenticated",
+        "authentication_failed",
+        "page_locked",
+        "published_post",
+        "invalid",
+        "required",
+        "duplicate",
+        "unsupported",
+        "conflict",
+    }
+)
+_ERROR_FIELDS = frozenset(
+    {
+        "id",
+        "parent",
+        "title",
+        "slug",
+        "seo_title",
+        "search_description",
+        "tags",
+        "keywords",
+        "explicit",
+        "podcast_audio",
+        "overview",
+        "detail",
+        "contributors",
+        "base_revision_id",
+        "require_unpublished",
+        "subtitle",
+        "chaptermarks",
+        "collection",
+        "mp3",
+        "m4a",
+        "oga",
+        "opus",
+        "transcript_diarization_mode",
+        "non_field_errors",
+    }
+)
 
 
 class CmsApiError(RuntimeError):
@@ -117,14 +161,14 @@ class DjangoCastClient:
         data = self._json("GET", PARENTS_PATH)
         if not isinstance(data, list):
             raise CmsApiError(f"GET {PARENTS_PATH} returned {type(data).__name__}, expected a list")
-        return [item for item in data if isinstance(item, dict)]
+        return [_identity(item, "GET", PARENTS_PATH) for item in data]
 
     def find_post(self, *, parent_id: int, slug: str) -> dict[str, Any] | None:
         """The page under ``parent_id`` whose latest draft has ``slug``, or ``None``."""
         return self._json_or_none("GET", POST_LOOKUP_PATH, params={"parent": str(parent_id), "slug": slug})
 
     def get_episode(self, episode_id: int) -> dict[str, Any] | None:
-        return self._json_or_none("GET", EPISODE_DETAIL_PATH.format(id=episode_id))
+        return self._json_or_none("GET", EPISODE_DETAIL_PATH.format(id=episode_id), revision=True)
 
     def upload_audio(self, upload: AudioUpload) -> dict[str, Any]:
         """Create an Audio from one file (django-cast accepts exactly one file per upload)."""
@@ -143,18 +187,18 @@ class DjangoCastClient:
                 return None
             for item in results:
                 if isinstance(item, dict) and item.get("id") == audio_id:
-                    return item
+                    return _identity(item, "GET", AUDIOS_PATH)
             if not data.get("next"):
                 return None
         return None
 
     def create_episode(self, payload: Mapping[str, Any]) -> dict[str, Any]:
-        return self._dict("POST", EPISODES_PATH, json=dict(payload))
+        return self._dict("POST", EPISODES_PATH, revision=True, json=dict(payload))
 
     def update_episode(self, episode_id: int, payload: Mapping[str, Any], *, base_revision_id: int) -> dict[str, Any]:
         """PATCH the draft; refused when it changed since ``base_revision_id`` or went live."""
         body = {**payload, "base_revision_id": base_revision_id, "require_unpublished": True}
-        return self._dict("PATCH", EPISODE_DETAIL_PATH.format(id=episode_id), json=body)
+        return self._dict("PATCH", EPISODE_DETAIL_PATH.format(id=episode_id), revision=True, json=body)
 
     def publish_episode(self, episode_id: int, *, revision_id: int) -> dict[str, Any]:
         return self._dict(
@@ -222,19 +266,19 @@ class DjangoCastClient:
                 response = self._send(method, path, data=dict(data), files=files, timeout=self._upload_timeout)
         except OSError as exc:
             raise CmsApiError(f"Could not read {audio_file.path}: {exc}") from exc
-        return _expect_dict(_checked(response, method, path), method, path)
+        return _identity(_checked(response, method, path), method, path)
 
-    def _dict(self, method: str, path: str, **kwargs: Any) -> dict[str, Any]:
-        return _expect_dict(self._json(method, path, **kwargs), method, path)
+    def _dict(self, method: str, path: str, *, revision: bool = False, **kwargs: Any) -> dict[str, Any]:
+        return _identity(self._json(method, path, **kwargs), method, path, revision=revision)
 
     def _json(self, method: str, path: str, **kwargs: Any) -> Any:
         return _checked(self._send(method, path, **kwargs), method, path)
 
-    def _json_or_none(self, method: str, path: str, **kwargs: Any) -> dict[str, Any] | None:
+    def _json_or_none(self, method: str, path: str, *, revision: bool = False, **kwargs: Any) -> dict[str, Any] | None:
         response = self._send(method, path, **kwargs)
         if response.status_code == 404:
             return None
-        return _expect_dict(_checked(response, method, path), method, path)
+        return _identity(_checked(response, method, path), method, path, revision=revision)
 
     def _send(self, method: str, path: str, **kwargs: Any) -> httpx.Response:
         return asyncio.run(self._send_async(method, path, **kwargs))
@@ -252,9 +296,9 @@ class DjangoCastClient:
             ):
                 async with client.stream(method, url, **kwargs) as response:
                     if response.is_redirect:
-                        location = response.headers.get("Location", "?")[:300]
+                        location = _redirect_origin(response.headers.get("Location", ""))
                         raise CmsApiError(
-                            f"{method} {url} was redirected to {location}; redirects are not followed "
+                            f"{method} {path} was redirected to {location}; redirects are not followed "
                             "so the API token stays on the configured site. "
                             "Check cms.base_url (scheme, host, trailing path)."
                         )
@@ -280,7 +324,7 @@ class DjangoCastClient:
         except TimeoutError as exc:
             raise CmsApiError(f"{method} {path}: response deadline exceeded") from exc
         except httpx.HTTPError as exc:
-            raise CmsApiError(f"{method} {url} failed: {exc}") from exc
+            raise CmsApiError(f"{method} {path} failed: transport error") from exc
 
 
 def _checked(response: httpx.Response, method: str, path: str) -> Any:
@@ -300,6 +344,31 @@ def _expect_dict(data: Any, method: str, path: str) -> dict[str, Any]:
     return data
 
 
+def _identity(data: Any, method: str, path: str, *, revision: bool = False) -> dict[str, Any]:
+    result = _expect_dict(data, method, path)
+    for field in ("id", "latest_revision_id") if revision else ("id",):
+        if type(result.get(field)) is not int or result[field] < 1:
+            raise CmsApiError(
+                f"{method} {path} returned an invalid {field}; expected a positive integer. "
+                "Do not retry writes blindly: check Wagtail for the remote outcome first."
+            )
+    return result
+
+
+def _redirect_origin(location: str) -> str:
+    try:
+        parsed = urlsplit(location)
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+            return "<relative or invalid destination>"
+        host = parsed.hostname
+        if ":" in host:
+            host = f"[{host}]"
+        port = f":{parsed.port}" if parsed.port is not None else ""
+        return f"{parsed.scheme}://{host}{port}"[:300]
+    except ValueError:
+        return "<invalid destination>"
+
+
 def _error(response: httpx.Response, method: str, path: str) -> CmsApiError:
     try:
         body = response.json()
@@ -307,28 +376,25 @@ def _error(response: httpx.Response, method: str, path: str) -> CmsApiError:
         body = None
     prefix = f"{method} {path} failed with HTTP {response.status_code}"
     if not isinstance(body, dict):
-        text = response.text.strip()[:300]
-        return CmsApiError(f"{prefix}: {text}" if text else prefix)
+        return CmsApiError(prefix)
     code = body.get("code")
     if code == "revision_conflict":
         return CmsRevisionConflictError(
-            f"{prefix}: the draft changed since it was read (current revision "
-            f"{str(body.get('current_revision_id'))[:100]}). Check the edit in Wagtail; a re-run "
+            f"{prefix}: the draft changed since it was read. Check the edit in Wagtail; a re-run "
             "replaces it with the workspace copy."
         )
-    message = f"{prefix}: {str(code)[:_MAX_ERROR_CHARS]}" if code else prefix
-    detail = body.get("detail")
-    if detail:
-        message += f": {str(detail)[:_MAX_ERROR_CHARS]}"
+    message = f"{prefix}: {code}" if isinstance(code, str) and code in _ERROR_CODES else prefix
     errors = body.get("errors")
     if isinstance(errors, Mapping):
-        for field, items in errors.items():
+        for field in sorted(_ERROR_FIELDS.intersection(errors)):
+            items = errors[field]
+            categories = set()
             for item in items if isinstance(items, list) else [items]:
-                item_message = item.get("message") if isinstance(item, Mapping) else item
-                message += f"\n  {str(field)[:200]}: {str(item_message)[:_MAX_ERROR_CHARS]}"
-                if len(message) >= _MAX_ERROR_CHARS:
-                    return CmsApiError(message[:_MAX_ERROR_CHARS])
-    return CmsApiError(message[:_MAX_ERROR_CHARS])
+                category = item.get("code") if isinstance(item, Mapping) else None
+                if isinstance(category, str) and category in _ERROR_CODES:
+                    categories.add(category)
+            message += f"\n  {field}: {', '.join(sorted(categories)) or 'invalid'}"
+    return CmsApiError(message)
 
 
 def audio_file_label(audio_file: AudioFile) -> str:

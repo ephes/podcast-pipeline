@@ -173,7 +173,7 @@ def test_sync_only_auphonic_transport_rejected_before_requests() -> None:
 def test_cms_response_budget_does_not_limit_upload_phase() -> None:
     async def handler(request: httpx.Request) -> httpx.Response:
         await asyncio.sleep(0.04)
-        return httpx.Response(200, json={"id": 1})
+        return httpx.Response(200, json={"id": 1, "latest_revision_id": 9})
 
     with cms_api.DjangoCastClient(
         "https://cms.test",
@@ -182,4 +182,4 @@ def test_cms_response_budget_does_not_limit_upload_phase() -> None:
         response_timeout_seconds=0.01,
         transport=httpx.MockTransport(handler),
     ) as client:
-        assert client.create_episode({}) == {"id": 1}
+        assert client.create_episode({}) == {"id": 1, "latest_revision_id": 9}
