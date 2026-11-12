@@ -737,7 +737,9 @@ def test_auto_cleanup_local_state_failures_are_warnings(
 
 
 @pytest.mark.parametrize(
-    "status", ["9" * 5000, "²", True, False, 3.0, 1000], ids=["huge", "unicode", "true", "false", "float", "range"]
+    "status",
+    ["9" * 5000, "²", True, False, 3.0, 1000, "-1", "3.0", "+3", "1e3", "٣"],
+    ids=["huge", "unicode", "true", "false", "float", "range", "neg", "decimal", "sign", "exp", "arabic"],
 )
 @pytest.mark.parametrize("invalid_current", [False, True])
 def test_invalid_status_prevents_cleanup_deletion(tmp_path: Path, status: object, invalid_current: bool) -> None:

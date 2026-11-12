@@ -1299,7 +1299,9 @@ def test_produce_marks_downloaded_only_after_complete_set(
 
 
 @pytest.mark.parametrize(
-    "status", ["9" * 5000, "²", True, False, 3.0, 1000], ids=["huge", "unicode", "true", "false", "float", "range"]
+    "status",
+    ["9" * 5000, "²", True, False, 3.0, 1000, "-1", "3.0", "+3", "1e3", "٣"],
+    ids=["huge", "unicode", "true", "false", "float", "range", "neg", "decimal", "sign", "exp", "arabic"],
 )
 def test_polling_rejects_invalid_status_without_mutation(status: object) -> None:
     recorder = _Recorder(lambda request: _ok({"uuid": "u1", "status": status, "status_string": "Done"}))

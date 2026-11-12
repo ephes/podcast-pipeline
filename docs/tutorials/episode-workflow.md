@@ -299,7 +299,7 @@ Notes:
   other status (upload, waiting, audio processing/encoding, file transfers, speech recognition, stopping, and unknown
   codes) counts as still running. The numeric status code decides; `status_string` is only used when the code is
   missing. A numeric status must be an integer from 0 to 999 or a string of one to three ASCII digits; anything else
-  numeric-looking (out of range, non-ASCII digits, floats, booleans) fails the poll with a safe API error and changes nothing,
+  numeric-looking (out of range, signs, decimals, exponents, non-ASCII digits, floats, booleans) fails the poll with a safe API error and changes nothing,
   and an unknown code stays running even when its `status_string` says Done.
 - A rerun (for example after a timeout or a crash) resumes the stored production instead of starting a second, paid
   one. When the stored production has failed or was never started (for example the upload failed), rerunning reports

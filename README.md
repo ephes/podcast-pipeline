@@ -216,6 +216,6 @@ concurrent callers are rejected immediately. Dry runs remain read-only and do no
 Candidate JSON becomes discoverable only after its text and derived HTML are rendered and published.
 Handled render or publication failures restore the entire previous artifact set (or remove a new set),
 using the workspace state lock and sibling backups. Process death between replacements is outside this guarantee.
-Auphonic numeric production statuses accept only 0–999 or one to three ASCII digits; malformed numeric
-statuses, floats and booleans raise a safe API error. Unknown admitted codes remain running even with a Done label,
+Auphonic numeric production statuses accept only 0–999 or one to three ASCII digits; any other status
+containing digits (signs, decimals, exponents, non-ASCII digits), floats and booleans raise a safe API error. Unknown admitted codes remain running even with a Done label,
 so polling and cleanup cannot mistake them for completion.

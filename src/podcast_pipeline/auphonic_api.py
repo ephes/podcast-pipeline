@@ -854,9 +854,10 @@ def _status_code(status: object) -> int | None:
         if 0 <= status <= 999:
             return status
         raise AuphonicApiError(error)
-    if isinstance(status, str) and status.strip().isdigit():
+    if isinstance(status, str) and any(char.isnumeric() for char in status):
+        # Any numeric-looking text ("-1", "3.0", "1e3", "²") must be a plain code.
         value = status.strip()
-        if not value.isascii() or len(value) > 3:
+        if not (value.isascii() and value.isdigit() and len(value) <= 3):
             raise AuphonicApiError(error)
         return int(value)
     return None
