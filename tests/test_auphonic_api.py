@@ -1296,3 +1296,21 @@ def test_produce_marks_downloaded_only_after_complete_set(
         monkeypatch.setattr(produce, "mark_outputs_downloaded", mark)
         produce.run_produce(workspace=workspace, dry_run=False)
         assert store.read_state().auphonic_productions[-1].outputs_downloaded_at is not None
+
+
+@pytest.mark.parametrize(
+    "status",
+    ["9" * 5000, "²", True, False, 3.0, 1000, "-1", "3.0", "+3", "1e3", "٣"],
+    ids=["huge", "unicode", "true", "false", "float", "range", "neg", "decimal", "sign", "exp", "arabic"],
+)
+def test_polling_rejects_invalid_status_without_mutation(status: object) -> None:
+    recorder = _Recorder(lambda request: _ok({"uuid": "u1", "status": status, "status_string": "Done"}))
+    with _client(recorder) as client, pytest.raises(AuphonicApiError, match="invalid production status") as error:
+        client.wait_for_production("u1", poll_interval=0.001, timeout_seconds=1)
+    assert str(error.value) == "Auphonic API returned invalid production status."
+    assert recorder.calls == [("GET", "/api/production/u1.json")]
+
+
+@pytest.mark.parametrize("status", [42, "42", 999, "999"])
+def test_unknown_numeric_status_never_uses_done_label(status: object) -> None:
+    assert _classify_status(status, "Done") == "running"
