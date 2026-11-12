@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import json
 import logging
 import math
 import os
@@ -9,6 +10,7 @@ import re
 import shutil
 import tempfile
 import time
+import zlib
 from collections.abc import AsyncIterable, Callable, Mapping, Sequence
 from contextlib import ExitStack
 from dataclasses import dataclass
@@ -34,6 +36,12 @@ class AuphonicProductionFailedError(AuphonicApiError):
 class AuphonicNotFoundError(AuphonicApiError):
     """The Auphonic API answered 404, for example for a production that no longer exists."""
 
+
+# Decoded byte ceiling for one Auphonic control (JSON API) response: presets, productions,
+# create/update/upload/start/delete answers and status polls. Media downloads have their own budget.
+CONTROL_MAX_BYTES = 8 * 1024 * 1024
+# Control responses are decoded here, under the ceiling, never by httpx: only these encodings are accepted.
+_CONTROL_HEADERS = {"Accept-Encoding": "gzip, deflate"}
 
 # Auphonic production UUIDs are URL-safe; anything else never reaches a request URL.
 _PRODUCTION_UUID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
@@ -164,6 +172,7 @@ class AuphonicClient:
         transport: httpx.BaseTransport | None = None,
         download_max_bytes: int | None = None,
         download_timeout_seconds: float | None = None,
+        control_max_bytes: int = CONTROL_MAX_BYTES,
     ) -> None:
         if transport is not None and not isinstance(transport, httpx.AsyncBaseTransport):
             raise AuphonicApiError("Auphonic transport must support both sync and async requests")
@@ -183,6 +192,9 @@ class AuphonicClient:
         if isinstance(byte_limit, bool) or not isinstance(byte_limit, int) or byte_limit <= 0:
             raise AuphonicApiError("download_max_bytes must be a positive integer")
         _positive_finite("download_timeout_seconds", download_timeout)
+        if isinstance(control_max_bytes, bool) or not isinstance(control_max_bytes, int) or control_max_bytes <= 0:
+            raise AuphonicApiError("control_max_bytes must be a positive integer")
+        self._control_max_bytes = control_max_bytes
         self._download_max_bytes = byte_limit
         self._download_timeout_seconds = download_timeout
         self._timeout_seconds = timeout_seconds
@@ -198,6 +210,10 @@ class AuphonicClient:
 
     def close(self) -> None:
         self._client.close()
+
+    def _request_json(self, method: str, url: str, **kwargs: Any) -> dict[str, Any]:
+        status_code, body = _send_control(self._client, method, url, max_bytes=self._control_max_bytes, **kwargs)
+        return _check_response(status_code, body)
 
     def __enter__(self) -> AuphonicClient:
         return self
@@ -232,9 +248,7 @@ class AuphonicClient:
         if isinstance(preset, str) and preset.strip():
             self._check_preset(preset.strip(), multitrack=multitrack, track_ids=_track_ids(body))
 
-        created = _parse_production(
-            _request_json(self._client, "POST", f"{self._base_url}/productions.json", json=body)
-        )
+        created = _parse_production(self._request_json("POST", f"{self._base_url}/productions.json", json=body))
         if on_created is not None:
             on_created(created.uuid)
         production_url = f"{self._base_url}/production/{created.uuid}"
@@ -245,8 +259,8 @@ class AuphonicClient:
                         (field, (path.name, stack.enter_context(path.open("rb")), "application/octet-stream"))
                         for field, path in uploads
                     ]
-                    _request_json(self._client, "POST", f"{production_url}/upload.json", files=files)
-            return _parse_production(_request_json(self._client, "POST", f"{production_url}/start.json"))
+                    self._request_json("POST", f"{production_url}/upload.json", files=files)
+            return _parse_production(self._request_json("POST", f"{production_url}/start.json"))
         except (AuphonicApiError, OSError) as exc:
             raise AuphonicApiError(
                 f"Auphonic production {created.uuid} was created but starting it failed: {exc}. "
@@ -261,12 +275,18 @@ class AuphonicClient:
         productions and single-track presets only to single-track ones. Auphonic
         also appends a preset's own multitrack tracks to the production's, so a
         preset that carries speaker tracks yields duplicate or extra tracks.
+
+        The check fails closed: preset data it cannot read as a preset (see
+        :func:`_preset_is_multitrack` and :func:`_preset_speaker_track_ids`)
+        stops the run before any request that creates or changes a production.
         """
-        data = _extract_data(_request_json(self._client, "GET", f"{self._base_url}/preset/{preset}.json"))
+        data = _extract_data(self._request_json("GET", f"{self._base_url}/preset/{preset}.json"))
         if not isinstance(data, Mapping):
-            return
-        preset_multitrack = data.get("is_multitrack")
-        if isinstance(preset_multitrack, bool) and preset_multitrack != multitrack:
+            raise AuphonicApiError(
+                f"Auphonic returned no readable data for preset {preset}; nothing was created or changed."
+            )
+        preset_multitrack = _preset_is_multitrack(preset, data)
+        if preset_multitrack != multitrack:
             if multitrack:
                 raise AuphonicApiError(
                     f"Auphonic preset {preset} is a single-track preset, but the production is multitrack. "
@@ -278,7 +298,7 @@ class AuphonicClient:
             )
         if not multitrack:
             return
-        preset_tracks = _preset_speaker_track_ids(data.get("multi_input_files"))
+        preset_tracks = _preset_speaker_track_ids(preset, data.get("multi_input_files"))
         if not preset_tracks:
             return
         collisions = [track_id for track_id in preset_tracks if track_id in track_ids]
@@ -324,15 +344,15 @@ class AuphonicClient:
         if before_update is not None:
             before_update()
         production_url = f"{self._base_url}/production/{stored.uuid}"
-        updated = _parse_production(_request_json(self._client, "POST", f"{production_url}.json", json=body))
+        updated = _parse_production(self._request_json("POST", f"{production_url}.json", json=body))
         for track in track_updates:
             track_url = f"{production_url}/multi_input_files/{quote(str(track['id']), safe='')}.json"
-            _request_json(self._client, "POST", track_url, json=track)
+            self._request_json("POST", track_url, json=track)
         if track_updates:
             updated = self.fetch_production(stored.uuid)
         _check_updated(updated, payload)
         try:
-            return _parse_production(_request_json(self._client, "POST", f"{production_url}/start.json"))
+            return _parse_production(self._request_json("POST", f"{production_url}/start.json"))
         except AuphonicApiError as exc:
             raise AuphonicApiError(
                 f"Auphonic production {stored.uuid} was updated but starting it failed: {exc}. "
@@ -343,7 +363,7 @@ class AuphonicClient:
     def fetch_production(self, uuid: str, *, timeout_seconds: float | None = None) -> AuphonicProduction:
         url = f"{self._base_url}/production/{uuid}.json"
         if timeout_seconds is None:
-            response = _request_json(self._client, "GET", url)
+            response = self._request_json("GET", url)
         else:
             response = asyncio.run(self._fetch_with_deadline(url, timeout_seconds))
         return _parse_production(response)
@@ -358,7 +378,8 @@ class AuphonicClient:
                     transport=self._transport,
                     event_hooks={"request": [self._authorize_async]},
                 ) as client:
-                    return _check_response(await client.get(url))
+                    status_code, body = await _send_control_async(client, url, max_bytes=self._control_max_bytes)
+                    return _check_response(status_code, body)
         except TimeoutError as exc:
             raise AuphonicApiError("Auphonic production polling timed out.") from exc
         except httpx.RequestError as exc:
@@ -375,13 +396,10 @@ class AuphonicClient:
         if not _PRODUCTION_UUID_RE.fullmatch(uuid):
             raise AuphonicApiError(f"Refusing to delete Auphonic production with invalid UUID {uuid!r}.")
         url = f"{self._base_url}/production/{uuid}.json"
-        try:
-            response = self._client.request("DELETE", url)
-        except httpx.RequestError as exc:
-            raise AuphonicApiError(f"Auphonic API request failed: {exc}") from exc
-        if response.status_code < 300 and not response.content.strip():
+        status_code, body = _send_control(self._client, "DELETE", url, max_bytes=self._control_max_bytes)
+        if status_code < 300 and not body.strip():
             return
-        _check_response(response)
+        _check_response(status_code, body)
 
     def wait_for_production(
         self,
@@ -432,7 +450,7 @@ class AuphonicClient:
 
     def list_output_files(self, uuid: str) -> tuple[AuphonicOutputFile, ...]:
         url = f"{self._base_url}/production/{uuid}/output_files.json"
-        response = _request_json(self._client, "GET", url)
+        response = self._request_json("GET", url)
         data = _extract_data(response)
         outputs = _parse_output_files_raw(data)
         if outputs:
@@ -503,20 +521,151 @@ def _poll_remaining(uuid: str, deadline: float, timeout_seconds: float) -> float
     return seconds
 
 
-def _request_json(client: httpx.Client, method: str, url: str, **kwargs: Any) -> dict[str, Any]:
+class _ControlBody:
+    """Collect one control response body, decoding it under a decoded byte ceiling.
+
+    Compressed bodies are inflated incrementally with an output limit, so a
+    small compressed body can never expand past ``max_bytes`` in memory.
+    """
+
+    def __init__(self, content_encoding: str, max_bytes: int) -> None:
+        encoding = content_encoding.strip().lower() or "identity"
+        if encoding == "identity":
+            self._inflater = None
+        elif encoding in {"gzip", "x-gzip"}:
+            self._inflater = zlib.decompressobj(16 + zlib.MAX_WBITS)
+        elif encoding == "deflate":
+            self._inflater = zlib.decompressobj()
+        else:
+            raise AuphonicApiError("Auphonic API response uses an unsupported Content-Encoding.")
+        self._max_bytes = max_bytes
+        self._parts: list[bytes] = []
+        self._total = 0
+
+    def feed(self, raw: bytes) -> None:
+        if self._inflater is None:
+            self._add(raw)
+            return
+        try:
+            while raw:
+                self._add(self._inflater.decompress(raw, self._max_bytes - self._total + 1))
+                raw = self._inflater.unconsumed_tail
+        except zlib.error as exc:
+            raise AuphonicApiError("Auphonic API response has an invalid compressed body.") from exc
+        self._check_trailing()
+
+    def _check_trailing(self) -> None:
+        # Bytes after the end of the compressed stream (garbage or a second gzip member) are refused.
+        if self._inflater is not None and self._inflater.unused_data:
+            raise AuphonicApiError("Auphonic API response has an invalid compressed body.")
+
+    def finish(self) -> bytes:
+        if self._inflater is not None:
+            try:
+                self._add(self._inflater.flush(self._max_bytes - self._total + 1))
+            except zlib.error as exc:
+                raise AuphonicApiError("Auphonic API response has an invalid compressed body.") from exc
+            if not self._inflater.eof:
+                raise AuphonicApiError("Auphonic API response has a truncated compressed body.")
+            self._check_trailing()
+        return b"".join(self._parts)
+
+    def _add(self, chunk: bytes) -> None:
+        self._total += len(chunk)
+        if self._total > self._max_bytes:
+            raise AuphonicApiError(f"Auphonic API response exceeds the {self._max_bytes}-byte limit.")
+        self._parts.append(chunk)
+
+
+def _start_control_body(response: httpx.Response, max_bytes: int) -> _ControlBody:
+    if response.is_stream_consumed:
+        # An in-memory response (a test transport built it from bytes): httpx already
+        # holds the decoded body, which still has to fit the ceiling.
+        body = _ControlBody("identity", max_bytes)
+        body.feed(response.content)
+        return body
+    encoding = response.headers.get("Content-Encoding", "")
+    length = response.headers.get("Content-Length", "")
+    if encoding.strip().lower() in {"", "identity"} and length.isascii() and length.isdigit():
+        if int(length) > max_bytes:
+            raise AuphonicApiError(f"Auphonic API response exceeds the {max_bytes}-byte limit.")
+    return _ControlBody(encoding, max_bytes)
+
+
+def _read_control(response: httpx.Response, max_bytes: int) -> bytes:
+    body = _start_control_body(response, max_bytes)
+    if not response.is_stream_consumed:
+        for chunk in response.iter_raw():
+            body.feed(chunk)
+    return body.finish()
+
+
+def _send_control(client: httpx.Client, method: str, url: str, *, max_bytes: int, **kwargs: Any) -> tuple[int, bytes]:
+    """Send one control request; return its status code and decoded body.
+
+    The body is streamed under ``max_bytes`` and redirects are followed here
+    without buffering their bodies. The client's origin hook authorizes each
+    hop independently.
+    """
     try:
-        response = client.request(method, url, **kwargs)
+        request = client.build_request(method, url, headers=_CONTROL_HEADERS, **kwargs)
+        for _ in range(client.max_redirects + 1):
+            response = client.send(request, stream=True, follow_redirects=False)
+            try:
+                if response.is_redirect and response.next_request is not None:
+                    request = response.next_request
+                    continue
+                return response.status_code, _read_control(response, max_bytes)
+            finally:
+                response.close()
     except httpx.RequestError as exc:
         raise AuphonicApiError(f"Auphonic API request failed: {exc}") from exc
-    return _check_response(response)
+    raise AuphonicApiError("Auphonic API request failed: too many redirects")
 
 
-def _check_response(response: httpx.Response) -> dict[str, Any]:
-    error_class = AuphonicNotFoundError if response.status_code == 404 else AuphonicApiError
+async def _send_control_async(client: httpx.AsyncClient, url: str, *, max_bytes: int) -> tuple[int, bytes]:
+    """Async GET counterpart of :func:`_send_control` for deadline-bound polling."""
     try:
-        payload = response.json()
-    except ValueError as exc:
-        raise error_class(f"Auphonic API returned invalid JSON (status {response.status_code}).") from exc
+        request = client.build_request("GET", url, headers=_CONTROL_HEADERS)
+        for _ in range(client.max_redirects + 1):
+            response = await client.send(request, stream=True, follow_redirects=False)
+            try:
+                if response.is_redirect and response.next_request is not None:
+                    request = response.next_request
+                    continue
+                body = _start_control_body(response, max_bytes)
+                if not response.is_stream_consumed:
+                    async for chunk in response.aiter_raw():
+                        body.feed(chunk)
+                return response.status_code, body.finish()
+            finally:
+                await response.aclose()
+    except httpx.RequestError as exc:
+        raise AuphonicApiError(f"Auphonic API request failed: {exc}") from exc
+    raise AuphonicApiError("Auphonic API request failed: too many redirects")
+
+
+def _reject_json_constant(name: str) -> object:
+    raise ValueError(f"non-finite JSON number {name}")
+
+
+def _finite_json_float(text: str) -> float:
+    value = float(text)
+    if not math.isfinite(value):
+        raise ValueError("non-finite JSON number")
+    return value
+
+
+def _check_response(status_code: int, body: bytes) -> dict[str, Any]:
+    error_class = AuphonicNotFoundError if status_code == 404 else AuphonicApiError
+    try:
+        # Anything but strict UTF-8 without a BOM, non-finite numbers (NaN, Infinity, 1e999),
+        # over-long integers and over-deep nesting all count as invalid JSON.
+        payload = json.loads(
+            body.decode("utf-8"), parse_constant=_reject_json_constant, parse_float=_finite_json_float
+        )
+    except (ValueError, RecursionError) as exc:
+        raise error_class(f"Auphonic API returned invalid JSON (status {status_code}).") from exc
 
     if isinstance(payload, Mapping):
         status = payload.get("status")
@@ -524,9 +673,9 @@ def _check_response(response: httpx.Response) -> dict[str, Any]:
             message = _extract_error_message(payload) or "Auphonic API returned an error."
             raise error_class(message)
 
-    if response.status_code >= 400:
-        message = _extract_error_message(payload) or f"HTTP {response.status_code}"
-        raise error_class(f"Auphonic API error ({response.status_code}): {message}")
+    if status_code >= 400:
+        message = _extract_error_message(payload) or f"HTTP {status_code}"
+        raise error_class(f"Auphonic API error ({status_code}): {message}")
     if isinstance(payload, Mapping):
         return dict(payload)
     return {"data": payload}
@@ -792,15 +941,43 @@ def _track_ids(body: Mapping[str, Any]) -> list[str]:
     return [str(entry["id"]) for entry in entries if isinstance(entry, Mapping) and "id" in entry]
 
 
-def _preset_speaker_track_ids(raw: object) -> list[str]:
-    """Ids of a preset's speaker tracks; intro and outro entries are allowed in a preset."""
-    if not isinstance(raw, Sequence) or isinstance(raw, (str, bytes, bytearray)):
+def _preset_is_multitrack(preset: str, data: Mapping[str, Any]) -> bool:
+    """A preset's ``is_multitrack``; a preset without the field is a legacy single-track preset.
+
+    Presets created before Auphonic's multitrack mode carry no ``is_multitrack``
+    and are single-track. Any value other than ``true`` or ``false`` (including
+    ``null``) leaves the preset type unknown, so the check refuses it.
+    """
+    if "is_multitrack" not in data:
+        return False
+    value = data["is_multitrack"]
+    if not isinstance(value, bool):
+        raise AuphonicApiError(
+            f"Auphonic preset {preset} reports an invalid is_multitrack value; nothing was created or changed."
+        )
+    return value
+
+
+def _preset_speaker_track_ids(preset: str, raw: object) -> list[str]:
+    """Ids of a preset's speaker tracks; intro and outro entries are allowed in a preset.
+
+    A missing or ``null`` ``multi_input_files`` means no tracks. Anything else
+    must be a list of track mappings whose ``type``, when present, is text.
+    """
+    if raw is None:
         return []
+    malformed = AuphonicApiError(
+        f"Auphonic preset {preset} has unreadable multi_input_files; nothing was created or changed."
+    )
+    if not isinstance(raw, list):
+        raise malformed
     ids: list[str] = []
     for idx, entry in enumerate(raw, start=1):
         if not isinstance(entry, Mapping):
-            continue
+            raise malformed
         entry_type = entry.get("type")
+        if entry_type is not None and not isinstance(entry_type, str):
+            raise malformed
         if isinstance(entry_type, str) and entry_type.strip().lower() in {"intro", "outro"}:
             continue
         track_id = entry.get("id")

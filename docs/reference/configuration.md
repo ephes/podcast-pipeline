@@ -100,6 +100,28 @@ finished production costs Auphonic credits again. Auphonic re-applies the preset
 output files become exactly the preset's. The same preset checks run before the update. See "Produce with Auphonic"
 in `tutorials/episode-workflow.md`.
 
+The preset checks fail closed. The preset response must carry preset data (a mapping); `is_multitrack` must be
+`true` or `false`, and a preset without the field counts as a legacy single-track preset (presets from before
+Auphonic's multitrack mode). Any other value, including `null`, stops the run. A multitrack preset's
+`multi_input_files` may be missing, `null` or a list of track mappings whose `type`, when present, is text; anything
+else stops the run as well. These checks run before the create request, and on `--update` before the first request
+that changes the production, so a preset that cannot be checked never costs credits or touches the stored
+production and its recorded downloads.
+
+### Auphonic control response limits
+
+Every Auphonic JSON API response (preset reads, create, upload, start, update, delete and status polls) is streamed
+and capped at 8 MiB of decoded body (`auphonic_api.CONTROL_MAX_BYTES`; library callers can set
+`AuphonicClient(control_max_bytes=...)`). Control requests advertise only `gzip, deflate`; compressed bodies are
+inflated incrementally under the same cap, and other Content-Encodings, invalid or truncated compressed bodies fail.
+Redirects are followed without reading their bodies, and bytes after the end of a compressed body are refused. Bodies
+that are not strict UTF-8 JSON (UTF-16/32 and a byte order mark are refused), that nest too deeply, or that contain
+non-finite numbers (`NaN`, `Infinity`, `1e999`) or integers longer than Python's digit limit fail with an Auphonic
+API error, as do
+oversized error responses (an oversized 404 body is not treated as "not found"). An empty successful DELETE response
+is accepted. A failure after a production was created still reports its UUID, which `state.json` already holds, and
+never triggers a second create or start.
+
 ### Cleanup of superseded productions
 
 `auphonic.cleanup_superseded` (default `false`) makes `podcast produce` delete the workspace's superseded Auphonic
