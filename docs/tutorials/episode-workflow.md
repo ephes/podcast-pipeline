@@ -279,6 +279,10 @@ Notes:
 - The multitrack preset must not contain speaker tracks: Auphonic appends the preset's tracks to the production's, which
   duplicates them ("Multiple tracks with ID ... found"). `produce` stops before creating a production when the preset
   has any; put per-track algorithms into `auphonic.tracks[].algorithms` instead.
+- The preset check fails closed: preset data that is not a mapping, an `is_multitrack` other than `true`/`false`
+  (a missing field means a legacy single-track preset) or unreadable `multi_input_files` stop `produce` and
+  `--update` before anything is created or changed. Auphonic API responses are capped at 8 MiB of decoded JSON;
+  see "Auphonic control response limits" in `reference/configuration.md`.
 - `--dry-run` prints the full payload, including `is_multitrack: true`, the `multi_input_files` track list with
   each stem's id and resolved path, and `output_basename`, without loading credentials or calling the API.
 - Output files are named after the episode: `output_basename` defaults to `episode_id` (for example `pp_72.mp3`,
