@@ -209,16 +209,19 @@ def test_review_completion_preserves_concurrent_selection(
     initial = EpisodeWorkspace(episode_id="synthetic", root_dir=".")
     store.write_state(initial)
     read, release, selection_done = threading.Event(), threading.Event(), threading.Event()
-    original = EpisodeWorkspaceStore.read_state
+    original = EpisodeWorkspaceStore.read_selection_snapshot
 
-    def pause_after_read(self: EpisodeWorkspaceStore) -> EpisodeWorkspace:
-        current = original(self)
+    def pause_after_snapshot(self: EpisodeWorkspaceStore, *args: Any, **kwargs: Any) -> Any:
+        # Pause after the review captured its selection generation and released
+        # the workspace lock, so the concurrent selection deterministically lands
+        # before the final in-lock comparison.
+        snapshot = original(self, *args, **kwargs)
         if threading.current_thread().name == "synthetic-review":
             read.set()
             assert release.wait(5)
-        return current
+        return snapshot
 
-    monkeypatch.setattr(EpisodeWorkspaceStore, "read_state", pause_after_read)
+    monkeypatch.setattr(EpisodeWorkspaceStore, "read_selection_snapshot", pause_after_snapshot)
     failures: list[BaseException] = []
 
     def review() -> None:
@@ -255,13 +258,18 @@ def test_review_completion_preserves_concurrent_selection(
     assert read.wait(5)
     second.start()
     try:
-        selection_done.wait(0.2)
+        assert selection_done.wait(5)
     finally:
         release.set()
         first.join(5)
         second.join(5)
     assert not first.is_alive() and not second.is_alive()
-    assert not failures
+    if concurrent_asset == "description":
+        from podcast_pipeline.review_loop_orchestrator import ReviewSelectionConflict
+
+        assert len(failures) == 1 and isinstance(failures[0], ReviewSelectionConflict)
+    else:
+        assert not failures
     current = store.read_state()
     assert has_manual_selection_provenance(current, concurrent_asset)
     description = next(a for a in current.assets if a.asset_id == "description")

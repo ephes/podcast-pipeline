@@ -142,7 +142,11 @@ Candidate, custom-text and curated-tag selections, dashboard deletion and review
 under the stable workspace state lock. Reviews needing human input keep the published selection.
 Only the intended asset/selection provenance changes; its output files are published under the same lock.
 Concurrent changes to different assets survive stale UI/CLI state, including Auphonic history.
-For the same asset, the last writer to acquire the lock wins and its artifacts match its metadata.
+Producer selections for the same asset follow the state lock order and their artifacts match metadata.
+Review convergence compares its starting selection snapshot inside that lock: a newer pick/custom edit
+keeps authority, retains completed evidence and reports a terminal selection conflict. Completed review
+rounds checkpoint before the next agent call; repeating review resumes missing rounds, while terminal
+runs make no agent calls or selection changes. See `docs/how-to/review-loop.md`.
 RSS example imports stream at most 8 MiB of uncompressed input and share one whole-transfer deadline
 across connection, headers, redirects and body reads (`--timeout-seconds`, default 20 seconds).
 At most five redirects are followed without consuming intermediate bodies. Compressed feeds are refused;

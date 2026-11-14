@@ -686,7 +686,8 @@ async function loadJobs() {
 
     elements.activeJobsCard.style.display = "";
     elements.activeJobsBody.innerHTML = jobs.map((job) => {
-      const details = job.error ? `<span style="color:var(--error);font-size:0.8rem">${esc(job.error)}</span>` : "";
+      const note = job.result && job.result.note ? `<span style="font-size:0.8rem">${esc(job.result.note)}</span>` : "";
+      const details = job.error ? `<span style="color:var(--error);font-size:0.8rem">${esc(job.error)}</span>` : note;
       return `<tr><td>${esc(job.job_id)}</td><td>${esc(job.stage)}</td><td><span class="badge badge-${jobBadge(job.status)}">${esc(job.status)}</span></td><td>${details}</td></tr>`;
     }).join("");
   } catch (error) {

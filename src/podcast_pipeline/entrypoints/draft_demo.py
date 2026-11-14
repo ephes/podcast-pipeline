@@ -14,8 +14,15 @@ from podcast_pipeline.agent_runners import (
     load_episode_context_from_workspace,
 )
 from podcast_pipeline.domain.models import EpisodeWorkspace, ReviewIteration
-from podcast_pipeline.review_loop_engine import CreatorInput, CreatorOutput, LoopOutcome, ReviewerInput
-from podcast_pipeline.review_loop_orchestrator import run_review_loop_orchestrator
+from podcast_pipeline.review_loop_engine import (
+    CreatorInput,
+    CreatorOutput,
+    LoopOutcome,
+    LoopProtocolError,
+    ReviewerInput,
+    load_loop_protocol_state,
+)
+from podcast_pipeline.review_loop_orchestrator import ReviewSelectionConflict, run_review_loop_orchestrator
 from podcast_pipeline.workspace_store import EpisodeWorkspaceStore
 
 _ASSET_ID_RE = re.compile(r"^[a-z][a-z0-9_]*$")
@@ -185,16 +192,51 @@ def run_draft_demo(
             episode_context=episode_context,
         )
 
-    protocol_state = run_review_loop_orchestrator(
-        workspace=store.layout.root,
+    _run_and_report_review(
+        store=store,
+        root=root,
         asset_id=asset_id,
         max_iterations=max_iterations,
         creator=creator,
         reviewer=reviewer,
     )
+
+
+def _run_and_report_review(
+    *,
+    store: EpisodeWorkspaceStore,
+    root: Path,
+    asset_id: str,
+    max_iterations: int,
+    creator: Callable[[CreatorInput], CreatorOutput],
+    reviewer: Callable[[ReviewerInput], ReviewIteration],
+) -> None:
+    protocol_path = store.layout.protocol_state_json_path(asset_id)
+    try:
+        previous = load_loop_protocol_state(protocol_path) if protocol_path.exists() else None
+        protocol_state = run_review_loop_orchestrator(
+            workspace=store.layout.root,
+            asset_id=asset_id,
+            max_iterations=max_iterations,
+            creator=creator,
+            reviewer=reviewer,
+        )
+    except (ReviewSelectionConflict, LoopProtocolError) as exc:
+        typer.echo(f"Workspace: {root}")
+        typer.echo(f"Review stopped: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
     typer.echo(f"Workspace: {root}")
     decision = protocol_state.decision
-    if decision is not None and decision.outcome == LoopOutcome.converged and protocol_state.iterations:
+    resumed_terminal = (
+        previous is not None
+        and previous.decision is not None
+        and len(protocol_state.iterations) == len(previous.iterations)
+    )
+    if resumed_terminal and decision is not None:
+        # The selection may have been replaced by a later pick or edit.
+        typer.echo(f"Review already finished: {decision.outcome.value} ({decision.reason}); no agent calls made.")
+        typer.echo(f"Archive {protocol_path.parent} to start a fresh review.")
+    elif decision is not None and decision.outcome == LoopOutcome.converged and protocol_state.iterations:
         final_iteration = protocol_state.iterations[-1]
         typer.echo(f"Selected: {store.layout.selected_text_path(asset_id, final_iteration.candidate.format)}")
     elif decision is not None:

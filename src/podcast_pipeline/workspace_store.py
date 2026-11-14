@@ -549,7 +549,20 @@ class EpisodeWorkspaceStore:
                 self._write_state_unlocked(updated)
                 return updated
 
-    def write_candidate(self, candidate: Candidate) -> Path:
+    def read_selection_snapshot(
+        self, asset_id: str, *, default: EpisodeWorkspace
+    ) -> tuple[EpisodeWorkspace, dict[str, str]]:
+        """Read selection metadata and all published formats under the writer lock."""
+        with self._state_lock():
+            current = self.read_state() if self.layout.state_json.exists() else default
+            texts = {
+                fmt.value: path.read_text(encoding="utf-8")
+                for fmt in TextFormat
+                if (path := self.layout.selected_text_path(asset_id, fmt)).exists()
+            }
+            return current, texts
+
+    def write_candidate(self, candidate: Candidate, *, immutable: bool = False) -> Path:
         path = self.layout.candidate_json_path(
             candidate.asset_id,
             candidate.candidate_id,
@@ -566,6 +579,10 @@ class EpisodeWorkspaceStore:
         # Serialize/render first, then publish JSON last: it makes candidates discoverable.
         artifacts[path] = dumped
         with self._state_lock(), preserve_files(list(artifacts)):
+            if immutable and path.exists():
+                if self.read_candidate(candidate.asset_id, candidate.candidate_id) != candidate:
+                    raise ValueError("Review candidate identity cannot change; use a fresh candidate UUID.")
+                return path
             for artifact_path, text in artifacts.items():
                 _atomic_write_text(artifact_path, text)
         return path

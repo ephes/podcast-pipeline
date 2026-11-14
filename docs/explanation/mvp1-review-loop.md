@@ -9,19 +9,19 @@ workspace storage.
 The MVP-1 loop is driven by `run_review_loop_orchestrator`, which coordinates a creator and reviewer runner (often
 backed by different models) and then persists the results.
 
-1. Load workspace state and look for existing candidates under `copy/candidates/<asset_id>/candidate_*.json`.
+1. Load and preflight the bounded persisted protocol state for this asset and look for existing candidates under `copy/candidates/<asset_id>/candidate_*.json`.
 2. If a seed candidate exists, wrap the creator so its first call receives that candidate as
    `CreatorInput.previous_candidate`.
 3. Wrap the reviewer so it can enforce locked selections for certain assets.
-4. Run the core loop engine (`run_review_loop_engine`) to produce new iterations and a protocol decision.
-5. Write protocol JSON (`copy/protocol/...`), candidates, reviews, selected text (if converged), and the updated
-   `state.json` workspace snapshot.
+4. Resume the core loop engine (`run_review_loop_engine`) from completed iterations and its locked decision.
+5. Checkpoint each completed round before the next agent call: iteration envelope, candidates/reviews,
+   workspace metadata and selected text (if converged), then the protocol state resume marker.
 
-All protocol documents of a run are serialized before the first file is touched, and each file is then replaced
-atomically, so a failed rerun never truncates an existing protocol file. The files are still published one after
-another, not as one transaction: after a failure the protocol directory can hold a mix of complete old and complete new
-files. The workspace `state.json` is written last and is the marker for a fully published run; rerun the review loop to
-rebuild a partial bundle.
+Individual files are replaced atomically. The protocol state is published after the completed round's
+artifacts; a later creator/reviewer failure leaves earlier checkpoints resumable. A failed publication
+stops the loop before another agent call. Process death between file replacements is not a multi-file
+transaction: inspect surviving artifacts when publication itself fails. Terminal resumes leave current
+producer selections untouched.
 
 ## Convergence rules
 
@@ -30,7 +30,7 @@ The loop engine decides convergence per iteration:
 - Converged when the reviewer verdict is `ok` and the creator returns `done=True`.
 - If the loop reaches `max_iterations` without convergence, the outcome is `needs_human` with reason
   `iteration_limit`.
-- A reviewer verdict of `needs_human` is recorded but does not stop the loop on its own.
+- A reviewer verdict of `needs_human` stops immediately with locked reason `reviewer_requested_human`.
 - If an existing protocol decision is terminal and has `outcome` locked, the engine returns immediately with no
   new writes, preventing replays from changing history.
 
@@ -64,3 +64,22 @@ The MVP-1 loop produces protocol artifacts that can be inspected or surfaced by 
 - Loop engine: `src/podcast_pipeline/review_loop_engine.py`
 - Workspace layout: `src/podcast_pipeline/workspace_store.py`
 - Status view: `src/podcast_pipeline/entrypoints/status.py`
+
+## Producer selection fence
+
+The orchestrator captures all selected formats, the selected candidate ID and manual-selection
+provenance under the workspace state lock before agent work. Automatic convergence compares
+that snapshot inside the final state transaction. A newer pick or custom edit keeps its text,
+selected ID and provenance. The completed candidates/reviews are retained, the protocol is locked
+as `needs_human` (`selection_conflict`), and the caller receives a selection-changed error.
+Reviewing another asset does not conflict. A terminal resume never reselects an old result.
+
+## Immutable review evidence
+
+Each candidate UUID names one complete record. The engine checks this across history before review;
+the orchestrator also checks saved candidates, including seeds, and candidate publication rechecks
+under the state lock. Identical reuse keeps the existing file. Changed content or metadata requires
+a new UUID. Each callback receives copies of prior evidence, and resumed rounds are never rewritten.
+Preflight requires contiguous rounds starting at 1, matching candidate asset/review iteration identities,
+and a consistent locked terminal decision pointing to the final recorded round. A partial state may
+contain only nonterminal completed rounds; malformed state fails before agent calls or artifact writes.

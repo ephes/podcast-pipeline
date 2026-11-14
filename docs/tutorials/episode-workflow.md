@@ -148,7 +148,11 @@ Notes:
 
 - Add `--fake-runner` to use the built-in stub creator/reviewer.
 - Review iterations are written under `copy/reviews/<asset_id>/` and protocol state under `copy/protocol/<asset_id>/`.
-- When the loop converges, the selected draft is written to `copy/selected/<asset_id>.*`.
+- Each completed round checkpoints before the next agent call. Repeating review with the same maximum
+  resumes missing rounds; terminal decisions make no agent calls and keep later producer selections.
+- A reviewer request for `needs_human` stops immediately. On convergence, the selected draft is written
+  to `copy/selected/<asset_id>.*` only if the reviewed selection is still current. A newer pick or custom
+  edit is retained and reported as a selection conflict. See [review-loop recovery](../how-to/review-loop.md).
 
 ## 5. Pick final copy (pick)
 

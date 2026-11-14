@@ -30,12 +30,16 @@
 - `tags` (list of strings): tags or categories for the episode.
 - `slug` (string or null): page slug.
 - `page_id` (string or null): CMS page id.
-- `api_url` (string): API URL used to fetch the data.
+- `api_url` (string): canonical API source, without credentials, query, fragment or trailing slashes.
+  CMS `link` provenance omits userinfo, fragment and credential-like query parameters, keeps
+  ordinary query parameters, and is `null` when the link cannot be parsed. The complete request URL
+  is used only by transport, never exported or printed. Existing datasets need re-exporting to
+  remove previously stored URL secrets.
 
 ## Example record
 
 ```json
-{"api_url":"https://example.com/api/v2/pages/?type=podcast.EpisodePage","description_html":null,"example_id":"cms_ab12cd34ef56","input":"Title: Episode Title\nSummary: Short summary.","link":"https://example.com/episodes/episode-title/","output":"<p>Show notes</p>","page_id":"123","published":"2024-05-01T10:00:00Z","shownotes_html":"<p>Show notes</p>","slug":"episode-title","source":"cms","summary":"Short summary.","tags":["automation","podcasting"],"title":"Episode Title","version":1}
+{"api_url":"https://example.com/api/v2/pages","description_html":null,"example_id":"cms_ab12cd34ef56","input":"Title: Episode Title\nSummary: Short summary.","link":"https://example.com/episodes/episode-title/","output":"<p>Show notes</p>","page_id":"123","published":"2024-05-01T10:00:00Z","shownotes_html":"<p>Show notes</p>","slug":"episode-title","source":"cms","summary":"Short summary.","tags":["automation","podcasting"],"title":"Episode Title","version":1}
 ```
 
 ## Selection identity and matching

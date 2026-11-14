@@ -19,6 +19,53 @@ class CmsExamplesError(RuntimeError):
     pass
 
 
+def safe_cms_url(value: str, *, source: bool = False) -> str:
+    """Keep URL provenance without transport credentials, queries or fragments."""
+    try:
+        url = httpx.URL(value)
+        raw_path = url.raw_path.split(b"?", 1)[0]
+        if source:
+            raw_path = raw_path.rstrip(b"/")
+        return str(url.copy_with(username="", password="", query=None, fragment=None, raw_path=raw_path))
+    except (httpx.InvalidURL, ValueError) as exc:
+        raise CmsExamplesError("Invalid CMS provenance URL.") from exc
+
+
+# Privacy first: a stem anywhere in the normalized name (accesstoken, clientsecret,
+# jsessionid, X-Amz-Credential) or a short credential word as a whole name part.
+_CREDENTIAL_QUERY_STEMS = (
+    "token", "secret", "passw", "pwd", "apikey", "privatekey", "secretkey", "accesskey", "signingkey",
+    "sessionkey", "authkey", "clientkey", "accountkey", "masterkey", "licensekey", "encryptionkey",
+    "signature", "sessionid", "sessid", "credential", "jwt", "oauth", "bearer", "authorization",
+)  # fmt: skip
+_CREDENTIAL_QUERY_PARTS = frozenset({"key", "sig", "auth", "sid", "pass", "session"})
+
+
+def _is_credential_query_name(name: str) -> bool:
+    spaced = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", name)  # accessToken -> access_Token
+    parts = [part for part in re.split(r"[^a-z0-9]+", spaced.lower()) if part]
+    normalized = "".join(parts)
+    return any(stem in normalized for stem in _CREDENTIAL_QUERY_STEMS) or any(
+        part in _CREDENTIAL_QUERY_PARTS for part in parts
+    )
+
+
+def public_cms_link(value: str) -> str | None:
+    """Public episode link without userinfo, fragment or credential-like query parameters.
+
+    Ordinary query parameters stay: they can be the only thing that identifies an
+    episode (e.g. ``/?p=123``). An unparseable link is dropped, not fatal.
+    """
+    try:
+        url = httpx.URL(value)
+        params = [(name, item) for name, item in url.params.multi_items() if not _is_credential_query_name(name)]
+        if params:
+            return str(url.copy_with(username="", password="", fragment=None, params=params))
+        return str(url.copy_with(username="", password="", fragment=None, query=None))
+    except (httpx.InvalidURL, ValueError, TypeError):
+        return None
+
+
 @dataclass(frozen=True)
 class CmsFieldMapping:
     title: str = "title"
@@ -46,17 +93,11 @@ class CmsEpisodeExample:
     api_url: str
 
     def example_id(self) -> str:
-        url = httpx.URL(self.api_url)
-        source = str(
-            url.copy_with(
-                username="",
-                password="",
-                query=None,
-                fragment=None,
-                raw_path=url.raw_path.split(b"?", 1)[0].rstrip(b"/"),
-            )
+        source = safe_cms_url(self.api_url, source=True)
+        seed = json.dumps(
+            [source, self.page_id or (public_cms_link(self.link) if self.link else None) or self.title],
+            ensure_ascii=False,
         )
-        seed = json.dumps([source, self.page_id or self.link or self.title], ensure_ascii=False)
         digest = sha256(seed.encode()).hexdigest()[:12]
         return f"cms_{digest}"
 
@@ -82,13 +123,13 @@ class CmsEpisodeExample:
             "output": self.build_output_text(),
             "title": self.title,
             "summary": self.summary,
-            "link": self.link,
+            "link": public_cms_link(self.link) if self.link else None,
             "slug": self.slug,
             "published": self.published,
             "tags": list(self.tags),
             "description_html": self.description_html,
             "shownotes_html": self.shownotes_html,
-            "api_url": self.api_url,
+            "api_url": safe_cms_url(self.api_url, source=True),
             "page_id": self.page_id,
         }
 
@@ -158,9 +199,31 @@ def _fetch_cms_json(*, api_url: str, timeout_seconds: float, limit: int) -> Any:
         raise CmsExamplesError("CMS timeout must be finite and > 0.")
     body = _read_cms_response(api_url=api_url, timeout_seconds=timeout_seconds, limit=limit)
     try:
-        return json.loads(body)
-    except (ValueError, UnicodeError) as exc:
+        payload = json.loads(body, object_pairs_hook=_unique_cms_members)
+        _check_cms_depth(payload)
+        return payload
+    except (ValueError, UnicodeError, RecursionError) as exc:
         raise CmsExamplesError("CMS API returned invalid JSON.") from exc
+
+
+def _unique_cms_members(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate JSON member")
+        result[key] = value
+    return result
+
+
+def _check_cms_depth(payload: Any) -> None:
+    pending = [(payload, 0)]
+    while pending:
+        value, depth = pending.pop()
+        if isinstance(value, (dict, list)):
+            if depth >= 64:
+                raise ValueError("CMS JSON depth limit")
+            children = value.values() if isinstance(value, dict) else value
+            pending.extend((child, depth + 1) for child in children)
 
 
 def _read_cms_response(*, api_url: str, timeout_seconds: float, limit: int) -> bytes:
@@ -185,7 +248,7 @@ def _read_cms_response(*, api_url: str, timeout_seconds: float, limit: int) -> b
             raise CmsExamplesError(f"CMS API redirected more than {_MAX_CMS_REDIRECTS} times.")
     except httpx.TimeoutException as exc:
         raise CmsExamplesError("CMS API request exceeded its timeout.") from exc
-    except httpx.RequestError as exc:
+    except (httpx.RequestError, httpx.InvalidURL) as exc:
         raise CmsExamplesError("Failed to fetch CMS API.") from exc
 
 
@@ -251,11 +314,11 @@ def _parse_item(
         shownotes_html=shownotes,
         tags=tags,
         summary=summary,
-        link=link,
+        link=public_cms_link(link) if link else None,
         slug=slug,
         published=published,
         page_id=page_id,
-        api_url=api_url,
+        api_url=safe_cms_url(api_url, source=True),
     )
 
 

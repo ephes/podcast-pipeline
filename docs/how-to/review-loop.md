@@ -28,12 +28,28 @@ podcast review \
 
 Notes:
 
-- `--workspace` must not exist; the command creates it.
+- `--workspace` can name an existing initialized workspace. Repeating the command resumes
+  `copy/protocol/<asset_id>/state.json` with the same `--max-iterations`; completed rounds
+  are not sent to the agents again. Locked terminal runs make no agent calls or selection changes;
+  the CLI and the dashboard job say so ("no agent calls") instead of reporting a fresh result.
+  A selection conflict, invalid protocol state or unreadable saved candidate evidence ends
+  `podcast review` with a "Review stopped" message and exit code 1, not a traceback.
+- Each completed candidate/review is checkpointed before the next agent call. After an agent
+  failure, fix the cause and repeat the command. Invalid protocol state stops before agent calls.
+- For an intentional fresh run, archive `copy/protocol/<asset_id>/` and
+  `copy/reviews/<asset_id>/` outside their active paths (for example, under
+  `review-archive/<timestamp>/<asset_id>/`) before repeating the command. Keep the candidate
+  history and workspace state: a fresh run can use the latest candidate as a seed.
+  Do not delete paid review evidence.
 - `--asset-id` must match `^[a-z][a-z0-9_]*$`.
 - Agent CLI configuration is documented in `reference/configuration.md`.
 - On convergence, the command prints the selected asset path.
 - Review iterations are written under `copy/reviews/<asset_id>/iteration_XX.<reviewer>.json` when the reviewer label is set.
-- The loop stops only when the reviewer returns `ok` and the creator reports `done`, or when `max_iterations` is reached.
+- The loop stops when the reviewer returns `ok` and the creator reports `done`, immediately
+  when the reviewer requests `needs_human`, or at `max_iterations`. Human decisions stay locked on resume.
+- If a producer changes the selected text, format, candidate or manual provenance while review runs,
+  automatic selection stops with a conflict. The newer selection and completed review evidence survive;
+  inspect them with `podcast pick` before deliberately starting a fresh run.
 
 ## 2. Inspect loop status
 

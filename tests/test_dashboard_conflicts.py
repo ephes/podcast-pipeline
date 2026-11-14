@@ -110,3 +110,36 @@ def test_empty_review_asset_is_rejected_before_admission(
     ) as client:
         assert client.post("/api/review", json={"asset_id": asset_id}).status_code == 400
     assert not starts and not ctx.jobs
+
+
+def test_dashboard_review_of_terminal_protocol_reports_no_agent_calls(tmp_path: Any, monkeypatch: Any) -> None:
+    from podcast_pipeline import agent_cli_config, agent_runners
+    from podcast_pipeline.agent_runners import FakeCreatorRunner, FakeReviewerRunner
+    from podcast_pipeline.dashboard_context import DashboardContext
+    from podcast_pipeline.entrypoints import dashboard_web
+    from podcast_pipeline.workspace_store import EpisodeWorkspaceStore
+
+    store = EpisodeWorkspaceStore(tmp_path)
+    store.write_episode_yaml({"episode_id": "synthetic"})
+    calls: list[str] = []
+
+    def runners(*, layout: Any, **kwargs: Any) -> Any:
+        calls.append("built")
+        return (
+            FakeCreatorRunner(layout=layout, replies=[{"done": True, "candidate": {"content": "Reviewed"}}]),
+            FakeReviewerRunner(layout=layout, reviewer="synthetic", replies=[{"verdict": "ok"}]),
+        )
+
+    monkeypatch.setattr(agent_cli_config, "load_agent_cli_bundle", lambda **kwargs: None)
+    monkeypatch.setattr(agent_runners, "build_local_cli_runners", runners)
+    ctx = DashboardContext(workspace=tmp_path)
+    first = ctx.create_job("review")
+    dashboard_web._run_review_job(ctx, first, "description", 1)
+    assert first.status == "completed" and "note" not in (first.result or {})
+
+    second = ctx.create_job("review")
+    dashboard_web._run_review_job(ctx, second, "description", 1)
+    assert second.status == "completed", second.error
+    assert second.result is not None
+    assert second.result["agent_calls"] is False
+    assert "no agent calls were made" in second.result["note"]

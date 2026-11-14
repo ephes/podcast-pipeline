@@ -225,4 +225,4 @@ def test_cms_fetch_preserves_query_and_overrides_url_limit(monkeypatch: pytest.M
     assert actual_filters == expected_filters
     assert requests[0].url.params.get_list("limit") == ["1"]
     assert len(examples) == 1
-    assert examples[0].api_url == api_url
+    assert examples[0].api_url == "https://cms.example/api"

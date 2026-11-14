@@ -856,9 +856,12 @@ def _run_review_job(
         from podcast_pipeline.agent_cli_config import load_agent_cli_bundle
         from podcast_pipeline.agent_runners import build_local_cli_runners
         from podcast_pipeline.prompting import PromptRenderer, default_prompt_registry
+        from podcast_pipeline.review_loop_engine import load_loop_protocol_state
         from podcast_pipeline.review_loop_orchestrator import run_review_loop_orchestrator
         from podcast_pipeline.workspace_store import EpisodeWorkspaceLayout
 
+        protocol_path = EpisodeWorkspaceLayout(root=ctx.workspace).protocol_state_json_path(asset_id)
+        previous = load_loop_protocol_state(protocol_path) if protocol_path.exists() else None
         capture = _ProgressCapture(ctx, job)
         _thread_local.capture = capture
         try:
@@ -885,6 +888,17 @@ def _run_review_job(
             outcome = protocol_state.decision.outcome if protocol_state.decision else "in_progress"
             ctx.finish_job(job, "completed")
             job.result = {"outcome": outcome}
+            if (
+                previous is not None
+                and previous.decision is not None
+                and len(protocol_state.iterations) == len(previous.iterations)
+            ):
+                # A persisted terminal decision is resumed, never re-reviewed.
+                job.result["agent_calls"] = False
+                job.result["note"] = (
+                    f"Review already finished ({outcome}); no agent calls were made. "
+                    f"Archive copy/protocol/{asset_id}/ to start a fresh review."
+                )
     except Exception as exc:
         with ctx.lock:
             ctx.finish_job(job, "failed")

@@ -199,3 +199,118 @@ def test_cms_id_digest_is_stable() -> None:
         limit=1,
     )[0]
     assert example.example_id() == "cms_fc79d2e15716"
+
+
+def test_export_strips_url_credentials_from_records_selection_and_diagnostics(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from typer.testing import CliRunner
+
+    from podcast_pipeline import cms_examples
+    from podcast_pipeline.entrypoints.cli import app
+    from podcast_pipeline.few_shot_selector import select_few_shot_examples
+
+    api_url = "https://synthetic-user:synthetic-password@cms.example/api/?token=synthetic-token#synthetic-fragment"
+    public_url = "https://link-user:link-password@example.com/episode?key=link-token#link-fragment"
+    calls: list[str] = []
+
+    def read(*, api_url: str, timeout_seconds: float, limit: int) -> bytes:
+        calls.append(api_url)
+        return json.dumps(
+            {"items": [{"id": 42, "title": "Episode", "description": "<p>Notes</p>", "url": public_url}]}
+        ).encode()
+
+    monkeypatch.setattr(cms_examples, "_read_cms_response", read)
+    output = tmp_path / "examples.jsonl"
+    result = CliRunner().invoke(app, ["cms-examples", "--api-url", api_url, "--output", str(output)])
+    assert result.exit_code == 0
+    assert calls == [api_url]
+    record = json.loads(output.read_text())
+    selected = select_few_shot_examples(examples=[record], topics=[], limit=1)
+    for text in (output.read_text(), repr(selected), result.output):
+        for secret in (
+            "synthetic-user",
+            "synthetic-password",
+            "synthetic-token",
+            "synthetic-fragment",
+            "link-user",
+            "link-password",
+            "link-token",
+            "link-fragment",
+        ):
+            assert secret not in text
+    assert record["api_url"] == "https://cms.example/api"
+    assert record["link"] == "https://example.com/episode"
+    assert record["example_id"] == "cms_fc79d2e15716"
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        b'{"items":[{"title":"private-first","title":"private-second","description":"ok"}]}',
+        b'{"items":[{"id":1,"id":2,"title":"Episode","description":"ok"}]}',
+        b'{"items":[{"title":"Episode","description":{"html":"first","html":"second"}}]}',
+        b'{"items":[],"items":[{"title":"Episode","description":"ok"}]}',
+        b"[" * 2000 + b"0" + b"]" * 2000,
+        b"[" * 65 + b"0" + b"]" * 65,
+    ],
+)
+def test_ambiguous_or_deep_cms_json_preserves_export(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, body: bytes
+) -> None:
+    from typer.testing import CliRunner
+
+    from podcast_pipeline import cms_examples
+    from podcast_pipeline.entrypoints.cli import app
+
+    monkeypatch.setattr(cms_examples, "_read_cms_response", lambda **kwargs: body)
+    output = tmp_path / "examples.jsonl"
+    output.write_bytes(b"previous corpus\n")
+    result = CliRunner().invoke(app, ["cms-examples", "--api-url", "https://cms.example/api", "--output", str(output)])
+    assert result.exit_code == 2
+    assert "CMS API returned invalid JSON" in result.output
+    assert "private-first" not in result.output and "private-second" not in result.output
+    assert output.read_bytes() == b"previous corpus\n"
+
+
+def test_query_identified_links_stay_distinct_and_usable() -> None:
+    examples = parse_cms_examples(
+        [
+            {"title": "First", "description": "<p>a</p>", "url": "https://blog.example/?p=123&access_token=t#x"},
+            {"title": "Second", "description": "<p>b</p>", "url": "https://blog.example/?p=124"},
+        ],
+        api_url="https://blog.example/wp-json",
+        limit=2,
+    )
+    assert [example.link for example in examples] == ["https://blog.example/?p=123", "https://blog.example/?p=124"]
+    assert examples[0].example_id() != examples[1].example_id()
+
+
+@pytest.mark.parametrize(
+    ("query", "kept"),
+    [
+        ("author=5", "author=5"),
+        ("passage=2&compass=n", "passage=2&compass=n"),
+        ("keyword=ai&api_key=x", "keyword=ai"),
+        ("X-Amz-Signature=s&X-Amz-Credential=c&design=1", "design=1"),
+        ("accessToken=t&p=9", "p=9"),
+        ("accesstoken=a&apitoken=b&authtoken=c&refreshtoken=d&p=1", "p=1"),
+        ("clientsecret=a&secretkey=b&privatekey=c&p=1", "p=1"),
+        ("sessionkey=a&SESSIONKEY=b&AccessKeyId=c&monkey=d", "monkey=d"),
+        ("jsessionid=a&user_session_id=b&ASP.NET_SessionId=c&session=d&p=1", "p=1"),
+    ],
+)
+def test_public_link_keeps_ordinary_parameters_and_drops_credentials(query: str, kept: str) -> None:
+    from podcast_pipeline.cms_examples import public_cms_link
+
+    assert public_cms_link(f"https://blog.example/ep?{query}") == f"https://blog.example/ep?{kept}"
+
+
+def test_unparseable_public_link_is_dropped_not_fatal() -> None:
+    (example,) = parse_cms_examples(
+        [{"id": 7, "title": "Episode", "description": "<p>Notes</p>", "url": "http://ex\x00ample/"}],
+        api_url="https://cms.example/api",
+        limit=1,
+    )
+    assert example.link is None
+    assert example.to_record()["link"] is None
