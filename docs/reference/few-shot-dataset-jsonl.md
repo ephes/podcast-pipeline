@@ -31,7 +31,8 @@
 - `slug` (string or null): page slug.
 - `page_id` (string or null): CMS page id.
 - `api_url` (string): canonical API source, without credentials, query, fragment or trailing slashes.
-  CMS `link` provenance likewise omits credentials, query and fragment. The complete request URL
+  CMS `link` provenance omits userinfo, fragment and credential-like query parameters, keeps
+  ordinary query parameters, and is `null` when the link cannot be parsed. The complete request URL
   is used only by transport, never exported or printed. Existing datasets need re-exporting to
   remove previously stored URL secrets.
 

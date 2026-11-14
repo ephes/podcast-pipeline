@@ -39,9 +39,13 @@ podcast cms-examples \
 Notes:
 
 - The command skips items that do not have a title plus description or shownotes HTML.
-- Request URLs retain credentials and filters only for transport. Exported `api_url`, public `link`
-  provenance and the CLI source diagnostic omit URL userinfo, query strings and fragments;
-  canonical API sources also drop trailing slashes. IDs remain stable. Re-export old datasets
+- Request URLs retain credentials and filters only for transport. Exported `api_url` and the CLI
+  source diagnostic omit URL userinfo, query strings and fragments; canonical API sources also
+  drop trailing slashes. The public `link` omits userinfo, the fragment and credential-like query
+  parameters (any name containing a credential stem such as token, secret, password, apikey,
+  privatekey, signature, sessionid, credential, jwt or oauth, or with a name part `key`, `sig`,
+  `auth`, `sid`, `pass` or `session`) but keeps ordinary ones such as `?p=123` or `?author=5`, which can be the only episode identity; an
+  unparseable link is exported as `null`. IDs remain stable. Re-export old datasets
   to remove credentials previously stored in URL provenance. Episode text is not a secret scanner:
   only export editorial content intended for few-shot prompts.
 - Field names support dot-notation for nested payloads (for example, `meta.html_url`).

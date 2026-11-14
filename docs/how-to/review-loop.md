@@ -30,7 +30,10 @@ Notes:
 
 - `--workspace` can name an existing initialized workspace. Repeating the command resumes
   `copy/protocol/<asset_id>/state.json` with the same `--max-iterations`; completed rounds
-  are not sent to the agents again. Locked terminal runs make no agent calls or selection changes.
+  are not sent to the agents again. Locked terminal runs make no agent calls or selection changes;
+  the CLI and the dashboard job say so ("no agent calls") instead of reporting a fresh result.
+  A selection conflict, invalid protocol state or unreadable saved candidate evidence ends
+  `podcast review` with a "Review stopped" message and exit code 1, not a traceback.
 - Each completed candidate/review is checkpointed before the next agent call. After an agent
   failure, fix the cause and repeat the command. Invalid protocol state stops before agent calls.
 - For an intentional fresh run, archive `copy/protocol/<asset_id>/` and

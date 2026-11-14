@@ -157,7 +157,13 @@ def run_review_loop_orchestrator(
     selection_generation = _selection_generation(selected_workspace, asset_id, selected_texts)
     reviewer_runner = _wrap_reviewer_with_locked_decisions(store=store, reviewer=reviewer)
 
-    saved_candidates = _load_seed_candidates(layout, asset_id)
+    try:
+        saved_candidates = _load_seed_candidates(layout, asset_id)
+    except (OSError, ValueError) as exc:  # JSON, pydantic validation and asset mismatches
+        # Content-free diagnostic; the cause stays chained for debugging.
+        raise LoopProtocolError(
+            f"Invalid saved review candidate evidence; repair or archive copy/candidates/{asset_id}/."
+        ) from exc
     saved_by_id = {candidate.candidate_id: candidate for candidate in saved_candidates}
     if existing is not None and any(
         saved_by_id.get(it.candidate.candidate_id) != it.candidate for it in existing.iterations

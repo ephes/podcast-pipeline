@@ -271,3 +271,46 @@ def test_ambiguous_or_deep_cms_json_preserves_export(
     assert "CMS API returned invalid JSON" in result.output
     assert "private-first" not in result.output and "private-second" not in result.output
     assert output.read_bytes() == b"previous corpus\n"
+
+
+def test_query_identified_links_stay_distinct_and_usable() -> None:
+    examples = parse_cms_examples(
+        [
+            {"title": "First", "description": "<p>a</p>", "url": "https://blog.example/?p=123&access_token=t#x"},
+            {"title": "Second", "description": "<p>b</p>", "url": "https://blog.example/?p=124"},
+        ],
+        api_url="https://blog.example/wp-json",
+        limit=2,
+    )
+    assert [example.link for example in examples] == ["https://blog.example/?p=123", "https://blog.example/?p=124"]
+    assert examples[0].example_id() != examples[1].example_id()
+
+
+@pytest.mark.parametrize(
+    ("query", "kept"),
+    [
+        ("author=5", "author=5"),
+        ("passage=2&compass=n", "passage=2&compass=n"),
+        ("keyword=ai&api_key=x", "keyword=ai"),
+        ("X-Amz-Signature=s&X-Amz-Credential=c&design=1", "design=1"),
+        ("accessToken=t&p=9", "p=9"),
+        ("accesstoken=a&apitoken=b&authtoken=c&refreshtoken=d&p=1", "p=1"),
+        ("clientsecret=a&secretkey=b&privatekey=c&p=1", "p=1"),
+        ("sessionkey=a&SESSIONKEY=b&AccessKeyId=c&monkey=d", "monkey=d"),
+        ("jsessionid=a&user_session_id=b&ASP.NET_SessionId=c&session=d&p=1", "p=1"),
+    ],
+)
+def test_public_link_keeps_ordinary_parameters_and_drops_credentials(query: str, kept: str) -> None:
+    from podcast_pipeline.cms_examples import public_cms_link
+
+    assert public_cms_link(f"https://blog.example/ep?{query}") == f"https://blog.example/ep?{kept}"
+
+
+def test_unparseable_public_link_is_dropped_not_fatal() -> None:
+    (example,) = parse_cms_examples(
+        [{"id": 7, "title": "Episode", "description": "<p>Notes</p>", "url": "http://ex\x00ample/"}],
+        api_url="https://cms.example/api",
+        limit=1,
+    )
+    assert example.link is None
+    assert example.to_record()["link"] is None

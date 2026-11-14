@@ -31,6 +31,41 @@ def safe_cms_url(value: str, *, source: bool = False) -> str:
         raise CmsExamplesError("Invalid CMS provenance URL.") from exc
 
 
+# Privacy first: a stem anywhere in the normalized name (accesstoken, clientsecret,
+# jsessionid, X-Amz-Credential) or a short credential word as a whole name part.
+_CREDENTIAL_QUERY_STEMS = (
+    "token", "secret", "passw", "pwd", "apikey", "privatekey", "secretkey", "accesskey", "signingkey",
+    "sessionkey", "authkey", "clientkey", "accountkey", "masterkey", "licensekey", "encryptionkey",
+    "signature", "sessionid", "sessid", "credential", "jwt", "oauth", "bearer", "authorization",
+)  # fmt: skip
+_CREDENTIAL_QUERY_PARTS = frozenset({"key", "sig", "auth", "sid", "pass", "session"})
+
+
+def _is_credential_query_name(name: str) -> bool:
+    spaced = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", name)  # accessToken -> access_Token
+    parts = [part for part in re.split(r"[^a-z0-9]+", spaced.lower()) if part]
+    normalized = "".join(parts)
+    return any(stem in normalized for stem in _CREDENTIAL_QUERY_STEMS) or any(
+        part in _CREDENTIAL_QUERY_PARTS for part in parts
+    )
+
+
+def public_cms_link(value: str) -> str | None:
+    """Public episode link without userinfo, fragment or credential-like query parameters.
+
+    Ordinary query parameters stay: they can be the only thing that identifies an
+    episode (e.g. ``/?p=123``). An unparseable link is dropped, not fatal.
+    """
+    try:
+        url = httpx.URL(value)
+        params = [(name, item) for name, item in url.params.multi_items() if not _is_credential_query_name(name)]
+        if params:
+            return str(url.copy_with(username="", password="", fragment=None, params=params))
+        return str(url.copy_with(username="", password="", fragment=None, query=None))
+    except (httpx.InvalidURL, ValueError, TypeError):
+        return None
+
+
 @dataclass(frozen=True)
 class CmsFieldMapping:
     title: str = "title"
@@ -60,7 +95,8 @@ class CmsEpisodeExample:
     def example_id(self) -> str:
         source = safe_cms_url(self.api_url, source=True)
         seed = json.dumps(
-            [source, self.page_id or (safe_cms_url(self.link) if self.link else self.title)], ensure_ascii=False
+            [source, self.page_id or (public_cms_link(self.link) if self.link else None) or self.title],
+            ensure_ascii=False,
         )
         digest = sha256(seed.encode()).hexdigest()[:12]
         return f"cms_{digest}"
@@ -87,7 +123,7 @@ class CmsEpisodeExample:
             "output": self.build_output_text(),
             "title": self.title,
             "summary": self.summary,
-            "link": safe_cms_url(self.link) if self.link else None,
+            "link": public_cms_link(self.link) if self.link else None,
             "slug": self.slug,
             "published": self.published,
             "tags": list(self.tags),
@@ -278,7 +314,7 @@ def _parse_item(
         shownotes_html=shownotes,
         tags=tags,
         summary=summary,
-        link=safe_cms_url(link) if link else None,
+        link=public_cms_link(link) if link else None,
         slug=slug,
         published=published,
         page_id=page_id,
