@@ -75,20 +75,23 @@ Key persisted artifacts:
 The loop is driven by `run_review_loop_engine` and follows a strict Creator/Reviewer cadence. It persists a
 `LoopProtocolState` with a `LoopDecision` that can lock terminal outcomes to prevent replays from rewriting history.
 
-1. Start from an optional existing protocol state; if it is terminal and the outcome is locked, the engine returns
-   without re-running.
+1. Preflight an optional existing protocol state before callbacks; require contiguous iteration identities,
+   immutable candidates and consistent terminal references. If it is terminal and the outcome is locked,
+   the engine returns without re-running.
 2. For each iteration up to `max_iterations`:
    - The creator receives `CreatorInput` (including the prior candidate/review) and returns a `Candidate` plus a
      `done` flag.
    - The reviewer receives the new candidate and returns a `ReviewIteration`.
-   - The engine writes protocol JSON (`LoopProtocolIteration`) for the iteration and evaluates convergence.
-3. The engine writes a protocol `state.json` snapshot for the loop.
+   - The engine prepares protocol JSON (`LoopProtocolIteration`) and evaluates convergence.
+   - The orchestrator checkpoints the completed candidate/review and resume state before the next call.
+3. Terminal resumes leave later producer selections intact. A selection changed during review prevents
+   automatic publication and records a locked `selection_conflict`; completed evidence is retained.
 
 Convergence is determined by the following rules:
 
 - `ReviewVerdict.ok` + creator `done=True` terminates with outcome `converged`.
 - If `iteration == max_iterations` without convergence, the loop ends with `needs_human` and reason `iteration_limit`.
-- `ReviewVerdict.needs_human` is recorded on the iteration but does not terminate the loop on its own.
+- `ReviewVerdict.needs_human` terminates immediately with locked reason `reviewer_requested_human`.
 
 ## Fake runner usage
 

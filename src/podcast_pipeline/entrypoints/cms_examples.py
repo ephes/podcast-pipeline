@@ -8,6 +8,7 @@ from podcast_pipeline.cms_examples import (
     CmsExamplesError,
     CmsFieldMapping,
     fetch_cms_examples,
+    safe_cms_url,
     write_cms_examples_jsonl,
 )
 
@@ -66,6 +67,6 @@ def run_cms_examples(
         raise typer.BadParameter(str(exc)) from exc
 
     write_cms_examples_jsonl(examples=examples, output_path=output)
-    typer.echo(f"CMS API: {api_url}")
+    typer.echo(f"CMS API: {safe_cms_url(api_url, source=True)}")
     typer.echo(f"Episodes: {len(examples)}")
     typer.echo(f"Output: {output.expanduser().resolve()}")

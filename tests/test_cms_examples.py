@@ -199,3 +199,75 @@ def test_cms_id_digest_is_stable() -> None:
         limit=1,
     )[0]
     assert example.example_id() == "cms_fc79d2e15716"
+
+
+def test_export_strips_url_credentials_from_records_selection_and_diagnostics(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from typer.testing import CliRunner
+
+    from podcast_pipeline import cms_examples
+    from podcast_pipeline.entrypoints.cli import app
+    from podcast_pipeline.few_shot_selector import select_few_shot_examples
+
+    api_url = "https://synthetic-user:synthetic-password@cms.example/api/?token=synthetic-token#synthetic-fragment"
+    public_url = "https://link-user:link-password@example.com/episode?key=link-token#link-fragment"
+    calls: list[str] = []
+
+    def read(*, api_url: str, timeout_seconds: float, limit: int) -> bytes:
+        calls.append(api_url)
+        return json.dumps(
+            {"items": [{"id": 42, "title": "Episode", "description": "<p>Notes</p>", "url": public_url}]}
+        ).encode()
+
+    monkeypatch.setattr(cms_examples, "_read_cms_response", read)
+    output = tmp_path / "examples.jsonl"
+    result = CliRunner().invoke(app, ["cms-examples", "--api-url", api_url, "--output", str(output)])
+    assert result.exit_code == 0
+    assert calls == [api_url]
+    record = json.loads(output.read_text())
+    selected = select_few_shot_examples(examples=[record], topics=[], limit=1)
+    for text in (output.read_text(), repr(selected), result.output):
+        for secret in (
+            "synthetic-user",
+            "synthetic-password",
+            "synthetic-token",
+            "synthetic-fragment",
+            "link-user",
+            "link-password",
+            "link-token",
+            "link-fragment",
+        ):
+            assert secret not in text
+    assert record["api_url"] == "https://cms.example/api"
+    assert record["link"] == "https://example.com/episode"
+    assert record["example_id"] == "cms_fc79d2e15716"
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        b'{"items":[{"title":"private-first","title":"private-second","description":"ok"}]}',
+        b'{"items":[{"id":1,"id":2,"title":"Episode","description":"ok"}]}',
+        b'{"items":[{"title":"Episode","description":{"html":"first","html":"second"}}]}',
+        b'{"items":[],"items":[{"title":"Episode","description":"ok"}]}',
+        b"[" * 2000 + b"0" + b"]" * 2000,
+        b"[" * 65 + b"0" + b"]" * 65,
+    ],
+)
+def test_ambiguous_or_deep_cms_json_preserves_export(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, body: bytes
+) -> None:
+    from typer.testing import CliRunner
+
+    from podcast_pipeline import cms_examples
+    from podcast_pipeline.entrypoints.cli import app
+
+    monkeypatch.setattr(cms_examples, "_read_cms_response", lambda **kwargs: body)
+    output = tmp_path / "examples.jsonl"
+    output.write_bytes(b"previous corpus\n")
+    result = CliRunner().invoke(app, ["cms-examples", "--api-url", "https://cms.example/api", "--output", str(output)])
+    assert result.exit_code == 2
+    assert "CMS API returned invalid JSON" in result.output
+    assert "private-first" not in result.output and "private-second" not in result.output
+    assert output.read_bytes() == b"previous corpus\n"

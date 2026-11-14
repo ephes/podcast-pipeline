@@ -5,7 +5,9 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
+
+from pydantic import BaseModel, ConfigDict, StrictBool, StrictInt, field_validator
 
 from podcast_pipeline.domain.models import Candidate, ReviewIteration, ReviewVerdict
 from podcast_pipeline.workspace_store import EpisodeWorkspaceLayout
@@ -67,6 +69,143 @@ class LoopProtocolState:
         }
 
 
+class _Document(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+class _DecisionDocument(_Document):
+    outcome: LoopOutcome
+    final_iteration: StrictInt | None
+    reason: str | None
+    locked_fields: frozenset[str]
+
+
+class _CreatorDocument(_Document):
+    done: StrictBool
+    candidate: Candidate
+
+    @field_validator("candidate", mode="before")
+    @classmethod
+    def complete_candidate(cls, value: Any) -> Any:
+        if not isinstance(value, dict) or not Candidate.model_fields.keys() <= value.keys():
+            raise ValueError("incomplete persisted candidate")
+        return value
+
+
+class _IterationDocument(_Document):
+    version: Literal[1]
+    iteration: StrictInt
+    creator: _CreatorDocument
+    reviewer: ReviewIteration
+
+    @field_validator("reviewer", mode="before")
+    @classmethod
+    def complete_review(cls, value: Any) -> Any:
+        if not isinstance(value, dict) or not ReviewIteration.model_fields.keys() <= value.keys():
+            raise ValueError("incomplete persisted review")
+        return value
+
+
+class _StateDocument(_Document):
+    version: Literal[1]
+    asset_id: str
+    max_iterations: StrictInt
+    iterations: list[_IterationDocument]
+    decision: _DecisionDocument | None
+
+
+class LoopProtocolError(ValueError):
+    """Invalid review evidence; diagnostics never include candidate content."""
+
+
+def parse_loop_protocol_state(raw: Any) -> LoopProtocolState:
+    """Decode and validate the versioned resume envelope before callbacks or writes."""
+    try:
+        document = _StateDocument.model_validate(raw)
+        state = LoopProtocolState(
+            asset_id=document.asset_id,
+            max_iterations=document.max_iterations,
+            iterations=tuple(
+                LoopProtocolIteration(it.iteration, it.creator.done, it.creator.candidate, it.reviewer)
+                for it in document.iterations
+            ),
+            decision=None if document.decision is None else LoopDecision(**document.decision.model_dump()),
+        )
+        _validate_state_relations(state)
+        return state
+    except (ValueError, TypeError, RecursionError):
+        raise LoopProtocolError("Invalid review protocol state; restore or repair the saved evidence.") from None
+
+
+def _validate_state_relations(state: LoopProtocolState) -> None:
+    if state.max_iterations < 1 or len(state.iterations) > state.max_iterations:
+        raise ValueError("invalid iteration limit")
+    candidates: dict[object, Candidate] = {}
+    expected = None
+    for number, it in enumerate(state.iterations, start=1):
+        if it.iteration != number or it.review.iteration != number or it.candidate.asset_id != state.asset_id:
+            raise ValueError("invalid iteration identity")
+        _check_candidate_identity(it.candidate, candidates)
+        candidates[it.candidate.candidate_id] = it.candidate
+        expected = _decide_outcome(
+            review=it.review, creator_done=it.creator_done, iteration=number, max_iterations=state.max_iterations
+        )
+        if expected is not None and number != len(state.iterations):
+            raise ValueError("iteration after terminal review")
+    _validate_terminal_decision(state, expected)
+
+
+def _validate_terminal_decision(state: LoopProtocolState, expected: LoopDecision | None) -> None:
+    decision = state.decision
+    if decision is None:
+        if state.iterations and expected is not None:
+            raise ValueError("missing terminal decision")
+        return
+    if (
+        not decision.is_terminal()
+        or not decision.is_locked("outcome")
+        or decision.final_iteration != len(state.iterations)
+        or not state.iterations
+        or not decision.locked_fields <= {"outcome", "final_iteration", "reason"}
+    ):
+        raise ValueError("invalid terminal decision")
+    if decision.reason == "selection_conflict":
+        if (
+            decision.outcome != LoopOutcome.needs_human
+            or expected is None
+            or expected.outcome != LoopOutcome.converged
+        ):
+            raise ValueError("invalid selection conflict")
+    elif expected is None or (decision.outcome, decision.reason) != (expected.outcome, expected.reason):
+        raise ValueError("inconsistent terminal decision")
+
+
+def _check_candidate_identity(candidate: Candidate, known: dict[object, Candidate]) -> None:
+    previous = known.get(candidate.candidate_id)
+    if previous is not None and previous != candidate:
+        raise LoopProtocolError("Review candidate identity cannot change; use a fresh candidate UUID.")
+
+
+def load_loop_protocol_state(path: Path) -> LoopProtocolState:
+    try:
+        with path.open("rb") as stream:
+            body = stream.read(8 * 1024 * 1024 + 1)
+        if len(body) > 8 * 1024 * 1024:
+            raise ValueError("protocol byte limit")
+        return parse_loop_protocol_state(json.loads(body, object_pairs_hook=_unique_members))
+    except (OSError, ValueError, RecursionError):
+        raise LoopProtocolError("Invalid review protocol state; restore or repair the saved evidence.") from None
+
+
+def _unique_members(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate JSON member")
+        result[key] = value
+    return result
+
+
 @dataclass(frozen=True)
 class ProtocolWrite:
     path: Path
@@ -105,15 +244,20 @@ def run_review_loop_engine(
     creator: Callable[[CreatorInput], CreatorOutput],
     reviewer: Callable[[ReviewerInput], ReviewIteration],
     existing: LoopProtocolState | None = None,
+    checkpoint: Callable[[LoopProtocolState, tuple[ProtocolWrite, ...]], None] | None = None,
 ) -> tuple[LoopProtocolState, tuple[ProtocolWrite, ...]]:
     if max_iterations < 1:
         raise ValueError("max_iterations must be >= 1")
 
-    state = existing or LoopProtocolState(asset_id=asset_id, max_iterations=max_iterations)
+    state = (
+        parse_loop_protocol_state(existing.to_json_dict())
+        if existing is not None
+        else LoopProtocolState(asset_id=asset_id, max_iterations=max_iterations)
+    )
     if state.asset_id != asset_id:
-        raise ValueError("existing.asset_id must match asset_id")
+        raise LoopProtocolError("Review protocol state asset_id must match asset_id")
     if state.max_iterations != max_iterations:
-        raise ValueError("existing.max_iterations must match max_iterations")
+        raise LoopProtocolError("Review protocol state max_iterations must match max_iterations")
 
     if state.decision is not None and state.decision.is_terminal() and state.decision.is_locked("outcome"):
         return state, ()
@@ -126,32 +270,36 @@ def run_review_loop_engine(
     start_iteration = (iterations[-1].iteration + 1) if iterations else 1
 
     decision: LoopDecision | None = state.decision
+    known: dict[object, Candidate] = {it.candidate.candidate_id: it.candidate for it in iterations}
 
     for iteration in range(start_iteration, max_iterations + 1):
         creator_out = creator(
             CreatorInput(
                 asset_id=asset_id,
                 iteration=iteration,
-                previous_candidate=prev_candidate,
-                previous_review=prev_review,
+                previous_candidate=None if prev_candidate is None else prev_candidate.model_copy(deep=True),
+                previous_review=None if prev_review is None else prev_review.model_copy(deep=True),
             ),
         )
         if creator_out.candidate.asset_id != asset_id:
             raise ValueError("creator output candidate.asset_id must match asset_id")
 
+        candidate = Candidate.model_validate(creator_out.candidate.model_dump()).model_copy(deep=True)
+        _check_candidate_identity(candidate, known)
+        known[candidate.candidate_id] = candidate
         review_out = reviewer(
             ReviewerInput(
                 asset_id=asset_id,
                 iteration=iteration,
-                candidate=creator_out.candidate,
+                candidate=candidate.model_copy(deep=True),
             ),
         )
-        review_out = _normalize_review_iteration(review_out, iteration)
+        review_out = _normalize_review_iteration(review_out, iteration).model_copy(deep=True)
 
         protocol_iteration = LoopProtocolIteration(
             iteration=iteration,
             creator_done=creator_out.done,
-            candidate=creator_out.candidate,
+            candidate=candidate,
             review=review_out,
         )
         iterations.append(protocol_iteration)
@@ -162,7 +310,7 @@ def run_review_loop_engine(
             ),
         )
 
-        prev_candidate = creator_out.candidate
+        prev_candidate = candidate
         prev_review = review_out
 
         decision = _decide_outcome(
@@ -171,6 +319,17 @@ def run_review_loop_engine(
             iteration=iteration,
             max_iterations=max_iterations,
         )
+        completed = LoopProtocolState(
+            asset_id=asset_id,
+            max_iterations=max_iterations,
+            iterations=tuple(iterations),
+            decision=_merge_decision(state.decision, decision),
+        )
+        if checkpoint is not None:
+            checkpoint(
+                completed,
+                (writes[-1], ProtocolWrite(layout.protocol_state_json_path(asset_id), completed.to_json_dict())),
+            )
         if decision is not None:
             break
 
@@ -206,6 +365,10 @@ def _decide_outcome(
     iteration: int,
     max_iterations: int,
 ) -> LoopDecision | None:
+    if review.verdict == ReviewVerdict.needs_human:
+        return _terminal_decision(
+            outcome=LoopOutcome.needs_human, iteration=iteration, reason="reviewer_requested_human"
+        )
     if review.verdict == ReviewVerdict.ok and creator_done:
         return _terminal_decision(
             outcome=LoopOutcome.converged,

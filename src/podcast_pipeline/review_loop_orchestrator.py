@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
+from typing import Any
 from uuid import UUID
 
 from podcast_pipeline.domain.models import (
@@ -21,13 +22,33 @@ from podcast_pipeline.pick_core import build_asset, clear_manual_selection_prove
 from podcast_pipeline.review_loop_engine import (
     CreatorInput,
     CreatorOutput,
+    LoopDecision,
     LoopOutcome,
+    LoopProtocolError,
     LoopProtocolState,
     ProtocolWrite,
     ReviewerInput,
+    load_loop_protocol_state,
     run_review_loop_engine,
 )
 from podcast_pipeline.workspace_store import EpisodeWorkspaceLayout, EpisodeWorkspaceStore, atomic_write_text
+
+
+class ReviewSelectionConflict(ValueError):
+    """Completed evidence was retained, but a producer changed the reviewed selection."""
+
+
+def _selection_generation(workspace: EpisodeWorkspace, asset_id: str, texts: dict[str, str]) -> dict[str, Any]:
+    asset = next((asset for asset in workspace.assets if asset.asset_id == asset_id), None)
+    return {
+        "selected_candidate_id": None if asset is None else asset.selected_candidate_id,
+        "manual_provenance": [
+            ref.model_dump(mode="json")
+            for ref in workspace.provenance
+            if ref.kind == "manual_selection" and ref.ref == asset_id
+        ],
+        "texts": texts,
+    }
 
 
 @dataclass
@@ -42,7 +63,7 @@ class _SeededCreator:
             seeded_input = CreatorInput(
                 asset_id=inp.asset_id,
                 iteration=inp.iteration,
-                previous_candidate=self.seed_candidate,
+                previous_candidate=self.seed_candidate.model_copy(deep=True),
                 previous_review=inp.previous_review,
             )
             return self.creator(seeded_input)
@@ -129,10 +150,21 @@ def run_review_loop_orchestrator(
 ) -> LoopProtocolState:
     store = EpisodeWorkspaceStore(workspace)
     layout = store.layout
+    protocol_path = layout.protocol_state_json_path(asset_id)
+    existing = load_loop_protocol_state(protocol_path) if protocol_path.exists() else None
+    default = EpisodeWorkspace(episode_id=_episode_id_from_yaml(store), root_dir=".")
+    selected_workspace, selected_texts = store.read_selection_snapshot(asset_id, default=default)
+    selection_generation = _selection_generation(selected_workspace, asset_id, selected_texts)
     reviewer_runner = _wrap_reviewer_with_locked_decisions(store=store, reviewer=reviewer)
 
+    saved_candidates = _load_seed_candidates(layout, asset_id)
+    saved_by_id = {candidate.candidate_id: candidate for candidate in saved_candidates}
+    if existing is not None and any(
+        saved_by_id.get(it.candidate.candidate_id) != it.candidate for it in existing.iterations
+    ):
+        raise LoopProtocolError("Invalid review protocol state; saved candidate evidence is missing or changed.")
     if seed_candidate is None:
-        seed_candidate = _select_seed_candidate(_load_seed_candidates(layout, asset_id))
+        seed_candidate = _select_seed_candidate(saved_candidates)
 
     creator_runner: Callable[[CreatorInput], CreatorOutput]
     if seed_candidate is None:
@@ -140,16 +172,47 @@ def run_review_loop_orchestrator(
     else:
         creator_runner = _SeededCreator(seed_candidate=seed_candidate, creator=creator)
 
-    protocol_state, protocol_writes = run_review_loop_engine(
+    seeded_creator = creator_runner
+    known = {candidate.candidate_id: candidate for candidate in saved_candidates}
+
+    def immutable_creator(inp: CreatorInput) -> CreatorOutput:
+        output = seeded_creator(inp)
+        previous = known.get(output.candidate.candidate_id)
+        if previous is not None and previous != output.candidate:
+            raise ValueError("Review candidate identity cannot change; use a fresh candidate UUID.")
+        return output
+
+    def checkpoint(state: LoopProtocolState, writes: tuple[ProtocolWrite, ...]) -> None:
+        # Publish dependencies first. The protocol state is the durable resume marker.
+        _write_protocol_files(writes[:-1])
+        try:
+            _write_loop_artifacts(
+                store=store, asset_id=asset_id, protocol_state=state, selection_generation=selection_generation
+            )
+        except ReviewSelectionConflict:
+            conflicted = replace(
+                state,
+                decision=LoopDecision(
+                    outcome=LoopOutcome.needs_human,
+                    final_iteration=state.iterations[-1].iteration,
+                    reason="selection_conflict",
+                    locked_fields=frozenset({"outcome", "final_iteration", "reason"}),
+                ),
+            )
+            _write_protocol_files((ProtocolWrite(protocol_path, conflicted.to_json_dict()),))
+            raise
+        _write_protocol_files(writes[-1:])
+
+    protocol_state, _ = run_review_loop_engine(
         layout=layout,
         asset_id=asset_id,
         max_iterations=max_iterations,
-        creator=creator_runner,
+        creator=immutable_creator,
         reviewer=reviewer_runner,
+        existing=existing,
+        checkpoint=checkpoint,
     )
 
-    _write_protocol_files(protocol_writes)
-    _write_loop_artifacts(store=store, asset_id=asset_id, protocol_state=protocol_state)
     return protocol_state
 
 
@@ -185,9 +248,10 @@ def _write_loop_artifacts(
     store: EpisodeWorkspaceStore,
     asset_id: str,
     protocol_state: LoopProtocolState,
+    selection_generation: dict[str, Any],
 ) -> None:
-    for iteration in protocol_state.iterations:
-        store.write_candidate(iteration.candidate)
+    for iteration in protocol_state.iterations[-1:]:
+        store.write_candidate(iteration.candidate, immutable=True)
         store.write_review(asset_id, iteration.review)
 
     selected_candidate_id = None
@@ -201,6 +265,7 @@ def _write_loop_artifacts(
         asset_id=asset_id,
         protocol_state=protocol_state,
         selected_candidate_id=selected_candidate_id,
+        selection_generation=selection_generation,
     )
 
 
@@ -210,13 +275,27 @@ def _write_workspace_state(
     asset_id: str,
     protocol_state: LoopProtocolState,
     selected_candidate_id: UUID | None,
+    selection_generation: dict[str, Any],
 ) -> None:
+    conflict = False
+
     def update(workspace: EpisodeWorkspace) -> EpisodeWorkspace:
+        nonlocal conflict
+        texts = {
+            fmt.value: path.read_text(encoding="utf-8")
+            for fmt in TextFormat
+            if (path := store.layout.selected_text_path(asset_id, fmt)).exists()
+        }
+        conflict = (
+            selected_candidate_id is not None
+            and _selection_generation(workspace, asset_id, texts) != selection_generation
+        )
+        effective_selection = None if conflict else selected_candidate_id
         existing = next((asset for asset in workspace.assets if asset.asset_id == asset_id), None)
         # A loop needing human input updates its candidates, not the published selection.
         selected = (
-            selected_candidate_id
-            if selected_candidate_id is not None
+            effective_selection
+            if effective_selection is not None
             else (existing.selected_candidate_id if existing is not None else None)
         )
         asset = build_asset(
@@ -225,7 +304,7 @@ def _write_workspace_state(
             candidates=[it.candidate for it in protocol_state.iterations],
             selected_candidate_id=selected,
         ).model_copy(update={"reviews": [it.review for it in protocol_state.iterations]})
-        if selected_candidate_id is not None:
+        if effective_selection is not None:
             final_candidate = protocol_state.iterations[-1].candidate
             store.write_selected_text(asset_id, final_candidate.format, final_candidate.content)
             workspace = clear_manual_selection_provenance(workspace, asset_id)
@@ -233,7 +312,12 @@ def _write_workspace_state(
         return workspace.model_copy(update={"assets": assets})
 
     default = EpisodeWorkspace(episode_id=_episode_id_from_yaml(store), root_dir=".")
-    store.update_state(update, default=default)
+    paths = [store.layout.selected_text_path(asset_id, fmt) for fmt in TextFormat]
+    store.update_state(update, default=default, artifact_paths=paths)
+    if conflict:
+        raise ReviewSelectionConflict(
+            "Reviewed selection changed; candidates retained. Check the producer selection before a fresh run."
+        )
 
 
 def _episode_id_from_yaml(store: EpisodeWorkspaceStore) -> str:

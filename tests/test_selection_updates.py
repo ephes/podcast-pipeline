@@ -261,7 +261,12 @@ def test_review_completion_preserves_concurrent_selection(
         first.join(5)
         second.join(5)
     assert not first.is_alive() and not second.is_alive()
-    assert not failures
+    if concurrent_asset == "description":
+        from podcast_pipeline.review_loop_orchestrator import ReviewSelectionConflict
+
+        assert len(failures) == 1 and isinstance(failures[0], ReviewSelectionConflict)
+    else:
+        assert not failures
     current = store.read_state()
     assert has_manual_selection_provenance(current, concurrent_asset)
     description = next(a for a in current.assets if a.asset_id == "description")

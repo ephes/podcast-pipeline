@@ -57,3 +57,26 @@ Constraints:
 Drafting and dashboard regeneration allocate fresh candidate UUIDs in the application, ignoring any
 `candidate_id` returned by the drafter. Regeneration appends distinct alternatives and preserves existing
 candidates, selections and reviews. The complete candidate response is validated before it is written.
+
+## Completed-round checkpoints
+
+`copy/protocol/<asset_id>/state.json` (version 1) records `asset_id`, `max_iterations`,
+all completed iteration envelopes and an optional locked `decision`. Each envelope contains
+`version`, `iteration`, `creator` (`done`, `candidate`) and `reviewer` (ReviewIteration).
+The orchestrator publishes this resume marker after the round's supporting artifacts and
+passes it back to the engine on retry. Unknown envelope fields and malformed models are refused;
+no incomplete creator-only round is advertised. Persisted candidates and reviews must include all
+model fields; resume never invents missing UUIDs or timestamps. Candidate artifacts must still match
+the checkpoint records. Keep the original maximum when resuming.
+
+Candidate UUIDs bind the complete candidate record (asset, format, content, timestamp and provenance).
+Review creators must return a fresh UUID for any changed record. Reusing an identical candidate is allowed;
+its saved candidate artifacts are left in place. Creator/reviewer inputs are detached copies so a callback
+cannot mutate earlier evidence.
+
+Resume accepts at most 8 MiB of protocol JSON and refuses duplicate JSON members, decoder failures,
+unknown envelope fields, non-contiguous/reversed rounds, foreign candidates, mismatched review numbers,
+changed records under one UUID and inconsistent terminal references. Validation also applies to direct
+`LoopProtocolState` engine inputs before any callback. Terminal decisions refer to the last completed round
+and lock the outcome. Invalid evidence raises `LoopProtocolError` (a `ValueError`) with a content-free message.
+Back up and repair the evidence explicitly rather than resetting over it.
