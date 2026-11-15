@@ -532,9 +532,11 @@ only the submitted revision; text typed while saving stays unsaved. Candidate an
 one pending choice per asset. After an uncertain mutation the picker reloads stored state before allowing
 another choice; it never automatically repeats a mutation.
 
-Every picker browser exchange has a thirty-second deadline covering response headers and body. A timeout
-of a mutation means its outcome is unknown: check the stored selection before deliberately retrying. A timed-out
-refinement may still publish a candidate; reload the picker to check before starting more paid work.
+Every picker browser exchange has a thirty-second deadline covering response headers and body, except
+refinement: its deadline is the configured drafter agent timeout plus one minute, so normal refinements finish
+inside it. A timeout of a mutation means its outcome is unknown: check the stored selection before deliberately
+retrying. After a failed or timed-out refinement the picker reloads the assets, so a candidate the server
+published meanwhile appears; check it before starting more paid work.
 Pending controls are released on failure, drafts remain available, and errors stay with their asset.
 Done waits for tag saves and is unavailable during refinements or pending choices. The server also refuses
 Done while refinement work is running. The thirty-minute fallback stops accepting work, then waits for

@@ -5,7 +5,7 @@ from collections.abc import Iterator
 import pytest
 from playwright.sync_api import Page, expect, sync_playwright
 
-from podcast_pipeline.entrypoints.pick_web import _build_html_page
+from podcast_pipeline.entrypoints.pick_web import _DEFAULT_REFINE_DEADLINE_MS, _build_html_page
 
 FAKE_API = r"""
 window.server = {
@@ -63,9 +63,16 @@ def test_whole_exchange_deadline(page: Page, phase: str, operation: str) -> None
         "assets": "init()",
         "done": "handleDone()",
     }[operation]
-    page.evaluate(f"window.settled = false; Promise.resolve({action}).catch(() => {{}}).finally(() => settled = true)")
+    # Return nothing: evaluate must not wait for the exchange; the fake clock drives its deadline.
+    page.evaluate(
+        f"window.settled = false; Promise.resolve({action}).catch(() => {{}}).finally(() => settled = true); 0"
+    )
     page.wait_for_function("server.pending.length === 1")
     page.clock.fast_forward(30001)
+    if operation == "refine":
+        # Refinement waits for the drafter timeout plus a minute, not 30 seconds.
+        assert page.evaluate("settled") is False
+        page.clock.fast_forward(_DEFAULT_REFINE_DEADLINE_MS - 30001 + 1)
     page.wait_for_function("settled")
     if operation == "done":
         expect(page.locator("#done-btn")).to_be_visible()

@@ -1014,3 +1014,40 @@ def test_body_deadline_is_absolute_during_trickle(
             stop.set()
             sender.join(2)
     assert not ctx.store.layout.state_json.exists()
+
+
+def test_page_carries_the_drafter_timeout_as_refine_deadline(
+    pick_server: _PickServerTuple, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _server, base_url, _ctx, _candidates = pick_server
+    monkeypatch.setenv("PODCAST_PIPELINE_AGENT_TIMEOUT", "300")
+    body = urllib.request.urlopen(f"{base_url}/").read().decode("utf-8")
+    assert "const REFINE_DEADLINE_MS = 360000;" in body
+    assert "__REFINE_DEADLINE_MS__" not in body
+
+
+def test_unreadable_state_answers_assets_without_diagnostics(
+    pick_server: _PickServerTuple, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _server, base_url, ctx, _candidates = pick_server
+
+    def broken() -> object:
+        raise ValueError(f"synthetic failure in {ctx.store.layout.root}")
+
+    monkeypatch.setattr(ctx, "get_assets_json", broken)
+    with pytest.raises(urllib.error.HTTPError) as error:
+        urllib.request.urlopen(f"{base_url}/api/assets", timeout=5)
+    assert error.value.code == 500
+    payload = error.value.read().decode("utf-8")
+    assert str(ctx.store.layout.root) not in payload
+    assert "Local reference" in payload
+    assert str(ctx.store.layout.root) not in capsys.readouterr().err
+
+
+def test_huge_drafter_timeout_is_clamped_to_a_valid_browser_delay(
+    pick_server: _PickServerTuple, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _server, base_url, _ctx, _candidates = pick_server
+    monkeypatch.setenv("PODCAST_PIPELINE_AGENT_TIMEOUT", "1e9")
+    body = urllib.request.urlopen(f"{base_url}/").read().decode("utf-8")
+    assert "const REFINE_DEADLINE_MS = 2147483647;" in body

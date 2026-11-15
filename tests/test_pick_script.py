@@ -15,7 +15,8 @@ global.document = {getElementById: id => fields[id]};
 const fields = {'custom-text':{value:'A'}, 'custom-error':{textContent:''},
  'refine-instruction':{value:'shorter'},'refine-source':{value:'editor'}};
 const realTimeout = setTimeout;
-global.setTimeout = (fn, delay) => realTimeout(fn, delay === 30000 ? 10 : delay);
+global.timeoutDelays = [];
+global.setTimeout = (fn, delay) => { timeoutDelays.push(delay); return realTimeout(fn, delay >= 30000 ? 10 : delay); };
 global.alert = () => {};
 """
 INIT = r"""
@@ -170,3 +171,19 @@ def test_matching_custom_ack_clears_its_dirty_state() -> None:
       assert.equal(drafts.description.dirty, false);
       assert.equal(drafts.description.text, 'A');
     """)
+
+
+def test_refine_uses_the_server_refine_deadline_and_reconciles_after_unknown_outcome() -> None:
+    code = r"""
+      const published = {candidate_id: 'r1', content: 'Refined', content_html: '<p>Refined</p>'};
+      fetch = async path => path === '/api/assets'
+        ? response([{...assets[0], candidates: [published]}, assets[1]])
+        : new Promise(() => {});
+      timeoutDelays.length = 0;
+      await handleRefine('description');
+      assert.ok(timeoutDelays.includes(123456), String(timeoutDelays));
+      assert.equal(refining.size, 0);
+      assert.deepEqual(assets[0].candidates.map(c => c.candidate_id), ['r1']);
+      assert.match(drafts.description.error, /outcome unknown/);
+    """
+    run_script(code, _build_html_page(refine_deadline_ms=123456))

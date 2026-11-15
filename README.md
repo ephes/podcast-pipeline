@@ -276,8 +276,8 @@ retrying. Checkpoint recovery instructions omit remote edit URLs too.
 
 `podcast pick --web` bounds request bytes, read time and concurrent handlers, reads current selections
 under the workspace lock, and waits for accepted refinements before closing. Browser requests have a
-30-second whole-response deadline; a timed-out mutation has an unknown outcome and is never replayed
-automatically. Candidate/custom choices are single-flight per asset and newer drafts survive older save
+30-second whole-response deadline (refinements: the drafter agent timeout plus one minute); a timed-out
+mutation has an unknown outcome and is never replayed automatically. Candidate/custom choices are single-flight per asset and newer drafts survive older save
 acknowledgements. Native sidebar buttons, focus/caret preservation and IME-aware Enter support keyboard use.
 See `docs/tutorials/episode-workflow.md` and `docs/reference/configuration.md` for limits and recovery.
 The shipped picker and dashboard Chromium journeys run with `just test`; optional Node tests also exercise

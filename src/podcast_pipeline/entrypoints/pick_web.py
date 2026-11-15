@@ -165,6 +165,27 @@ def run_pick_web(*, workspace: Path, asset_id: str | None) -> None:
     print("Pick UI closed.", file=sys.stderr)
 
 
+# The browser waits for /api/refine at least as long as the drafter may run, plus
+# publication; the general 30-second exchange deadline would abandon most refinements.
+_REFINE_DEADLINE_MARGIN_SECONDS = 60
+_MAX_BROWSER_TIMEOUT_MS = 2**31 - 1
+
+
+def _refine_deadline_ms(workspace: Path) -> int:
+    from podcast_pipeline.agent_cli_config import (
+        DEFAULT_AGENT_TIMEOUT_SECONDS,
+        load_agent_cli_bundle,
+        resolve_agent_timeout,
+    )
+
+    try:
+        seconds = resolve_agent_timeout(None, load_agent_cli_bundle(workspace=workspace).drafter)
+    except Exception:  # an unusable config fails the refinement itself, not the page
+        seconds = DEFAULT_AGENT_TIMEOUT_SECONDS
+    # Browsers fire setTimeout delays above 2**31 - 1 ms immediately; clamp to the largest valid delay.
+    return min(int((seconds + _REFINE_DEADLINE_MARGIN_SECONDS) * 1000), _MAX_BROWSER_TIMEOUT_MS)
+
+
 class _ServerContext:
     """Shared mutable state for the pick web server."""
 
@@ -441,12 +462,19 @@ class _PickWebHandler(BaseHTTPRequestHandler):
             self._respond(404, "text/plain", b"Not found")
 
     def _serve_html(self) -> None:
-        html = _build_html_page()
+        html = _build_html_page(refine_deadline_ms=_refine_deadline_ms(self.ctx.store.layout.root))
         self._respond(200, "text/html; charset=utf-8", html.encode("utf-8"))
 
     def _serve_assets_json(self) -> None:
-        with self.ctx.lock:
-            data = self.ctx.get_assets_json()
+        try:
+            with self.ctx.lock:
+                data = self.ctx.get_assets_json()
+        except Exception as exc:
+            # Unreadable workspace state: answer without paths or diagnostics.
+            reference = uuid4().hex[:12]
+            print(f"Reading picker state failed [{reference}] ({type(exc).__name__})", file=sys.stderr)
+            self._respond_json(500, {"error": f"Could not read the workspace state. Local reference: {reference}"})
+            return
         body = json.dumps(data, ensure_ascii=False).encode("utf-8")
         self._respond(200, "application/json", body)
 
@@ -677,8 +705,15 @@ class _PickWebHandler(BaseHTTPRequestHandler):
             self.close_connection = True  # The caller may have timed out; work still settles.
 
 
-def _build_html_page() -> str:
-    return """<!DOCTYPE html>
+_DEFAULT_REFINE_DEADLINE_MS = (15 * 60 + _REFINE_DEADLINE_MARGIN_SECONDS) * 1000
+
+
+def _build_html_page(*, refine_deadline_ms: int = _DEFAULT_REFINE_DEADLINE_MS) -> str:
+    deadline = max(1, min(int(refine_deadline_ms), _MAX_BROWSER_TIMEOUT_MS))
+    return _HTML_PAGE.replace("__REFINE_DEADLINE_MS__", str(deadline))
+
+
+_HTML_PAGE = """<!DOCTYPE html>
 <html lang="de">
 <head>
 <meta charset="utf-8">
@@ -704,8 +739,9 @@ def _build_html_page() -> str:
   .container { display: flex; height: calc(100vh - 60px); }
   .sidebar { width: 240px; min-width: 200px; border-right: 1px solid var(--border);
              background: var(--card-bg); overflow-y: auto; }
-  .sidebar-item { padding: 0.75rem 1rem; cursor: pointer; border-bottom: 1px solid var(--border);
-                  width: 100%; border: 0; text-align: left; color: inherit; font-family: inherit;
+  .sidebar-item { padding: 0.75rem 1rem; cursor: pointer; border: 0; background: none;
+                  border-bottom: 1px solid var(--border); width: 100%; text-align: left;
+                  color: inherit; font-family: inherit;
                   font-size: 0.85rem; display: flex; justify-content: space-between; align-items: center; }
   .sidebar-item:hover { background: #f0f0f0; }
   .sidebar-item.active { background: var(--selected-bg); font-weight: 600; }
@@ -783,7 +819,9 @@ const SINGLE_LINE_ASSETS = new Set(["slug", "title_detail", "title_seo", "subtit
 const pendingChoices = new Set();
 const uncertainChoices = new Set();
 
-async function exchange(path, options = {}) {
+const REFINE_DEADLINE_MS = __REFINE_DEADLINE_MS__;
+
+async function exchange(path, options = {}, deadlineMs = 30000) {
   const controller = new AbortController();
   let timer;
   try {
@@ -800,7 +838,7 @@ async function exchange(path, options = {}) {
           reject(new Error(options.method
             ? "Request timed out; outcome unknown. Check stored state before retrying."
             : "Loading timed out. Retry loading."));
-        }, 30000);
+        }, deadlineMs);
       })
     ]);
   } finally {
@@ -808,8 +846,9 @@ async function exchange(path, options = {}) {
   }
 }
 
-function post(path, body) {
-  return exchange(path, {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)});
+function post(path, body, deadlineMs = 30000) {
+  const options = {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)};
+  return exchange(path, options, deadlineMs);
 }
 
 async function refreshAssets() {
@@ -1093,10 +1132,13 @@ async function handleRefine(assetId) {
   let data;
   let ok = false;
   try {
-    data = await post("/api/refine", body);
+    data = await post("/api/refine", body, REFINE_DEADLINE_MS);
     ok = true;
   } catch (err) {
     data = {error: String(err)};
+    // The outcome may be unknown (deadline, network): show any candidate the
+    // server published meanwhile instead of leaving it invisible.
+    try { await refreshAssets(); } catch (_) { /* keep the refinement error */ }
   } finally {
     refining.delete(assetId);
     updateProgress();
