@@ -193,19 +193,13 @@ def test_run_pick_web_opens_browser(tmp_path: Path, monkeypatch: pytest.MonkeyPa
     store, _candidates = _setup_workspace(tmp_path)
 
     opened_urls: list[str] = []
-    monkeypatch.setattr("webbrowser.open", lambda url: opened_urls.append(url))
-
-    # Patch HTTPServer.serve_forever to stop immediately
     from podcast_pipeline.entrypoints import pick_web
 
-    original_serve_forever = HTTPServer.serve_forever
+    def open_browser(url: str) -> None:
+        opened_urls.append(url)
+        threading.Thread(target=lambda: _post_json(f"{url}api/done", {})).start()
 
-    def fake_serve_forever(self: HTTPServer) -> None:
-        # Just shut down immediately
-        threading.Thread(target=self.shutdown, daemon=True).start()
-        original_serve_forever(self)
-
-    monkeypatch.setattr(HTTPServer, "serve_forever", fake_serve_forever)
+    monkeypatch.setattr("webbrowser.open", open_browser)
 
     pick_web.run_pick_web(workspace=tmp_path, asset_id=None)
 
@@ -535,7 +529,7 @@ def test_post_api_select_custom_validates_slug(tmp_path: Path) -> None:
         ({"asset_id": "description", "text": "x", "based_on_candidate_id": "nope"}, "Invalid based_on_candidate_id"),
         ({"asset_id": "unknown", "text": "x"}, "Unknown asset_id"),
         ({"asset_id": "description", "text": "  \n"}, "must not be empty"),
-        (["not", "an", "object"], "Expected JSON object"),
+        (["not", "an", "object"], "Invalid JSON object"),
     ],
 )
 def test_post_api_select_custom_rejects_bad_input(
@@ -626,7 +620,8 @@ def test_post_api_refine_reports_drafter_failure(
     monkeypatch.setattr(asset_refine_llm, "refine_asset_text", failing)
     status, data = _post_json(f"{base_url}/api/refine", {"asset_id": "description", "instruction": "x", "text": "y"})
     assert status == 502
-    assert "Drafter CLI timed out" in str(data["error"])
+    assert data["code"] == "refinement_failed"
+    assert "Drafter CLI timed out" not in str(data["error"])
     assert ctx.refining == set()
 
 
@@ -707,3 +702,352 @@ def test_pick_html_renders_tag_assets_without_custom_card(pick_server_with_tags:
     tag_branch = "if (asset.is_tag_asset) { renderTagMain(main, asset); return; }"
     assert tag_branch in body
     assert body.index(tag_branch) < body.index("html += renderCustomCard(asset);")
+
+
+@pytest.mark.parametrize("framing", ["negative", "huge", "duplicate", "conflicting", "transfer", "signed", "eof"])
+def test_body_framing_refused(pick_server: _PickServerTuple, framing: str) -> None:
+    import socket
+
+    server, _, ctx, candidates = pick_server
+    body = json.dumps(
+        {"asset_id": "description", "candidate_id": str(candidates["description"][0].candidate_id)}
+    ).encode()
+    length = len(body)
+    headers = {
+        "negative": "Content-Length: -1",
+        "huge": "Content-Length: 999999999",
+        "duplicate": f"Content-Length: {length}\r\nContent-Length: {length}",
+        "conflicting": f"Content-Length: {length}\r\nContent-Length: {length + 1}",
+        "transfer": f"Transfer-Encoding: chunked\r\nContent-Length: {length}",
+        "signed": f"Content-Length: +{length}",
+        "eof": f"Content-Length: {length + 1}",
+    }
+    with socket.create_connection(("127.0.0.1", server.server_port), timeout=2) as sock:
+        sock.sendall(
+            f"POST /api/select HTTP/1.0\r\nHost: 127.0.0.1:{server.server_port}\r\n"
+            f"Content-Type: application/json\r\n{headers[framing]}\r\n\r\n".encode()
+            + body
+        )
+        sock.shutdown(socket.SHUT_WR)
+        response = sock.recv(4096)
+    assert response.split()[1] in (b"400", b"413")
+    assert not ctx.store.layout.state_json.exists()
+
+
+def test_handler_capacity_and_absolute_deadline(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import socket
+    import time
+
+    from podcast_pipeline.entrypoints import pick_web
+
+    monkeypatch.setattr(pick_web, "_REQUEST_TIMEOUT_SECONDS", 0.2, raising=False)
+    server_class = getattr(pick_web, "_PickHTTPServer", ThreadingHTTPServer)
+    store, candidates = _setup_workspace(tmp_path)
+    ctx = _ServerContext(
+        store=store,
+        candidates_by_asset=candidates,
+        workspace_state=EpisodeWorkspace(episode_id="test_ep", root_dir="."),
+    )
+    server = server_class(("127.0.0.1", 0), partial(_PickWebHandler, ctx))
+    thread = threading.Thread(target=server.serve_forever)
+    thread.start()
+    sockets = []
+    try:
+        for _ in range(8):
+            sock = socket.create_connection(("127.0.0.1", server.server_port), timeout=2)
+            sock.sendall(b"P")
+            sockets.append(sock)
+        with socket.create_connection(("127.0.0.1", server.server_port), timeout=2) as busy:
+            assert b"503" in busy.recv(4096)
+        time.sleep(0.4)
+        for sock in sockets:
+            while sock.recv(4096):
+                pass  # Timeout may send 400, but always reaches EOF within the read deadline.
+        assert urllib.request.urlopen(f"http://127.0.0.1:{server.server_port}/api/assets").status == 200
+    finally:
+        for sock in sockets:
+            sock.close()
+        server.shutdown()
+        server.server_close()
+        thread.join()
+
+
+@pytest.mark.parametrize("endpoint", ["select", "tags", "select-custom", "refine", "done"])
+@pytest.mark.parametrize(
+    "body",
+    [
+        b"\xff",
+        b"null",
+        b"[]",
+        b'{"asset_id":"x","asset_id":"y"}',
+        b'{"x":' + b"[" * 1000 + b"0" + b"]" * 1000 + b"}",
+        b'{"x":' + b"1" * 5000 + b"}",
+    ],
+)
+def test_json_control_admission(pick_server: _PickServerTuple, endpoint: str, body: bytes) -> None:
+    _, url, ctx, _ = pick_server
+    req = urllib.request.Request(f"{url}/api/{endpoint}", data=body, headers={"Content-Type": "application/json"})
+    with pytest.raises(urllib.error.HTTPError) as error:
+        urllib.request.urlopen(req)
+    assert error.value.code == 400
+    assert json.loads(error.value.read()) == {"error": "Invalid JSON object"}
+    assert not ctx.store.layout.state_json.exists()
+
+
+def test_assets_refresh_external_selection_and_candidates(pick_server: _PickServerTuple) -> None:
+    _, url, ctx, candidates = pick_server
+    other = _ServerContext(
+        store=EpisodeWorkspaceStore(ctx.store.layout.root),
+        candidates_by_asset=candidates,
+        workspace_state=ctx.workspace_state,
+    )
+    assert other.select_candidate("description", str(candidates["description"][1].candidate_id)) is None
+    added = Candidate(asset_id="description", content="New external candidate")
+    other.add_candidate(added)
+    data = json.loads(urllib.request.urlopen(f"{url}/api/assets").read())
+    desc = next(a for a in data if a["asset_id"] == "description")
+    assert desc["selected_candidate_id"] == str(candidates["description"][1].candidate_id)
+    assert len(desc["candidates"]) == 3
+    assert other.select_custom_text("description", "New custom selection", None) is None
+    data = json.loads(urllib.request.urlopen(f"{url}/api/assets").read())
+    desc = next(a for a in data if a["asset_id"] == "description")
+    assert desc["selected_candidate_id"] is None
+    assert desc["selected_text"].strip() == "New custom selection"
+
+
+def test_done_refuses_active_refinement(pick_server: _PickServerTuple) -> None:
+    _, url, ctx, _ = pick_server
+    ctx.refining.add("description")
+    status, data = _post_json(f"{url}/api/done", {})
+    assert status == 409
+    assert "pending" in str(data).lower()
+    ctx.refining.clear()
+    assert urllib.request.urlopen(f"{url}/api/assets").status == 200
+
+
+@pytest.mark.parametrize("failure", ["browser", "timer"])
+def test_startup_failure_closes_server(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str) -> None:
+    import socket
+
+    from podcast_pipeline.entrypoints import pick_web
+
+    _setup_workspace(tmp_path)
+    servers = []
+    original = getattr(pick_web, "_PickHTTPServer", ThreadingHTTPServer)
+
+    def capture(*args: Any, **kwargs: Any) -> HTTPServer:
+        server = original(*args, **kwargs)
+        servers.append(server)
+        return server
+
+    def fail(*args: Any, **kwargs: Any) -> None:
+        raise RuntimeError("synthetic startup failure")
+
+    monkeypatch.setattr(pick_web, "_PickHTTPServer", capture, raising=False)
+    monkeypatch.setattr(pick_web, "ThreadingHTTPServer", capture)
+    if failure == "browser":
+        monkeypatch.setattr(pick_web.webbrowser, "open", fail)
+    else:
+        monkeypatch.setattr(pick_web.threading.Timer, "start", fail)
+    with pytest.raises(RuntimeError, match="synthetic startup failure"):
+        pick_web.run_pick_web(workspace=tmp_path, asset_id=None)
+    with socket.socket() as retry:
+        retry.bind(servers[0].server_address)
+
+
+def test_refine_failure_does_not_echo_private_diagnostics(
+    pick_server: _PickServerTuple, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _, url, ctx, _ = pick_server
+    canary = "synthetic-transcript TOKEN-secret /private/synthetic"
+
+    def fail(**kwargs: Any) -> Candidate:
+        raise RuntimeError(canary)
+
+    monkeypatch.setattr(asset_refine_llm, "refine_asset_text", fail)
+    status, data = _post_json(f"{url}/api/refine", {"asset_id": "description", "instruction": "x", "text": "y"})
+    assert status == 502
+    assert data["code"] == "refinement_failed"
+    assert data["reference"]
+    assert canary not in json.dumps(data) + capsys.readouterr().err
+    assert ctx.refining == set()
+
+
+def test_done_waits_for_actual_refinement_publication(
+    pick_server: _PickServerTuple, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _, url, ctx, _ = pick_server
+    started, release = threading.Event(), threading.Event()
+    candidate = Candidate(asset_id="description", content="Completed synthetic refinement")
+
+    def refine(**kwargs: Any) -> Candidate:
+        started.set()
+        assert release.wait(5)
+        return candidate
+
+    monkeypatch.setattr(asset_refine_llm, "refine_asset_text", refine)
+    statuses = []
+    worker = threading.Thread(
+        target=lambda: statuses.append(
+            _post_json(f"{url}/api/refine", {"asset_id": "description", "instruction": "x", "text": "y"})[0]
+        )
+    )
+    worker.start()
+    try:
+        assert started.wait(5)
+        assert _post_json(f"{url}/api/done", {})[0] == 409
+        assert not ctx.store.layout.candidate_json_path("description", candidate.candidate_id).exists()
+    finally:
+        release.set()
+        worker.join(5)
+    assert statuses == [200]
+    assert ctx.store.read_candidate("description", candidate.candidate_id) == candidate
+    assert not ctx.refining
+    assert _post_json(f"{url}/api/done", {})[0] == 200
+
+
+def test_closing_rejects_new_mutations(pick_server: _PickServerTuple) -> None:
+    _, url, ctx, candidates = pick_server
+    ctx.closing = True
+    status, _ = _post_json(
+        f"{url}/api/select",
+        {"asset_id": "description", "candidate_id": str(candidates["description"][0].candidate_id)},
+    )
+    assert status == 409
+    assert not ctx.store.layout.state_json.exists()
+
+
+def test_server_timeout_drains_handler_before_cli_returns(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from podcast_pipeline.entrypoints import pick_web
+
+    store, _ = _setup_workspace(tmp_path)
+    opened, started, closing, release, finished = (threading.Event() for _ in range(5))
+    urls: list[str] = []
+    servers: list[Any] = []
+    original_init = pick_web._PickHTTPServer.__init__
+    original_close = pick_web._PickHTTPServer.server_close
+
+    def capture(self: Any, *args: Any, **kwargs: Any) -> None:
+        original_init(self, *args, **kwargs)
+        servers.append(self)
+
+    def close(self: Any) -> None:
+        closing.set()
+        original_close(self)
+
+    def browser(url: str) -> None:
+        urls.append(url)
+        opened.set()
+
+    candidate = Candidate(asset_id="description", content="Settled after timeout")
+
+    def refine(**kwargs: Any) -> Candidate:
+        started.set()
+        assert release.wait(5)
+        return candidate
+
+    monkeypatch.setattr(pick_web._PickHTTPServer, "__init__", capture)
+    monkeypatch.setattr(pick_web._PickHTTPServer, "server_close", close)
+    monkeypatch.setattr(pick_web.webbrowser, "open", browser)
+    monkeypatch.setattr(asset_refine_llm, "refine_asset_text", refine)
+
+    def run() -> None:
+        try:
+            pick_web.run_pick_web(workspace=tmp_path, asset_id=None)
+        finally:
+            finished.set()
+
+    runner = threading.Thread(target=run)
+    runner.start()
+    client = None
+    statuses: list[int] = []
+    try:
+        assert opened.wait(5)
+        client = threading.Thread(
+            target=lambda: statuses.append(
+                _post_json(f"{urls[0]}api/refine", {"asset_id": "description", "instruction": "x", "text": "y"})[0]
+            )
+        )
+        client.start()
+        assert started.wait(5)
+        servers[0].stop_requested.set()  # Same path as the fallback timer.
+        assert closing.wait(5)
+        assert not finished.wait(0.1)
+    finally:
+        release.set()
+        if client is not None:
+            client.join(5)
+        runner.join(5)
+    assert finished.is_set()
+    assert statuses == [200]
+    assert store.read_candidate("description", candidate.candidate_id) == candidate
+
+
+def test_body_deadline_is_absolute_during_trickle(
+    pick_server: _PickServerTuple, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import socket
+
+    from podcast_pipeline.entrypoints import pick_web
+
+    server, _, ctx, _ = pick_server
+    monkeypatch.setattr(pick_web, "_REQUEST_TIMEOUT_SECONDS", 0.15)
+    stop = threading.Event()
+    with socket.create_connection(("127.0.0.1", server.server_port), timeout=1) as sock:
+        sock.sendall(
+            f"POST /api/select HTTP/1.0\r\nHost: 127.0.0.1:{server.server_port}\r\n"
+            "Content-Type: application/json\r\nContent-Length: 1000\r\n\r\n".encode()
+        )
+
+        def trickle() -> None:
+            while not stop.wait(0.02):
+                try:
+                    sock.sendall(b" ")
+                except OSError:
+                    break
+
+        sender = threading.Thread(target=trickle)
+        sender.start()
+        try:
+            assert b"400" in sock.recv(4096)
+        finally:
+            stop.set()
+            sender.join(2)
+    assert not ctx.store.layout.state_json.exists()
+
+
+def test_page_carries_the_drafter_timeout_as_refine_deadline(
+    pick_server: _PickServerTuple, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _server, base_url, _ctx, _candidates = pick_server
+    monkeypatch.setenv("PODCAST_PIPELINE_AGENT_TIMEOUT", "300")
+    body = urllib.request.urlopen(f"{base_url}/").read().decode("utf-8")
+    assert "const REFINE_DEADLINE_MS = 360000;" in body
+    assert "__REFINE_DEADLINE_MS__" not in body
+
+
+def test_unreadable_state_answers_assets_without_diagnostics(
+    pick_server: _PickServerTuple, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _server, base_url, ctx, _candidates = pick_server
+
+    def broken() -> object:
+        raise ValueError(f"synthetic failure in {ctx.store.layout.root}")
+
+    monkeypatch.setattr(ctx, "get_assets_json", broken)
+    with pytest.raises(urllib.error.HTTPError) as error:
+        urllib.request.urlopen(f"{base_url}/api/assets", timeout=5)
+    assert error.value.code == 500
+    payload = error.value.read().decode("utf-8")
+    assert str(ctx.store.layout.root) not in payload
+    assert "Local reference" in payload
+    assert str(ctx.store.layout.root) not in capsys.readouterr().err
+
+
+def test_huge_drafter_timeout_is_clamped_to_a_valid_browser_delay(
+    pick_server: _PickServerTuple, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _server, base_url, _ctx, _candidates = pick_server
+    monkeypatch.setenv("PODCAST_PIPELINE_AGENT_TIMEOUT", "1e9")
+    body = urllib.request.urlopen(f"{base_url}/").read().decode("utf-8")
+    assert "const REFINE_DEADLINE_MS = 2147483647;" in body

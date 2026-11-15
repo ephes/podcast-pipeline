@@ -271,3 +271,14 @@ API errors show the trusted method, endpoint, HTTP status and allowlisted error/
 only the destination origin (no userinfo, path, query or fragment) and are never followed. Response bodies and raw
 server messages are omitted, including revision-conflict payloads; conflicts still explain checking Wagtail before
 retrying. Checkpoint recovery instructions omit remote edit URLs too.
+
+### Standalone picker admission and editing
+
+`podcast pick --web` bounds request bytes, read time and concurrent handlers, reads current selections
+under the workspace lock, and waits for accepted refinements before closing. Browser requests have a
+30-second whole-response deadline (refinements: the drafter agent timeout plus one minute); a timed-out
+mutation has an unknown outcome and is never replayed automatically. Candidate/custom choices are single-flight per asset and newer drafts survive older save
+acknowledgements. Native sidebar buttons, focus/caret preservation and IME-aware Enter support keyboard use.
+See `docs/tutorials/episode-workflow.md` and `docs/reference/configuration.md` for limits and recovery.
+The shipped picker and dashboard Chromium journeys run with `just test`; optional Node tests also exercise
+the picker's exchange/draft logic without a browser.

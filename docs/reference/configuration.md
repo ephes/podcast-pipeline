@@ -361,3 +361,21 @@ API errors show the trusted method, endpoint, HTTP status and allowlisted error/
 only the destination origin (no userinfo, path, query or fragment) and are never followed. Response bodies and raw
 server messages are omitted, including revision-conflict payloads; conflicts still explain checking Wagtail before
 retrying. Checkpoint recovery instructions omit remote edit URLs too.
+
+## Standalone picker limits
+
+`podcast pick --web` accepts at most eight HTTP handlers at once; additional connections receive 503.
+Header and body reads share a ten-second absolute deadline, including clients that send bytes slowly.
+Mutation bodies require exactly one unsigned decimal `Content-Length`, at most 64 KiB; transfer encoding,
+duplicate lengths and incomplete bodies are refused and the connection closes. Admission precedes JSON decoding.
+JSON must be a UTF-8 object with unique members, at most 64 container levels, integers of at most 256 characters,
+finite constants and encodable strings. Invalid objects receive a payload-free 400; oversized bodies receive 413.
+
+Each assets response reads current state, candidate membership and selection artifacts under the workspace
+publication lock. `--asset` continues to restrict the picker to that asset. Browser drafts remain local.
+The picker refuses Done with 409 while a refinement is pending and rejects mutations after accepting Done.
+The thirty-minute server timeout stops admission, then drains accepted handlers and their agent publication;
+agent execution retains its configured finite timeout (default fifteen minutes). It does not cancel paid work
+just because the browser closes or times out. Startup failures close the bound socket and cancel/join the timer.
+Refinement failures return `refinement_failed` and a local reference; stderr records the same reference and
+exception type, without prompt content, agent output, paths, credentials or raw exception text.
