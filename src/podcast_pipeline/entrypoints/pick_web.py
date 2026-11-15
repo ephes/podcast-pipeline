@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import json
+import socket
 import sys
 import threading
 import webbrowser
 from functools import partial
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from podcast_pipeline import asset_refine_llm
 from podcast_pipeline.asset_refine_llm import RefineRequest, build_refine_request
@@ -35,6 +36,78 @@ from podcast_pipeline.tag_assets import (
 from podcast_pipeline.tag_parsing import parse_tag_list
 from podcast_pipeline.workspace_store import EpisodeWorkspaceStore
 
+_MAX_BODY_BYTES = 64 * 1024
+_REQUEST_TIMEOUT_SECONDS = 10.0
+
+
+def _unique_members(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("Duplicate member")
+        result[key] = value
+    return result
+
+
+def _bounded_integer(value: str) -> int:
+    if len(value) > 256:
+        raise ValueError("Integer too large")
+    return int(value)
+
+
+def _invalid_constant(value: str) -> object:
+    raise ValueError("Invalid JSON constant")
+
+
+def _validate_object_tree(payload: dict[str, object]) -> None:
+    pending: list[tuple[object, int]] = [(payload, 0)]
+    while pending:
+        value, depth = pending.pop()
+        if isinstance(value, (dict, list)):
+            if depth >= 64:
+                raise ValueError("Too deep")
+            children = [*value.keys(), *value.values()] if isinstance(value, dict) else value
+            pending.extend((child, depth + 1) for child in children)
+        elif isinstance(value, str):
+            value.encode("utf-8")  # Refuse escaped lone surrogates too.
+
+
+class _PickHTTPServer(ThreadingHTTPServer):
+    """Bound accepted handlers; non-daemon workers are joined on close."""
+
+    daemon_threads = False
+
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        self.stop_requested = threading.Event()
+        self.slots = threading.BoundedSemaphore(8)
+        super().__init__(*args, **kwargs)  # type: ignore[arg-type]
+
+    def process_request(self, request: socket.socket | tuple[bytes, socket.socket], client_address: object) -> None:
+        assert isinstance(request, socket.socket)
+        if not self.slots.acquire(blocking=False):
+            try:
+                request.settimeout(0.1)
+                request.sendall(b"HTTP/1.0 503 Busy\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+            except OSError:
+                pass
+            finally:
+                self.shutdown_request(request)
+            return
+        try:
+            super().process_request(request, client_address)
+        except BaseException:
+            self.slots.release()
+            raise
+
+    def process_request_thread(
+        self, request: socket.socket | tuple[bytes, socket.socket], client_address: object
+    ) -> None:
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self.slots.release()
+
+
 _SHUTDOWN_TIMEOUT_SECONDS = 30 * 60  # 30 minutes
 
 
@@ -57,28 +130,36 @@ def run_pick_web(*, workspace: Path, asset_id: str | None) -> None:
         store=store,
         candidates_by_asset=candidates_by_asset,
         workspace_state=workspace_state,
+        asset_id=asset_id,
     )
 
     handler = partial(_PickWebHandler, ctx)
     # Threaded, so a long-running refine request does not block the rest of the UI.
-    server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
-    server.daemon_threads = True
+    server = _PickHTTPServer(("127.0.0.1", 0), handler)
     host = str(server.server_address[0])
     port = int(server.server_address[1])
     url = f"http://{host}:{port}/"
 
-    # Hard timeout fallback
-    shutdown_timer = threading.Timer(_SHUTDOWN_TIMEOUT_SECONDS, server.shutdown)
-    shutdown_timer.daemon = True
-    shutdown_timer.start()
-
-    print(f"Pick UI: {url}", file=sys.stderr)
-    webbrowser.open(url)
-
+    shutdown_timer: threading.Timer | None = None
     try:
-        server.serve_forever()
+        # The accept loop polls a stop event: startup never calls blocking shutdown
+        # on a serve_forever loop that has not started.
+        shutdown_timer = threading.Timer(_SHUTDOWN_TIMEOUT_SECONDS, server.stop_requested.set)
+        shutdown_timer.daemon = True
+        shutdown_timer.start()
+        print(f"Pick UI: {url}", file=sys.stderr)
+        webbrowser.open(url)
+        server.timeout = 0.1
+        while not server.stop_requested.is_set():
+            server.handle_request()
     finally:
-        shutdown_timer.cancel()
+        with ctx.lock:
+            ctx.closing = True
+        if shutdown_timer is not None:
+            shutdown_timer.cancel()
+            if shutdown_timer.ident is not None:
+                shutdown_timer.join()
+        # Non-daemon handlers finish their bounded agent call and publication.
         server.server_close()
 
     print("Pick UI closed.", file=sys.stderr)
@@ -93,13 +174,16 @@ class _ServerContext:
         store: EpisodeWorkspaceStore,
         candidates_by_asset: dict[str, list[Candidate]],
         workspace_state: EpisodeWorkspace,
+        asset_id: str | None = None,
     ) -> None:
+        self.asset_filter = asset_id
         self.store = store
         self.candidates_by_asset = candidates_by_asset
         self.workspace_state: EpisodeWorkspace = workspace_state
         self.tag_settings, self.hosts = load_episode_tag_settings(store.layout.root)
         self.lock = threading.Lock()
         self.refining: set[str] = set()
+        self.closing = False
 
     def get_selected_tags(self, asset_id: str) -> list[str]:
         for fmt in (TextFormat.markdown, TextFormat.plain, TextFormat.html):
@@ -126,7 +210,12 @@ class _ServerContext:
         return error
 
     def get_assets_json(self) -> list[dict[str, object]]:
-        ws = self.workspace_state
+        with self.store.read_snapshot(default=self.workspace_state) as ws:
+            self.workspace_state = ws
+            self.candidates_by_asset = load_candidates(layout=self.store.layout, asset_id=self.asset_filter)
+            return self._assets_snapshot_json(ws)
+
+    def _assets_snapshot_json(self, ws: EpisodeWorkspace) -> list[dict[str, object]]:
         assets_by_id = {asset.asset_id: asset for asset in ws.assets}
 
         result: list[dict[str, object]] = []
@@ -286,6 +375,24 @@ class _PickWebHandler(BaseHTTPRequestHandler):
         self.ctx = ctx
         super().__init__(*args, **kwargs)  # type: ignore[arg-type]
 
+    def setup(self) -> None:
+        super().setup()
+        self.connection.settimeout(_REQUEST_TIMEOUT_SECONDS)
+        self.read_timer = threading.Timer(_REQUEST_TIMEOUT_SECONDS, self._expire_read)
+        self.read_timer.daemon = True
+        self.read_timer.start()
+
+    def _expire_read(self) -> None:
+        try:
+            self.connection.shutdown(socket.SHUT_RD)
+        except OSError:
+            pass
+
+    def finish(self) -> None:
+        self.read_timer.cancel()
+        self.read_timer.join()
+        super().finish()
+
     def log_message(self, format: str, *args: object) -> None:  # noqa: A002
         # Suppress default stderr logging
         pass
@@ -344,13 +451,8 @@ class _PickWebHandler(BaseHTTPRequestHandler):
         self._respond(200, "application/json", body)
 
     def _handle_select(self) -> None:
-        body = self._read_body()
-        if body is None:
-            return
-        try:
-            payload = json.loads(body)
-        except json.JSONDecodeError:
-            self._respond(400, "application/json", json.dumps({"error": "Invalid JSON"}).encode())
+        payload = self._read_object()
+        if payload is None:
             return
 
         asset_id = payload.get("asset_id")
@@ -360,6 +462,8 @@ class _PickWebHandler(BaseHTTPRequestHandler):
             return
 
         with self.ctx.lock:
+            if self._reject_closing():
+                return
             error = self.ctx.select_candidate(asset_id, candidate_id)
 
         if error:
@@ -368,13 +472,8 @@ class _PickWebHandler(BaseHTTPRequestHandler):
             self._respond(200, "application/json", json.dumps({"ok": True}).encode())
 
     def _handle_tags(self) -> None:
-        body = self._read_body()
-        if body is None:
-            return
-        try:
-            payload = json.loads(body)
-        except json.JSONDecodeError:
-            self._respond(400, "application/json", json.dumps({"error": "Invalid JSON"}).encode())
+        payload = self._read_object()
+        if payload is None:
             return
 
         asset_id = payload.get("asset_id") if isinstance(payload, dict) else None
@@ -388,6 +487,8 @@ class _PickWebHandler(BaseHTTPRequestHandler):
             return
 
         with self.ctx.lock:
+            if self._reject_closing():
+                return
             error = self.ctx.set_selected_tags(asset_id, tags)
             selected = self.ctx.get_selected_tags(asset_id) if error is None else None
 
@@ -398,16 +499,8 @@ class _PickWebHandler(BaseHTTPRequestHandler):
             self._respond(200, "application/json", body_out)
 
     def _handle_select_custom(self) -> None:
-        body = self._read_body()
-        if body is None:
-            return
-        try:
-            payload = json.loads(body)
-        except json.JSONDecodeError:
-            self._respond(400, "application/json", json.dumps({"error": "Invalid JSON"}).encode())
-            return
-        if not isinstance(payload, dict):
-            self._respond(400, "application/json", json.dumps({"error": "Expected JSON object"}).encode())
+        payload = self._read_object()
+        if payload is None:
             return
 
         asset_id = payload.get("asset_id")
@@ -423,6 +516,8 @@ class _PickWebHandler(BaseHTTPRequestHandler):
             return
 
         with self.ctx.lock:
+            if self._reject_closing():
+                return
             error = self.ctx.select_custom_text(asset_id, text, based_on)
             current = None if error else read_current_selection(self.ctx.store.layout, asset_id)
 
@@ -434,17 +529,10 @@ class _PickWebHandler(BaseHTTPRequestHandler):
         self._respond(200, "application/json", body_out)
 
     def _handle_refine(self) -> None:
-        body = self._read_body()
-        if body is None:
+        payload = self._read_object()
+        if payload is None:
             return
-        try:
-            payload = json.loads(body)
-        except json.JSONDecodeError:
-            self._respond_json(400, {"error": "Invalid JSON"})
-            return
-        if not isinstance(payload, dict):
-            self._respond_json(400, {"error": "Expected JSON object"})
-            return
+
         asset_id = payload.get("asset_id")
         instruction = payload.get("instruction")
         candidate_id = payload.get("candidate_id")
@@ -459,6 +547,8 @@ class _PickWebHandler(BaseHTTPRequestHandler):
             return
 
         with self.ctx.lock:
+            if self._reject_closing():
+                return
             prepared = self.ctx.prepare_refine(asset_id, instruction, candidate_id, text)
             if isinstance(prepared, str):
                 self._respond_json(400, {"error": prepared})
@@ -473,7 +563,17 @@ class _PickWebHandler(BaseHTTPRequestHandler):
             with self.ctx.lock:
                 self.ctx.add_candidate(candidate)
         except Exception as exc:
-            self._respond_json(502, {"error": f"Refinement failed: {exc}"})
+            reference = uuid4().hex[:12]
+            # Correlate locally without printing prompts, paths or agent diagnostics.
+            print(f"Refinement failed [{reference}] ({type(exc).__name__})", file=sys.stderr)
+            self._respond_json(
+                502,
+                {
+                    "error": f"Refinement failed. Local reference: {reference}",
+                    "code": "refinement_failed",
+                    "reference": reference,
+                },
+            )
             return
         finally:
             with self.ctx.lock:
@@ -495,29 +595,86 @@ class _PickWebHandler(BaseHTTPRequestHandler):
     def _respond_json(self, status: int, data: dict[str, object]) -> None:
         self._respond(status, "application/json", json.dumps(data, ensure_ascii=False).encode("utf-8"))
 
+    def _reject_closing(self) -> bool:
+        if self.ctx.closing:
+            self._respond_json(409, {"error": "Picker is closing"})
+            return True
+        return False
+
     def _handle_done(self) -> None:
-        self._respond(200, "application/json", json.dumps({"ok": True}).encode())
-        # Shut down from a background thread to avoid deadlock
-        threading.Thread(target=self.server.shutdown, daemon=True).start()
+        if self._read_object() is None:
+            return
+        with self.ctx.lock:
+            if self._reject_closing():
+                return
+            if self.ctx.refining:
+                self._respond_json(409, {"error": "Refinement pending; wait before Done"})
+                return
+            self.ctx.closing = True
+        self._respond_json(200, {"ok": True})
+        if isinstance(self.server, _PickHTTPServer):
+            self.server.stop_requested.set()
+        else:
+            threading.Thread(target=self.server.shutdown, daemon=True).start()
+
+    def _read_object(self) -> dict[str, object] | None:
+        body = self._read_body()
+        if body is None:
+            return None
+
+        try:
+            payload = json.loads(
+                body.decode("utf-8"),
+                object_pairs_hook=_unique_members,
+                parse_int=_bounded_integer,
+                parse_constant=_invalid_constant,
+            )
+            if not isinstance(payload, dict):
+                raise ValueError("Not an object")
+            _validate_object_tree(payload)
+            return payload
+        except (ValueError, RecursionError):
+            self._respond_json(400, {"error": "Invalid JSON object"})
+            return None
 
     def _read_body(self) -> bytes | None:
-        length_str = self.headers.get("Content-Length")
-        if length_str is None:
-            self._respond(411, "text/plain", b"Content-Length required")
+        self.close_connection = True
+        lengths = self.headers.get_all("Content-Length", [])
+        if self.headers.get_all("Transfer-Encoding") or len(lengths) > 1:
+            self._respond_json(400, {"error": "Ambiguous request framing"})
             return None
+        if not lengths:
+            self._respond_json(411, {"error": "Content-Length required"})
+            return None
+        value = lengths[0]
+        if not value.isascii() or not value.isdecimal():
+            self._respond_json(400, {"error": "Invalid Content-Length"})
+            return None
+        if len(value) > 8 or int(value) > _MAX_BODY_BYTES:
+            self._respond_json(413, {"error": "Request too large"})
+            return None
+        length = int(value)
         try:
-            length = int(length_str)
-        except ValueError:
-            self._respond(400, "text/plain", b"Invalid Content-Length")
+            body = self.rfile.read(length)
+        except OSError:
+            self._respond_json(400, {"error": "Incomplete request"})
             return None
-        return self.rfile.read(length)
+        finally:
+            self.read_timer.cancel()
+        if len(body) != length:
+            self._respond_json(400, {"error": "Incomplete request"})
+            return None
+        return body
 
     def _respond(self, status: int, content_type: str, body: bytes) -> None:
-        self.send_response(status)
-        self.send_header("Content-Type", content_type)
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
+        try:
+            self.send_response(status)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        except (BrokenPipeError, ConnectionResetError):
+            self.close_connection = True  # The caller may have timed out; work still settles.
 
 
 def _build_html_page() -> str:
@@ -548,6 +705,7 @@ def _build_html_page() -> str:
   .sidebar { width: 240px; min-width: 200px; border-right: 1px solid var(--border);
              background: var(--card-bg); overflow-y: auto; }
   .sidebar-item { padding: 0.75rem 1rem; cursor: pointer; border-bottom: 1px solid var(--border);
+                  width: 100%; border: 0; text-align: left; color: inherit; font-family: inherit;
                   font-size: 0.85rem; display: flex; justify-content: space-between; align-items: center; }
   .sidebar-item:hover { background: #f0f0f0; }
   .sidebar-item.active { background: var(--selected-bg); font-weight: 600; }
@@ -598,7 +756,7 @@ def _build_html_page() -> str:
   .refine-row select, .refine-row input { font-size: 0.85rem; padding: 0.35rem 0.5rem;
                                          border: 1px solid var(--border); border-radius: 4px; }
   .refine-row input { flex: 1; }
-  .select-btn:disabled { opacity: 0.5; cursor: wait; }
+  .select-btn:disabled, .select-btn[aria-disabled="true"] { opacity: 0.5; cursor: wait; }
 </style>
 </head>
 <body>
@@ -622,6 +780,69 @@ const drafts = {};
 const refining = new Set();
 const SINGLE_LINE_ASSETS = new Set(["slug", "title_detail", "title_seo", "subtitle_auphonic"]);
 
+const pendingChoices = new Set();
+const uncertainChoices = new Set();
+
+async function exchange(path, options = {}) {
+  const controller = new AbortController();
+  let timer;
+  try {
+    return await Promise.race([
+      (async () => {
+        const resp = await fetch(path, {...options, signal: controller.signal});
+        const data = await resp.json();
+        if (!resp.ok) throw new Error(data.error || "Request failed");
+        return data;
+      })(),
+      new Promise((_, reject) => {
+        timer = setTimeout(() => {
+          controller.abort();
+          reject(new Error(options.method
+            ? "Request timed out; outcome unknown. Check stored state before retrying."
+            : "Loading timed out. Retry loading."));
+        }, 30000);
+      })
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function post(path, body) {
+  return exchange(path, {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)});
+}
+
+async function refreshAssets() {
+  const fresh = await exchange("/api/assets");
+  assets = fresh.map(a => Object.assign(assets.find(old => old.asset_id === a.asset_id) || {}, a));
+}
+
+async function choose(assetId, operation) {
+  if (pendingChoices.has(assetId)) return;
+  pendingChoices.add(assetId);
+  renderMain();
+  updateProgress();
+  try {
+    if (uncertainChoices.has(assetId)) {
+      await refreshAssets();
+      uncertainChoices.delete(assetId);
+    }
+    await operation();
+  } catch (err) {
+    uncertainChoices.add(assetId);
+    currentDraft(assets.find(a => a.asset_id === assetId)).error = String(err);
+    try {
+      await refreshAssets();
+      uncertainChoices.delete(assetId);
+    } catch (_) { /* A deliberate next action must reconcile before writing. */ }
+  } finally {
+    pendingChoices.delete(assetId);
+    renderSidebar();
+    if (activeAsset === assetId) renderMain();
+    updateProgress();
+  }
+}
+
 function esc(s) {
   const d = document.createElement("div");
   d.textContent = s;
@@ -629,18 +850,51 @@ function esc(s) {
 }
 
 async function init() {
-  const resp = await fetch("/api/assets");
-  assets = await resp.json();
-  renderSidebar();
-  updateProgress();
-  if (assets.length > 0) selectAsset(assets[0].asset_id);
+  try {
+    await refreshAssets();
+    renderSidebar();
+    updateProgress();
+    if (assets.length > 0) selectAsset(activeAsset || assets[0].asset_id);
+  } catch (err) {
+    alert(String(err));
+  }
 }
 
-function renderSidebar() {
+function withFocus(render) {
+  const el = document.activeElement;
+  let selector;
+  if (el.id) selector = "#" + CSS.escape(el.id);
+  else if (el.dataset.assetId) selector = `[data-asset-id="${CSS.escape(el.dataset.assetId)}"]`;
+  else if (el.dataset.candidate) {
+    selector = `.${el.classList[0]}[data-candidate="${CSS.escape(el.dataset.candidate)}"]`;
+  }
+  else if (el.dataset.tag) selector = `[data-tag="${CSS.escape(el.dataset.tag)}"]`;
+  const start = el.selectionStart, end = el.selectionEnd, direction = el.selectionDirection;
+  render();
+  if (selector && !el.isConnected) {
+    const next = document.querySelector(selector);
+    if (next) {
+      next.focus({preventScroll: true});
+      if (typeof start === "number" && next.setSelectionRange) next.setSelectionRange(start, end, direction);
+    }
+  }
+}
+
+function renderSidebar() { withFocus(_renderSidebar); }
+function renderMain() { withFocus(_renderMain); }
+
+function committedEnter(event) {
+  return event.key === "Enter" && !event.defaultPrevented && !event.isComposing && event.keyCode !== 229;
+}
+
+function _renderSidebar() {
   const sb = document.getElementById("sidebar");
   sb.innerHTML = "";
   for (const a of assets) {
-    const div = document.createElement("div");
+    const div = document.createElement("button");
+    div.type = "button";
+    div.dataset.assetId = a.asset_id;
+    div.setAttribute("aria-pressed", String(activeAsset === a.asset_id));
     div.className = "sidebar-item" + (activeAsset === a.asset_id ? " active" : "");
     const label = document.createElement("span");
     label.textContent = a.asset_id;
@@ -718,7 +972,7 @@ function renderTagMain(main, asset) {
     if (extra.length) updateTags(asset, current => [...current, ...extra]);
   };
   document.getElementById("tag-add").onclick = add;
-  input.onkeydown = (ev) => { if (ev.key === "Enter") add(); };
+  input.onkeydown = (ev) => { if (committedEnter(ev)) { ev.preventDefault(); add(); } };
   document.getElementById("tag-top").onclick = () =>
     updateTags(asset, () => asset.tag_pool.slice(0, asset.max_tags).map(e => e.tag));
   document.getElementById("tag-clear").onclick = () => updateTags(asset, () => []);
@@ -736,16 +990,7 @@ function updateTags(asset, compute) {
 }
 
 async function saveTags(asset, tags) {
-  const resp = await fetch("/api/tags", {
-    method: "POST",
-    headers: {"Content-Type": "application/json"},
-    body: JSON.stringify({asset_id: asset.asset_id, tags: tags})
-  });
-  const data = await resp.json();
-  if (!resp.ok) {
-    alert(data.error);
-    return;
-  }
+  const data = await post("/api/tags", {asset_id: asset.asset_id, tags});
   asset.selected_tags = data.tags;
   asset.selected_candidate_id = null;
   renderSidebar();
@@ -753,7 +998,7 @@ async function saveTags(asset, tags) {
   updateProgress();
 }
 
-function renderMain() {
+function _renderMain() {
   const main = document.getElementById("main");
   const asset = assets.find(a => a.asset_id === activeAsset);
   if (!asset) { main.innerHTML = ""; return; }
@@ -774,7 +1019,7 @@ function renderMain() {
           <button class="edit-btn" data-candidate="${cid}"
             title="Copy this candidate into the custom text editor">Edit</button>
           <button class="select-btn"
-            data-asset="${aid}" data-candidate="${cid}">
+            data-asset="${aid}" data-candidate="${cid}" aria-disabled="${pendingChoices.has(asset.asset_id)}">
             ${isSel ? "Selected" : "Select"}
           </button>
         </span>
@@ -795,11 +1040,15 @@ function renderMain() {
   });
   const textarea = document.getElementById("custom-text");
   textarea.oninput = () => {
-    currentDraft(asset).text = textarea.value;
+    const draft = currentDraft(asset);
+    draft.text = textarea.value;
+    draft.revision++;
+    draft.dirty = true;
   };
   document.getElementById("custom-save").onclick = () => handleSaveCustom(asset.asset_id);
   document.getElementById("custom-clear").onclick = () => {
-    drafts[asset.asset_id] = {...currentDraft(asset), text: "", basedOn: null};
+    drafts[asset.asset_id] = {...currentDraft(asset), text: "", basedOn: null,
+      revision: currentDraft(asset).revision + 1, dirty: true};
     renderMain();
   };
   const instruction = document.getElementById("refine-instruction");
@@ -807,7 +1056,7 @@ function renderMain() {
     currentDraft(asset).instruction = instruction.value;
   };
   instruction.onkeydown = (event) => {
-    if (event.key === "Enter") handleRefine(asset.asset_id);
+    if (committedEnter(event)) { event.preventDefault(); handleRefine(asset.asset_id); }
   };
   document.getElementById("refine-source").onchange = (event) => {
     currentDraft(asset).refineSource = event.target.value;
@@ -839,21 +1088,18 @@ async function handleRefine(assetId) {
   else body.candidate_id = draft.refineSource;
 
   refining.add(assetId);
+  updateProgress();
   renderMain();
   let data;
   let ok = false;
   try {
-    const resp = await fetch("/api/refine", {
-      method: "POST",
-      headers: {"Content-Type": "application/json"},
-      body: JSON.stringify(body)
-    });
-    data = await resp.json();
-    ok = resp.ok;
+    data = await post("/api/refine", body);
+    ok = true;
   } catch (err) {
     data = {error: String(err)};
   } finally {
     refining.delete(assetId);
+    updateProgress();
   }
   if (ok) {
     asset.candidates.push(data.candidate);
@@ -868,7 +1114,8 @@ async function handleRefine(assetId) {
 
 function currentDraft(asset) {
   if (!drafts[asset.asset_id]) {
-    drafts[asset.asset_id] = {text: asset.custom_selected ? (asset.selected_text || "").trimEnd() : "", basedOn: null};
+    drafts[asset.asset_id] = {text: asset.custom_selected ? (asset.selected_text || "").trimEnd() : "",
+      basedOn: null, revision: 0, dirty: false};
   }
   return drafts[asset.asset_id];
 }
@@ -883,7 +1130,8 @@ function editableText(asset, candidate) {
 function startFromCandidate(asset, candidateId) {
   const c = asset.candidates.find(item => item.candidate_id === candidateId);
   if (!c) return;
-  drafts[asset.asset_id] = {...currentDraft(asset), text: editableText(asset, c), basedOn: candidateId};
+  drafts[asset.asset_id] = {...currentDraft(asset), text: editableText(asset, c), basedOn: candidateId,
+    revision: currentDraft(asset).revision + 1, dirty: true};
   renderMain();
   const textarea = document.getElementById("custom-text");
   textarea.focus();
@@ -903,10 +1151,12 @@ function renderCustomCard(asset) {
   draft.error = "";
   return `<div class="${cls}">
     <div class="card-header">
-      <span class="card-label">Custom text${asset.custom_selected ? " (current selection)" : ""}</span>
+      <span class="card-label">Custom text${asset.custom_selected ? " (current selection)" : ""}
+        ${draft.dirty ? " · unsaved" : ""}</span>
       <span class="card-actions">
         <button class="edit-btn" id="custom-clear">Clear</button>
-        <button class="select-btn" id="custom-save">${asset.custom_selected ? "Save" : "Use custom text"}</button>
+        <button class="select-btn" id="custom-save" aria-disabled="${pendingChoices.has(asset.asset_id)}">
+          ${asset.custom_selected ? "Save" : "Use custom text"}</button>
       </span>
     </div>
     <p class="custom-hint">${hint}</p>
@@ -924,49 +1174,35 @@ function renderCustomCard(asset) {
 
 async function handleSaveCustom(assetId) {
   const asset = assets.find(a => a.asset_id === assetId);
-  if (!asset) return;
+  if (!asset || pendingChoices.has(assetId)) return;
   const draft = currentDraft(asset);
   draft.text = document.getElementById("custom-text").value;
-  const resp = await fetch("/api/select-custom", {
-    method: "POST",
-    headers: {"Content-Type": "application/json"},
-    body: JSON.stringify({asset_id: assetId, text: draft.text, based_on_candidate_id: draft.basedOn})
+  const submitted = {text: draft.text, basedOn: draft.basedOn, revision: draft.revision};
+  await choose(assetId, async () => {
+    const data = await post("/api/select-custom", {
+      asset_id: assetId, text: submitted.text, based_on_candidate_id: submitted.basedOn
+    });
+    asset.selected_candidate_id = null;
+    asset.custom_selected = true;
+    asset.has_selection = true;
+    asset.selected_text = data.text;
+    const current = currentDraft(asset);
+    if (current.revision === submitted.revision && current.text === submitted.text) {
+      drafts[assetId] = {...current, text: data.text.trimEnd(), basedOn: null, dirty: false};
+    }
   });
-  const data = await resp.json();
-  if (!resp.ok) {
-    document.getElementById("custom-error").textContent = data.error;
-    return;
-  }
-  asset.selected_candidate_id = null;
-  asset.custom_selected = true;
-  asset.has_selection = true;
-  asset.selected_text = data.text;
-  drafts[assetId] = {...draft, text: data.text.trimEnd(), basedOn: null};
-  renderSidebar();
-  renderMain();
-  updateProgress();
 }
 
 async function handleSelect(assetId, candidateId) {
-  const resp = await fetch("/api/select", {
-    method: "POST",
-    headers: {"Content-Type": "application/json"},
-    body: JSON.stringify({asset_id: assetId, candidate_id: candidateId})
+  await choose(assetId, async () => {
+    await post("/api/select", {asset_id: assetId, candidate_id: candidateId});
+    const asset = assets.find(a => a.asset_id === assetId);
+    if (asset) {
+      asset.selected_candidate_id = candidateId;
+      asset.custom_selected = false;
+      asset.has_selection = true;
+    }
   });
-  if (!resp.ok) {
-    const err = await resp.json();
-    alert(err.error);
-    return;
-  }
-  const asset = assets.find(a => a.asset_id === assetId);
-  if (asset) {
-    asset.selected_candidate_id = candidateId;
-    asset.custom_selected = false;
-    asset.has_selection = true;
-  }
-  renderSidebar();
-  renderMain();
-  updateProgress();
 }
 
 function updateProgress() {
@@ -974,15 +1210,22 @@ function updateProgress() {
   const required = assets.filter(a => !a.is_tag_asset);
   const done = required.filter(a => a.has_selection).length;
   document.getElementById("progress").textContent = `${done}/${required.length} selected`;
-  document.getElementById("done-btn").disabled = done < required.length;
+  document.getElementById("done-btn").disabled =
+    done < required.length || refining.size > 0 || pendingChoices.size > 0;
+  if (refining.size) document.getElementById("progress").textContent += " · refinement pending";
 }
 
 async function handleDone() {
-  // Let queued tag saves finish before the server shuts down.
-  await tagQueue;
-  await fetch("/api/done", {method: "POST", headers: {"Content-Type": "application/json"}, body: "{}"});
-  const s = "display:flex;align-items:center;justify-content:center;";
-  document.body.innerHTML = `<div style='${s}height:100vh;font-size:1.5rem;color:#16a34a'>All done!</div>`;
+  try {
+    await tagQueue;
+    if (refining.size || pendingChoices.size) return;
+    await post("/api/done", {});
+    const s = "display:flex;align-items:center;justify-content:center;";
+    document.body.innerHTML = `<div style='${s}height:100vh;font-size:1.5rem;color:#16a34a'>All done!</div>`;
+  } catch (err) {
+    alert(String(err));
+    updateProgress();
+  }
 }
 
 init();

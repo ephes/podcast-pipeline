@@ -549,6 +549,15 @@ class EpisodeWorkspaceStore:
                 self._write_state_unlocked(updated)
                 return updated
 
+    @contextmanager
+    def read_snapshot(self, *, default: EpisodeWorkspace) -> Iterator[EpisodeWorkspace]:
+        """Hold the publication lock across current metadata and artifact reads.
+
+        Readers must not call a writer or reacquire this lock inside the scope.
+        """
+        with self._state_lock():
+            yield self.read_state() if self.layout.state_json.exists() else default
+
     def read_selection_snapshot(
         self, asset_id: str, *, default: EpisodeWorkspace
     ) -> tuple[EpisodeWorkspace, dict[str, str]]:
