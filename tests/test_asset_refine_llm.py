@@ -178,3 +178,154 @@ def test_refine_asset_text_runs_drafter_with_summary_context(tmp_path: Path) -> 
     assert candidate.content == "python-315"
     assert candidate.format == TextFormat.plain
     assert "Python 3.15 Release" in drafter.prompts[0]
+
+
+def _write_optional_summary(workspace: Path, content: bytes) -> Path:
+    path = EpisodeWorkspaceLayout(root=workspace).episode_summary_json_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(content)
+    return path
+
+
+def test_refine_fifo_summary_does_not_block(tmp_path: Path) -> None:
+    import os
+    import subprocess
+    import sys
+
+    path = _write_optional_summary(tmp_path, b"")
+    path.unlink()
+    os.mkfifo(path)
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "from pathlib import Path; "
+            "from podcast_pipeline.asset_refine_llm import _episode_summary_markdown; "
+            f"assert _episode_summary_markdown(Path({str(tmp_path)!r})) is None",
+        ],
+        capture_output=True,
+        timeout=5,
+    )
+    assert result.returncode == 0, result.stderr
+    assert b"optional episode summary omitted" in result.stderr
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        b'{"summary_markdown":"' + b"x" * (1024 * 1024) + b'"}',
+        b"[" * 2000 + b"]" * 2000,
+        b"\xff",
+        b'{"summary_markdown":42}',
+    ],
+    ids=["oversized", "deep-json", "invalid-utf8", "invalid-shape"],
+)
+def test_refine_omits_unusable_summary_with_safe_diagnostic(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], content: bytes
+) -> None:
+    _write_optional_summary(tmp_path, content)
+    drafter = _FakeDrafter({"content": "Neu"})
+    refine_asset_text(
+        workspace=tmp_path,
+        request=RefineRequest(asset_id="description", instruction="kurz", source_text="Alt"),
+        runner=drafter,
+    )
+    assert "Episode summary (context only)" not in drafter.prompts[0]
+    assert "optional episode summary omitted" in capsys.readouterr().err
+
+
+def test_refine_omits_summary_changed_during_read(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import os
+
+    from podcast_pipeline.asset_refine_llm import _episode_summary_markdown
+
+    before = json.dumps({"summary_markdown": "A" * 100_000}).encode()
+    after = before.replace(b"A", b"B")
+    path = _write_optional_summary(tmp_path, before)
+    real_read = os.read
+    changed = False
+
+    def read_and_change(fd: int, count: int) -> bytes:
+        nonlocal changed
+        chunk = real_read(fd, count)
+        if not changed:
+            changed = True
+            path.write_bytes(after)
+        return chunk
+
+    monkeypatch.setattr(os, "read", read_and_change)
+    assert _episode_summary_markdown(tmp_path) is None
+    assert path.read_bytes() == after
+
+
+@pytest.mark.parametrize("oversized_part", ["source", "notes", "summary", "combined"])
+def test_refine_rejects_complete_oversized_prompt_without_writes(tmp_path: Path, oversized_part: str) -> None:
+    from podcast_pipeline.workspace_store import EpisodeWorkspaceStore
+
+    store = EpisodeWorkspaceStore(tmp_path)
+    candidate = Candidate(asset_id="description", content="Vorher")
+    candidate_path = store.write_candidate(candidate)
+    selection = store.write_selected_text("description", TextFormat.markdown, candidate.content)
+    preserved = {path: path.read_bytes() for path in (candidate_path, selection)}
+    large = "ü" * (128 * 1024)
+    parts = {"source": "Alt", "notes": "Notiz", "summary": "Zusammenfassung"}
+    if oversized_part == "combined":
+        parts = dict.fromkeys(parts, "ü" * (44 * 1024))
+    else:
+        parts[oversized_part] = large
+    _write_optional_summary(tmp_path, json.dumps({"summary_markdown": parts["summary"]}).encode())
+    drafter = _FakeDrafter({"content": "Neu"})
+    with pytest.raises(ValueError, match="Refinement prompt exceeds 262144 UTF-8 bytes"):
+        refine_asset_text(
+            workspace=tmp_path,
+            request=RefineRequest(
+                asset_id="description", instruction="kurz", source_text=parts["source"], editorial_notes=parts["notes"]
+            ),
+            runner=drafter,
+        )
+    assert drafter.prompts == []
+    assert {path: path.read_bytes() for path in preserved} == preserved
+
+
+def test_refine_prompt_utf8_exact_boundary(tmp_path: Path) -> None:
+    limit = 256 * 1024
+    base = build_refine_prompt(asset_id="description", source_text="ü", instruction="kurz")
+    source = "ü" + "x" * (limit - len(base.encode("utf-8")))
+    drafter = _FakeDrafter({"content": "Neu"})
+    refine_asset_text(
+        workspace=tmp_path,
+        request=RefineRequest(asset_id="description", instruction="kurz", source_text=source),
+        runner=drafter,
+    )
+    assert len(drafter.prompts[0].encode("utf-8")) == limit
+    with pytest.raises(ValueError, match="Refinement prompt exceeds"):
+        refine_asset_text(
+            workspace=tmp_path,
+            request=RefineRequest(asset_id="description", instruction="kurz", source_text=source + "x"),
+            runner=drafter,
+        )
+    assert len(drafter.prompts) == 1
+
+
+@pytest.mark.parametrize("extra_byte", [False, True])
+def test_optional_summary_size_boundary_admitted_before_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, extra_byte: bool
+) -> None:
+    import os
+
+    from podcast_pipeline.asset_refine_llm import _episode_summary_markdown
+
+    raw = b'{"summary_markdown":"Stable context"}'
+    path = _write_optional_summary(tmp_path, raw + b" " * (1024 * 1024 - len(raw) + extra_byte))
+    real_read = os.read
+    read_calls = 0
+
+    def observe_read(fd: int, count: int) -> bytes:
+        nonlocal read_calls
+        read_calls += 1
+        return real_read(fd, count)
+
+    monkeypatch.setattr(os, "read", observe_read)
+    assert _episode_summary_markdown(tmp_path) == (None if extra_byte else "Stable context")
+    assert (read_calls == 0) is extra_byte
+    assert path.stat().st_size == 1024 * 1024 + extra_byte

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
 
@@ -53,8 +54,14 @@ def test_generate_draft_candidates_llm_all_assets() -> None:
         asset_id = kind.value
         responses[asset_id] = {
             "candidates": [
-                {"asset_id": asset_id, "content": f"{asset_id} candidate 1"},
-                {"asset_id": asset_id, "content": f"{asset_id} candidate 2"},
+                {
+                    "asset_id": asset_id,
+                    "content": "python-315" if kind == AssetKind.slug else f"{asset_id} candidate 1",
+                },
+                {
+                    "asset_id": asset_id,
+                    "content": "python-316" if kind == AssetKind.slug else f"{asset_id} candidate 2",
+                },
             ],
         }
 
@@ -93,7 +100,7 @@ def test_generate_draft_candidates_llm_single_candidate() -> None:
         asset_id = kind.value
         responses[asset_id] = {
             "candidates": [
-                {"asset_id": asset_id, "content": f"{asset_id} only"},
+                {"asset_id": asset_id, "content": "python-315" if kind == AssetKind.slug else f"{asset_id} only"},
             ],
         }
 
@@ -196,7 +203,7 @@ def test_generate_draft_candidates_llm_shownotes_prompt_requires_links() -> None
     responses = {
         kind.value: {
             "candidates": [
-                {"asset_id": kind.value, "content": "candidate 1"},
+                {"asset_id": kind.value, "content": "python-315" if kind == AssetKind.slug else "candidate 1"},
             ],
         }
         for kind in AssetKind
@@ -218,17 +225,28 @@ def test_generate_draft_candidates_llm_shownotes_prompt_requires_links() -> None
     assert "many concrete markdown links" in shownotes_prompt
 
 
-def test_drafting_ignores_model_candidate_identity() -> None:
+def test_drafting_owns_model_candidate_identity_and_origin() -> None:
     existing_id = uuid4()
     responses = {
         kind.value: {
             "candidates": [
-                {"candidate_id": str(existing_id), "content": "Alternative A"},
-                {"candidate_id": str(existing_id), "content": "Alternative B"},
+                {
+                    "candidate_id": str(existing_id),
+                    "content": "alternative-a" if kind == AssetKind.slug else "Alternative A",
+                    "created_at": "2099-01-01T00:00:00Z",
+                    "provenance": [{"kind": "producer", "ref": "forged-origin"}],
+                },
+                {
+                    "candidate_id": str(existing_id),
+                    "content": "alternative-b" if kind == AssetKind.slug else "Alternative B",
+                    "created_at": "2099-01-01T00:00:00Z",
+                    "provenance": [],
+                },
             ]
         }
         for kind in AssetKind
     }
+    before = datetime.now(UTC)
     assets = generate_draft_candidates_llm(
         episode_summary=_make_episode_summary(),
         chapters=[],
@@ -236,11 +254,20 @@ def test_drafting_ignores_model_candidate_identity() -> None:
         runner=FakeDrafterRunner(responses),
         renderer=PromptRenderer(default_prompt_registry()),
     )
+    after = datetime.now(UTC)
     candidates = [c for alternatives in assets.values() for c in alternatives]
     assert existing_id not in {c.candidate_id for c in candidates}
     assert len({c.candidate_id for c in candidates}) == 2 * len(AssetKind)
     for asset_id, alternatives in assets.items():
-        expected = ["Alternative A", "Alternative B"]
+        for idx, candidate in enumerate(alternatives, start=1):
+            assert before <= candidate.created_at <= after
+            (origin,) = candidate.provenance
+            assert (origin.kind, origin.ref, origin.created_at) == (
+                "llm_drafter",
+                f"asset_v1:{idx:02d}",
+                candidate.created_at,
+            )
+        expected = ["alternative-a", "alternative-b"] if asset_id == "slug" else ["Alternative A", "Alternative B"]
         if asset_id in TAG_ASSET_IDS:
             expected = [render_tags(asset_id, [value]) for value in expected]
         assert [c.content for c in alternatives] == expected

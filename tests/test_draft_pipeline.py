@@ -131,7 +131,7 @@ class _FakeRunner:
                 asset_id = "unknown"
             return {
                 "candidates": [
-                    {"asset_id": asset_id, "content": f"fake {asset_id}"},
+                    {"asset_id": asset_id, "content": "fake-slug" if asset_id == "slug" else f"fake {asset_id}"},
                 ],
             }
         return {}

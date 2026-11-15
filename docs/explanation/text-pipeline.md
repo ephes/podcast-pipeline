@@ -68,6 +68,25 @@ Stub behaviors:
 
 The default `podcast draft` flow uses `podcast_pipeline.asset_candidates_llm`. It provides the episode summary,
 optional chapters, and host names to the configured drafter CLI and validates the structured candidate response.
+Generated candidates receive a fresh application UUID, observation timestamp and `llm_drafter` provenance
+(`asset_v1` for drafts, `regen_v1` for regeneration); model-supplied identity, date and provenance are discarded.
+Historical stored records retain their original metadata.
+
+Titles, Auphonic subtitles and slugs use the same single-line validation as custom selections; slugs must use
+lowercase ASCII letters/digits with single hyphens between words. These assets and short summaries are stored
+in their natural plain-text format. Invalid text rejects the entire response before any alternative is published,
+with a zero-based candidate position and asset name in the error, never its content. Tag post-filtering and
+long-form Markdown keep their existing contracts. No invalid slug or multiline title is silently rewritten.
+
+Workspace store reads bind candidate UUID/asset and review iteration/reviewer to the requested artifact path.
+Misplaced valid JSON raises `WorkspaceStoreError` and remains untouched for explicit repair; move or restore
+the correct record rather than editing IDs to force admission. Legacy optional provenance and unnamed reviews
+remain supported when their requested identity matches.
+
+Dashboard candidate deletion backs up that candidate's JSON/renderings, all selection formats for the asset
+and state under the workspace lock. Handled unlink or state-publication failures restore the previous bytes
+together. A different current selection and unrelated candidates remain intact. If compensation itself fails,
+the error names retained sibling backups for manual recovery. This does not cover process death mid-update.
 
 ## Stub asset candidates
 

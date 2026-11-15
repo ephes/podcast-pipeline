@@ -224,6 +224,13 @@ editor, choose the text to refine (the editor's text or one of the candidates), 
 - The drafter (the same agent CLI and timeout as `podcast draft`) rewrites only what the instruction asks for. Its
   prompt contains the asset's guidance, the text, the instruction, the asset's editorial notes (dashboard "Editorial
   Notes") and, when it exists, the episode summary as context.
+- The complete prompt, including guidance and schema, is limited to 256 KiB of UTF-8 bytes. Oversized requests
+  fail before the agent runs; shorten the source, notes or summary and retry. No factual context is truncated,
+  and existing candidates and selections survive the refusal.
+- Optional summary JSON must be a regular, nonsymlink UTF-8 file of at most 1 MiB. Refinement omits missing
+  summaries; unreadable, oversized, malformed or detectably changed files are omitted with a short diagnostic.
+  Rebuild the summary to restore context. The reader checks the opened file before and after its bounded read;
+  this detects changes rather than locking out manual editors.
 - The result is a new candidate, labelled `refined: <instruction>`, stored in the asset's natural format under
   `copy/candidates/<asset_id>/`. Its provenance (`kind: llm_refine`) records the instruction and the candidate it was
   based on. Select it, press "Edit" to tweak it by hand, or refine it again.

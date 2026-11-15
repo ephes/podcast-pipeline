@@ -198,3 +198,64 @@ def test_candidate_json_is_published_last(tmp_path: Path, monkeypatch: pytest.Mo
     monkeypatch.setattr(workspace_store, "_atomic_write_text", record)
     store.write_candidate(candidate)
     assert published == [".md", ".html", ".json"]
+
+
+@pytest.mark.parametrize("mismatch", ["candidate_id", "asset_id"])
+def test_read_candidate_binds_embedded_identity_to_requested_path(tmp_path: Path, mismatch: str) -> None:
+    from uuid import uuid4
+
+    store = EpisodeWorkspaceStore(tmp_path)
+    requested_id = uuid4()
+    candidate = Candidate(
+        candidate_id=uuid4() if mismatch == "candidate_id" else requested_id,
+        asset_id="shownotes" if mismatch == "asset_id" else "description",
+        content="Synthetic copy",
+    )
+    path = store.layout.candidate_json_path("description", requested_id)
+    path.parent.mkdir(parents=True)
+    path.write_text(candidate.model_dump_json())
+    before = path.read_bytes()
+    with pytest.raises(WorkspaceStoreError, match="Candidate identity does not match requested path"):
+        store.read_candidate("description", requested_id)
+    assert path.read_bytes() == before
+
+
+@pytest.mark.parametrize(
+    ("iteration", "reviewer", "requested_reviewer"),
+    [
+        (2, "reviewer_a", "reviewer_a"),
+        (1, "reviewer_b", "reviewer_a"),
+        (1, "reviewer_a", None),
+        (1, None, "reviewer_a"),
+    ],
+)
+def test_read_review_binds_embedded_identity_to_requested_path(
+    tmp_path: Path, iteration: int, reviewer: str | None, requested_reviewer: str | None
+) -> None:
+    store = EpisodeWorkspaceStore(tmp_path)
+    review = ReviewIteration(iteration=iteration, reviewer=reviewer, verdict=ReviewVerdict.ok)
+    path = store.layout.review_iteration_json_path("description", 1, reviewer=requested_reviewer)
+    path.parent.mkdir(parents=True)
+    path.write_text(review.model_dump_json())
+    before = path.read_bytes()
+    with pytest.raises(WorkspaceStoreError, match="Review identity does not match requested path"):
+        store.read_review("description", 1, reviewer=requested_reviewer)
+    assert path.read_bytes() == before
+
+
+def test_read_artifacts_accept_matching_legacy_optional_metadata(tmp_path: Path) -> None:
+    import json
+    from uuid import uuid4
+
+    store = EpisodeWorkspaceStore(tmp_path)
+    candidate_id = uuid4()
+    path = store.layout.candidate_json_path("description", candidate_id)
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps({"candidate_id": str(candidate_id), "asset_id": "description", "content": "Old copy"}))
+    candidate = store.read_candidate("description", candidate_id)
+    assert candidate.provenance == []
+    assert candidate.format == TextFormat.markdown
+    path = store.layout.review_iteration_json_path("description", 1)
+    path.parent.mkdir(parents=True)
+    path.write_text('{"iteration":1,"verdict":"ok"}')
+    assert store.read_review("description", 1).reviewer is None
