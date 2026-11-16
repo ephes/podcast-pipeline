@@ -14,6 +14,7 @@ from podcast_pipeline.agent_runners import (
     load_episode_context_from_workspace,
 )
 from podcast_pipeline.domain.models import EpisodeWorkspace, ReviewIteration
+from podcast_pipeline.file_inputs import read_workspace_utf8
 from podcast_pipeline.review_loop_engine import (
     CreatorInput,
     CreatorOutput,
@@ -121,12 +122,19 @@ def _read_input_text(store: EpisodeWorkspaceStore, key: str) -> str:
     """Read a text file referenced by key in episode.yaml inputs."""
     episode_data = store.read_episode_yaml()
     inputs = episode_data.get("inputs", {})
-    rel = inputs.get(key)
-    if isinstance(rel, str):
-        path = store.layout.root / rel
-        if path.exists():
-            return path.read_text(encoding="utf-8")
-    return ""
+    rel = inputs.get(key) if isinstance(inputs, dict) else None
+    if not isinstance(rel, str):
+        return ""
+    max_bytes = 1024 * 1024 if key == "chapters" else 8 * 1024 * 1024
+    try:
+        text = read_workspace_utf8(store.layout.root, Path(rel), max_bytes=max_bytes)
+        if key == "chapters" and len(text.splitlines()) > 200:
+            raise ValueError("chapter line limit")
+        return text
+    except FileNotFoundError:
+        return ""
+    except (OSError, ValueError):
+        raise typer.BadParameter(f"Invalid {key}: require bounded coherent regular workspace UTF-8 input") from None
 
 
 def run_draft_demo(

@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Bound deterministic draft and fake-demo input reads to coherent regular UTF-8 files, enforce chapter
+  byte/line limits before generation, and contain episode-controlled references within the workspace.
+
 - Admit prompt files through coherent bounded regular UTF-8 reads and cap complete runner input at 1 MiB
   before launch. Keep raw agent stderr, decoder details and launch errors out of default diagnostics.
 

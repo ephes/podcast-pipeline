@@ -411,3 +411,13 @@ generation changes are refused before any agent starts. Inline text is the expli
 Agent failures show fixed categories, exit status and retry guidance; raw stderr and JSON decoder
 details are omitted from ordinary errors and default chained tracebacks. Check configuration before
 retrying a failed agent. Prompt/result prose remains private even when it contains terminal controls.
+
+### Deterministic draft inputs
+
+`draft-candidates` reads a regular coherent workspace summary of at most 1 MiB and chapters of
+at most 1 MiB / 200 physical lines. Fake `draft-demo` uses the same chapter envelope and an
+8 MiB transcript envelope. These readers reject special files, invalid UTF-8 and observed generation
+changes before candidate/protocol publication. Episode metadata references and fixed defaults must
+be relative paths inside the workspace with no `..` or symlink components. Missing optional chapters
+or demo inputs stay empty; invalid existing inputs fail. `draft-candidates --chapters` remains an
+explicit operator file option outside the workspace, with the same regular-file and byte/line checks.
