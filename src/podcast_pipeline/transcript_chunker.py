@@ -3,6 +3,7 @@ from __future__ import annotations
 import bisect
 import hashlib
 import json
+import logging
 import os
 import re
 import shutil
@@ -298,7 +299,13 @@ def _publish_chunks(staged: Path, destination: Path) -> None:
                 raise
         raise
     if backup.exists():
-        shutil.rmtree(backup)
+        try:
+            shutil.rmtree(backup)
+        except OSError:
+            logging.getLogger(__name__).warning(
+                "Chunk generation committed; old backup retained at %s; verify current chunks before manual cleanup",
+                backup,
+            )
 
 
 def discover_complete_chunk_ids(

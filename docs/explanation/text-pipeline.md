@@ -231,6 +231,17 @@ Do not delete backups just to suppress an ambiguous outcome. An existing canonic
 authoritative; this rule does not replace it with an older backup. The deterministic dry-run golden
 fixture includes both manifests; failure fixtures use invented transcript and summary text.
 
+Installing the completed directory is the commit point. An `OSError` retiring its old backup
+afterward emits one warning naming the retained path and returns the new generation's metadata
+successfully. Discovery continues to identify the new canonical set; do not retry paid work just
+because old-directory cleanup warned. Later publishers retire only their own backups. To clean
+retained evidence, stop draft/transcription writers, verify the canonical set with
+`discover_complete_chunk_ids(layout, config=requested_config)`, and inspect/move or remove only
+the named old backup under `publication_lock()` (discovery must run outside that lock).
+Keep ambiguous evidence for reconciliation if the canonical directory is absent. A cleanup warning
+does not roll back the committed set; prepublication and swap failures still fail and preserve or
+restore the previous set.
+
 Draft reuse requires all four requested chunker settings to match the manifest's validated configuration,
 as well as a supported version and source identity. Changing any setting rebuilds the chunks through
 the complete-set publication path. The changed manifest digest invalidates the episode summary;
