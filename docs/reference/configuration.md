@@ -312,6 +312,13 @@ Each job retains the latest 128 KiB / 1024 progress entries; oversized writes re
 JSON/SSE responses include an earlier-progress-truncated notice when history was evicted.
 SSE progress IDs increase monotonically and support `Last-Event-ID` reconnects across eviction.
 The dashboard retains at most 64 terminal jobs plus all running jobs; evicted job URLs return 404.
+Both local UIs admit an explicit Host port only as one to five ASCII decimal digits in 1..65535.
+Malformed ports return the existing 403 Forbidden host response before reading a body, including
+oversized numbers, Unicode digits and out-of-range values. IPv4/IPv6 loopback hosts remain supported.
+Workspace reads/writes, job admission and context-lock acquisition run in Starlette's worker pool.
+Snapshots are serialized or copied under that same lock; HTTP/SSE sends and waits happen after it is
+released. A slow workspace operation or a worker-held lock can delay dependent snapshots, while the
+event loop and Done/shutdown endpoint remain responsive. Initialization and ingest use this boundary too.
 
 ### Concurrent selections and RSS imports
 

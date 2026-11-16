@@ -320,3 +320,36 @@ def test_body_cancellation_propagates(ctx: context.DashboardContext) -> None:
     asyncio.run(exercise())
     assert not ctx.jobs
     assert not list(ctx.workspace.iterdir())
+
+
+@pytest.mark.parametrize("port", ["9" * 5000, "²", "0", "65536"], ids=["long", "unicode", "zero", "range"])
+def test_dashboard_malformed_port_is_rejected_before_body(ctx: context.DashboardContext, port: str) -> None:
+    consumed = False
+    sent: list[dict[str, Any]] = []
+
+    async def receive() -> dict[str, Any]:
+        nonlocal consumed
+        consumed = True
+        return {"type": "http.request", "body": b"{}"}
+
+    async def send(message: Any) -> None:
+        sent.append(message)
+
+    async def exercise() -> None:
+        app = web.create_dashboard_app(ctx=ctx)
+        await app(
+            {
+                "type": "http",
+                "method": "POST",
+                "path": "/api/transcribe",
+                "headers": [(b"host", f"127.0.0.1:{port}".encode("latin-1")), (b"content-type", b"application/json")],
+            },
+            receive,
+            send,
+        )
+
+    asyncio.run(exercise())
+    assert sent[0]["status"] == 403
+    assert not consumed
+    assert not ctx.jobs
+    assert not list(ctx.workspace.iterdir())

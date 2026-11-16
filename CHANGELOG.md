@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Reject malformed local dashboard/picker Host ports before body reads: require one to five ASCII
+  decimal digits in 1..65535, with the existing 403 response instead of parser exceptions.
+
+- Move dashboard storage operations, job admission and SSE snapshots with their context locks into
+  the worker pool so slow storage or lock contention cannot block the event loop or shutdown endpoint.
+
 - Bound complete dashboard request-body acquisition to ten seconds; stop on timeout or disconnect
   before starting work or changing workspace state.
 
