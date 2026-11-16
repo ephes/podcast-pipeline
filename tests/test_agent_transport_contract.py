@@ -116,6 +116,16 @@ def test_lost_ownership_never_signals(monkeypatch: pytest.MonkeyPatch) -> None:
         runners._kill_process_group(process)
 
 
+def test_missing_waitid_refuses_before_launch(monkeypatch: pytest.MonkeyPatch) -> None:
+    def forbidden(*args: Any, **kwargs: Any) -> None:
+        pytest.fail("must not launch without waitid supervision")
+
+    monkeypatch.delattr(runners.os, "waitid", raising=False)
+    monkeypatch.setattr(runners.subprocess, "Popen", forbidden)
+    with pytest.raises(runners.AgentRunnerError, match=r"Python 3\.13\+ on macOS"):
+        run("")
+
+
 def test_protocol_stdout_requires_exact_utf8() -> None:
     with pytest.raises(runners.AgentRunnerError, match="UTF-8"):
         run('import os; os.write(1, b\'{"content":"\\xff"}\')')

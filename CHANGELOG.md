@@ -4,7 +4,8 @@
 
 - Keep control JSON admission linear for unterminated or escape-heavy strings so adversarial agent
   output cannot stall summary or result parsing. Transcriber stdout keeps replacement decoding; only
-  agent protocol stdout must be exact UTF-8.
+  agent protocol stdout must be exact UTF-8. Agent and transcription supervision needs `os.waitid`
+  (Python 3.13+ on macOS); older interpreters are refused before launch with an explicit message.
 
 - Require strict unambiguous summary JSON evidence for deterministic drafts. Limit candidate variants
   to integers from 1 to 10 at CLI and generator admission before rendering or storage.

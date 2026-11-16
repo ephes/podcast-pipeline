@@ -51,6 +51,7 @@ CLI_STDERR_LIMIT = 1024 * 1024
 CLI_INPUT_LIMIT = 1024 * 1024
 CLI_DIAGNOSTIC_LIMIT = 4096
 CLI_CLEANUP_SECONDS = 1.0
+_WAITID_REQUIRED = "CLI supervision requires os.waitid with WNOWAIT (Python 3.13+ on macOS)"
 
 
 def _encode_cli_input(text: str) -> bytes:
@@ -83,7 +84,7 @@ def run_cli_process(
         raise ValueError("process timeout must be finite and positive")
     encoded_input = _encode_cli_input(input)
     if not callable(getattr(os, "waitid", None)):
-        raise AgentRunnerError("CLI supervision requires waitid with WNOWAIT")
+        raise AgentRunnerError(_WAITID_REQUIRED)
     deadline = time.monotonic() + timeout
     process = subprocess.Popen(
         command,
@@ -199,7 +200,7 @@ def _observe_cli_exit(pid: int, *, block: bool = False) -> Any:
     # Typeshed omits waitid on Darwin even where the interpreter provides it.
     waitid = getattr(os, "waitid", None)
     if waitid is None:
-        raise AgentRunnerError("CLI supervision requires waitid with WNOWAIT")
+        raise AgentRunnerError(_WAITID_REQUIRED)
     flags = os.WEXITED | os.WNOWAIT
     if not block:
         flags |= os.WNOHANG
