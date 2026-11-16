@@ -22,7 +22,13 @@ Notes:
 
 - `--output` defaults to `datasets/rss_examples.jsonl` if you omit it.
 - `--limit` caps how many episodes are written (default `25`).
-- `--timeout-seconds` sets the HTTP timeout.
+- `--timeout-seconds` sets the whole-transfer deadline (default 20 seconds).
+- RSS XML is capped at 8 MiB, 100,000 elements, 64 levels and 4 MiB of UTF-8 text/attribute values.
+  DTD/entity declarations are refused. Parsing retains only one requested item subtree at a time;
+  it validates the remaining document within the same work limits. Refusals preserve the old export.
+- The original source URL is used only for transport. JSONL and CLI diagnostics omit userinfo,
+  query and fragment; re-export old corpora to remove previously stored source credentials.
+  Episode text is not scanned for secrets.
 - The JSONL `output` field contains normalized episode description HTML.
 - `<itunes:keywords>` are exported as `keywords`. Point `tags.examples` at the file to show past episodes'
   keywords to the tag-asset prompts (see `reference/configuration.md`, "Tag assets").

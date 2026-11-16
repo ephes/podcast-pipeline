@@ -150,7 +150,9 @@ runs make no agent calls or selection changes. See `docs/how-to/review-loop.md`.
 RSS example imports stream at most 8 MiB of uncompressed input and share one whole-transfer deadline
 across connection, headers, redirects and body reads (`--timeout-seconds`, default 20 seconds).
 At most five redirects are followed without consuming intermediate bodies. Compressed feeds are refused;
-fetch, HTTP, size or deadline errors preserve the previous atomic JSONL export.
+fetch, HTTP, size or deadline errors preserve the previous atomic JSONL export. Incremental XML parsing
+also caps elements (100,000), depth (64) and text/attributes (4 MiB); DTDs are refused. Exported and
+printed RSS sources omit userinfo, queries and fragments; re-export older corpora to remove credentials.
 
 ### Dashboard drafts
 

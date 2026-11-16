@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Bound RSS XML elements, depth and text during incremental item extraction; refuse DTDs and preserve
+  prior exports on admission failure. Remove source credentials, query and fragment from RSS corpora and CLI output.
+
 - Bound optional refinement summary reads to coherent regular UTF-8 files of at most 1 MiB; omit unusable
   context with a safe diagnostic. Refuse complete refinement prompts over 256 KiB before starting the agent,
   preserving existing candidates and selections; the pick UI reports this refusal as an input error (400).

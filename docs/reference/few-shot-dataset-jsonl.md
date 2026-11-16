@@ -17,9 +17,8 @@
 
 ## RSS-only fields
 
-- `description_html` (string): normalized HTML from the RSS `<description>` or `<content:encoded>` tag.
 - `guid` (string or null): RSS GUID.
-- `feed_url` (string): RSS feed URL used to fetch the data.
+- `feed_url` (string): canonical RSS source without userinfo, query or fragment (HTTPX host/default-port normalization).
 - `keywords` (list of strings): comma-separated `<itunes:keywords>` split into terms; empty when the item has none.
   Tag-asset few-shot prompts use these as the published tags.
 
