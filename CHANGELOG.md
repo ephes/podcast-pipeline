@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Check canonical selected text against candidate state or custom provenance before declaring it ready.
+  Escape terminal controls and bound status lines and CLI candidate previews without changing stored text.
+
 - Validate status protocol directory identity and complete review-engine evidence before reporting
   convergence; refuse duplicate, coerced or contradictory review histories.
 

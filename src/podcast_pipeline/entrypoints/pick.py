@@ -13,6 +13,7 @@ from podcast_pipeline.pick_core import (
     load_workspace,
     save_candidate_selection,
 )
+from podcast_pipeline.terminal_text import terminal_text
 from podcast_pipeline.workspace_store import EpisodeWorkspaceStore
 
 
@@ -36,9 +37,9 @@ def run_pick(
     try:
         candidates_by_asset = load_candidates(layout=layout, asset_id=asset_id)
     except ValueError as exc:
-        raise typer.BadParameter(str(exc)) from exc
+        raise typer.BadParameter(terminal_text(str(exc))) from exc
     if not candidates_by_asset:
-        raise typer.BadParameter(f"No candidates found under {layout.copy_candidates_dir}")
+        raise typer.BadParameter(f"No candidates found under {terminal_text(str(layout.copy_candidates_dir))}")
 
     workspace_state = load_workspace(store)
     assets_by_id = {asset.asset_id: asset for asset in workspace_state.assets}
@@ -65,9 +66,9 @@ def run_pick(
         selected_path = store.layout.selected_text_path(asset_key, chosen.format)
         selections.append(_Selection(asset_id=asset_key, candidate=chosen, path=selected_path))
 
-    typer.echo(f"Workspace: {workspace}")
+    typer.echo(f"Workspace: {terminal_text(str(workspace))}")
     for selection in selections:
-        typer.echo(f"Selected {selection.asset_id}: {selection.path}")
+        typer.echo(f"Selected {terminal_text(selection.asset_id)}: {terminal_text(str(selection.path))}")
 
 
 def _choose_candidate(
@@ -80,12 +81,12 @@ def _choose_candidate(
     if candidate_id is not None:
         match = find_candidate_by_id(candidates, candidate_id)
         if match is None:
-            raise typer.BadParameter(f"candidate_id {candidate_id} not found for asset {asset_id}")
-        typer.echo(f"Asset: {asset_id}")
+            raise typer.BadParameter(f"candidate_id {candidate_id} not found for asset {terminal_text(asset_id)}")
+        typer.echo(f"Asset: {terminal_text(asset_id)}")
         typer.echo(f"Selected candidate: {candidate_id}")
         return match
 
-    typer.echo(f"Asset: {asset_id}")
+    typer.echo(f"Asset: {terminal_text(asset_id)}")
     if len(candidates) == 1:
         typer.echo("Only one candidate found; selecting it.")
         return candidates[0]
@@ -126,13 +127,11 @@ def _candidate_preview(candidate: Candidate) -> str:
     cleaned = first_line.lstrip("#").strip() if first_line else ""
     if not cleaned:
         cleaned = "(empty)"
-    if len(cleaned) > 72:
-        cleaned = f"{cleaned[:69]}..."
-    return cleaned
+    return terminal_text(cleaned, limit=72)
 
 
 def _first_non_empty_line(text: str) -> str:
-    for line in text.splitlines():
+    for line in text[:4096].split("\n"):
         stripped = line.strip()
         if stripped:
             return stripped

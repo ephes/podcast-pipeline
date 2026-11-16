@@ -752,3 +752,10 @@ Review protocol folders must match a supported asset ID and supply unique eviden
 Status uses the review engine's persisted protocol contract: contiguous strict integer iterations,
 matching creator/reviewer records, and a terminal decision matching the latest terminal review.
 A `converged` label alone, a missing final review or a contradictory decision is invalid evidence.
+Selection readiness requires the canonical, nonblank selected file in the recorded candidate's
+format and matching its content in `state.json`; unrelated stems, superseded formats and stale
+text do not count. Custom text uses the asset's canonical custom format and its manual-selection
+provenance marker. Curated tags keep their markdown selection convention.
+Status lines and CLI picker previews escape terminal controls (including ESC, OSC payload delimiters,
+CR and C1) as visible text. Status lines are capped at 1,000 characters and candidate previews at 72;
+these display limits never change the stored copy or review evidence.

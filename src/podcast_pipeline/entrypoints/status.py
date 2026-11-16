@@ -16,10 +16,19 @@ from podcast_pipeline.domain.models import (
     EpisodeWorkspace,
     IssueSeverity,
     ReviewIssue,
+    TextFormat,
 )
 from podcast_pipeline.file_inputs import read_workspace_utf8
+from podcast_pipeline.pick_core import (
+    custom_selection_format,
+    has_manual_selection_provenance,
+    normalize_custom_selection_text,
+)
 from podcast_pipeline.review_loop_engine import LoopOutcome, parse_loop_protocol_state
 from podcast_pipeline.review_loop_engine import LoopProtocolState as _ProtocolState
+from podcast_pipeline.tag_assets import TAG_ASSET_IDS, render_selected_tags_markdown
+from podcast_pipeline.tag_parsing import parse_tag_list
+from podcast_pipeline.terminal_text import terminal_text
 from podcast_pipeline.workspace_store import EpisodeWorkspaceLayout
 
 MAX_STATUS_FILE_BYTES = 8 * 1024 * 1024
@@ -91,7 +100,7 @@ class _AssetStatus:
 def run_status(*, workspace: Path) -> None:
     issues = collect_agent_cli_issues(workspace=workspace)
     for issue in issues:
-        typer.echo(issue, err=True)
+        typer.echo(terminal_text(issue), err=True)
 
     layout = EpisodeWorkspaceLayout(root=workspace)
     try:
@@ -128,7 +137,7 @@ def _inspect_status(layout: EpisodeWorkspaceLayout) -> None:
     if next_steps:
         lines.append("Next steps:")
         lines.extend(next_steps)
-    typer.echo("\n".join(lines))
+    typer.echo("\n".join(terminal_text(line) for line in lines))
 
 
 def _find_protocol_states(layout: EpisodeWorkspaceLayout, inspection: _Inspection) -> list[_ProtocolState]:
@@ -197,7 +206,7 @@ def _build_checklist(
     missing_candidates = sorted(asset for asset in required_assets if asset not in candidate_assets)
     checklist.append(_format_asset_check("copy/candidates", missing_candidates))
 
-    selected_assets = _selected_assets(layout, inspection)
+    selected_assets = _selected_assets(layout, inspection, workspace_state)
     missing_selections = sorted(asset for asset in required_assets if asset not in selected_assets)
     blocked_selections = sorted(asset for asset in missing_selections if asset in missing_candidates)
     pending_selections = sorted(asset for asset in missing_selections if asset not in missing_candidates)
@@ -282,16 +291,63 @@ def _candidate_assets(layout: EpisodeWorkspaceLayout, inspection: _Inspection) -
     return assets
 
 
-def _selected_assets(layout: EpisodeWorkspaceLayout, inspection: _Inspection) -> set[str]:
-    root = layout.copy_selected_dir
-    if not root.exists():
+def _selected_assets(
+    layout: EpisodeWorkspaceLayout, inspection: _Inspection, state: EpisodeWorkspace | None
+) -> set[str]:
+    # Admit every entry, including irrelevant files, before declaring readiness.
+    list(inspection.paths(layout.copy_selected_dir))
+    if state is None:
         return set()
-    assets: set[str] = set()
-    for path in inspection.paths(root):
-        if not path.is_file():
+    assets = {asset.asset_id: asset for asset in state.assets}
+    selected: set[str] = set()
+    for asset_id in _required_asset_ids():
+        asset = assets.get(asset_id)
+        candidate = (
+            next((c for c in asset.candidates if c.candidate_id == asset.selected_candidate_id), None)
+            if asset is not None
+            else None
+        )
+        if candidate is not None:
+            fmt, expected = candidate.format, candidate.content
+        elif has_manual_selection_provenance(state, asset_id):
+            fmt, expected = custom_selection_format(asset_id), None
+        elif asset_id in TAG_ASSET_IDS:
+            fmt, expected = TextFormat.markdown, None
+        else:
             continue
-        assets.add(path.stem)
-    return assets
+        try:
+            if not _selected_text_agrees(layout, inspection, asset_id, fmt, expected):
+                continue
+        except _IncompleteInspection:
+            raise
+        except (OSError, ValueError):
+            continue
+        selected.add(asset_id)
+    return selected
+
+
+def _selected_text_agrees(
+    layout: EpisodeWorkspaceLayout, inspection: _Inspection, asset_id: str, fmt: TextFormat, expected: str | None
+) -> bool:
+    text = inspection.read_text(layout.selected_text_path(asset_id, fmt))
+    if not text.strip() or _has_conflicting_format(layout, asset_id, fmt):
+        return False
+    if expected is not None:
+        if text == (expected if expected.endswith("\n") else expected + "\n"):
+            return True
+        return (
+            asset_id in TAG_ASSET_IDS
+            and fmt == TextFormat.markdown
+            and text == render_selected_tags_markdown(asset_id, parse_tag_list(expected))
+        )
+    if asset_id in TAG_ASSET_IDS:
+        return True
+    return text == normalize_custom_selection_text(asset_id, text) + "\n"
+
+
+def _has_conflicting_format(layout: EpisodeWorkspaceLayout, asset_id: str, fmt: TextFormat) -> bool:
+    allowed = {fmt, TextFormat.html} if fmt == TextFormat.markdown else {fmt}
+    return any(layout.selected_text_path(asset_id, other).exists() for other in TextFormat if other not in allowed)
 
 
 def _format_check(label: str, status: str) -> str:
@@ -342,7 +398,13 @@ def _missing_selected_in_state(*, state: EpisodeWorkspace, missing: list[str]) -
         if asset.selected_candidate_id is not None
     }
     known_assets = {asset.asset_id for asset in state.assets}
-    return [asset_id for asset_id in missing if asset_id in known_assets and asset_id not in selection_by_asset]
+    return [
+        asset_id
+        for asset_id in missing
+        if asset_id in known_assets
+        and asset_id not in selection_by_asset
+        and not has_manual_selection_provenance(state, asset_id)
+    ]
 
 
 def _review_checks(
