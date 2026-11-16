@@ -205,3 +205,151 @@ def test_guard_precedes_body_consumption(ctx: context.DashboardContext) -> None:
 
     asyncio.run(exercise())
     assert not consumed
+
+
+@pytest.mark.parametrize(
+    ("path", "body"),
+    [
+        ("/api/select", b'{"asset_id":"description","asset_id":"shownotes","candidate_id":"x"}'),
+        ("/api/select", b'{"asset_id":"description","candidate_id":"x","candidate_id":"y"}'),
+        ("/api/draft", b'{"candidates":1,"candidates":2}'),
+        ("/api/episode", b'{"episode_id":"first","episode_id":"second"}'),
+        ("/api/episode", b'{"episode_id":"ep","editorial_notes":{"a":"first","a":"second"}}'),
+        ("/api/episode", b'{"episode_id":"ep","metadata":[{"x":1,"x":2}]}'),
+        ("/api/draft", b'{"timeout":NaN}'),
+        ("/api/draft", b'{"timeout":Infinity}'),
+        ("/api/draft", b'{"timeout":-Infinity}'),
+        ("/api/draft", b'{"timeout":1e999}'),
+        ("/api/episode", b'{"episode_id":"ep","metadata":[{"x":NaN}]}'),
+    ],
+)
+def test_ambiguous_json_never_dispatches(
+    ctx: context.DashboardContext, monkeypatch: pytest.MonkeyPatch, path: str, body: bytes
+) -> None:
+    dispatched: list[object] = []
+    monkeypatch.setattr(web, "_start_daemon_thread", lambda *args: dispatched.append(args))
+    monkeypatch.setattr(ctx, "select_candidate", lambda *args: dispatched.append(args))
+    monkeypatch.setattr(ctx, "update_episode", lambda *args: dispatched.append(args))
+    with TestClient(web.create_dashboard_app(ctx=ctx), base_url="http://127.0.0.1") as client:
+        response = client.post(path, content=body, headers={"Content-Type": "application/json"})
+    assert response.status_code == 400
+    assert response.json() == {"error": "Invalid JSON"}
+    assert not dispatched
+    assert not ctx.jobs
+    assert not list(ctx.workspace.iterdir())
+
+
+def test_ordinary_json_still_updates_episode(ctx: context.DashboardContext) -> None:
+    with TestClient(web.create_dashboard_app(ctx=ctx), base_url="http://127.0.0.1") as client:
+        response = client.post("/api/episode", json={"episode_id": "synthetic", "editorial_notes": {"a": "ä"}})
+        assert response.status_code == 200
+        assert client.get("/api/episode").json()["editorial_notes"] == {"a": "ä"}
+
+
+@pytest.mark.parametrize("drip", [False, True], ids=["stall", "drip"])
+def test_body_has_one_total_deadline(
+    ctx: context.DashboardContext, monkeypatch: pytest.MonkeyPatch, drip: bool
+) -> None:
+    monkeypatch.setattr(web, "REQUEST_BODY_TIMEOUT_SECONDS", 0.05, raising=False)
+    received = 0
+    cancelled = False
+
+    async def receive() -> dict[str, Any]:
+        nonlocal received, cancelled
+        try:
+            await asyncio.sleep(0.015 if drip else 60)
+        except asyncio.CancelledError:
+            cancelled = True
+            raise
+        received += 1
+        return {"type": "http.request", "body": b" ", "more_body": True}
+
+    async def exercise() -> None:
+        request = Request({"type": "http", "headers": []}, receive)
+        response = await asyncio.wait_for(web._DashboardApi(ctx=ctx, on_done=None).handle_transcribe(request), 1)
+        assert response.status_code == 408
+        after = received
+        await asyncio.sleep(0.03)
+        assert received == after
+
+    asyncio.run(exercise())
+    assert cancelled
+    assert not ctx.jobs
+    assert not list(ctx.workspace.iterdir())
+
+
+def test_body_disconnect_is_controlled(ctx: context.DashboardContext) -> None:
+    calls = 0
+
+    async def receive() -> dict[str, Any]:
+        nonlocal calls
+        calls += 1
+        return {"type": "http.disconnect"}
+
+    async def exercise() -> None:
+        request = Request({"type": "http", "headers": []}, receive)
+        response = await web._DashboardApi(ctx=ctx, on_done=None).handle_transcribe(request)
+        assert response.status_code == 400
+
+    asyncio.run(exercise())
+    assert calls == 1
+    assert not ctx.jobs
+    assert not list(ctx.workspace.iterdir())
+
+
+def test_body_cancellation_propagates(ctx: context.DashboardContext) -> None:
+    async def exercise() -> None:
+        entered, retired = asyncio.Event(), asyncio.Event()
+
+        async def receive() -> dict[str, Any]:
+            entered.set()
+            try:
+                await asyncio.sleep(60)
+                return {"type": "http.disconnect"}
+            finally:
+                retired.set()
+
+        request = Request({"type": "http", "headers": []}, receive)
+        task = asyncio.create_task(web._DashboardApi(ctx=ctx, on_done=None).handle_transcribe(request))
+        await entered.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert retired.is_set()
+
+    asyncio.run(exercise())
+    assert not ctx.jobs
+    assert not list(ctx.workspace.iterdir())
+
+
+@pytest.mark.parametrize("port", ["9" * 5000, "²", "0", "65536"], ids=["long", "unicode", "zero", "range"])
+def test_dashboard_malformed_port_is_rejected_before_body(ctx: context.DashboardContext, port: str) -> None:
+    consumed = False
+    sent: list[dict[str, Any]] = []
+
+    async def receive() -> dict[str, Any]:
+        nonlocal consumed
+        consumed = True
+        return {"type": "http.request", "body": b"{}"}
+
+    async def send(message: Any) -> None:
+        sent.append(message)
+
+    async def exercise() -> None:
+        app = web.create_dashboard_app(ctx=ctx)
+        await app(
+            {
+                "type": "http",
+                "method": "POST",
+                "path": "/api/transcribe",
+                "headers": [(b"host", f"127.0.0.1:{port}".encode("latin-1")), (b"content-type", b"application/json")],
+            },
+            receive,
+            send,
+        )
+
+    asyncio.run(exercise())
+    assert sent[0]["status"] == 403
+    assert not consumed
+    assert not ctx.jobs
+    assert not list(ctx.workspace.iterdir())

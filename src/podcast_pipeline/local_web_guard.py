@@ -45,9 +45,15 @@ def _split_host_header(host: str) -> tuple[str, int | None] | None:
         rest = f":{port_text}" if sep else ""
     if not rest:
         return hostname, None
-    if not rest.startswith(":") or not rest[1:].isdigit():
+    if not rest.startswith(":"):
         return None
-    return hostname, int(rest[1:])
+    port_text = rest[1:]
+    if not 1 <= len(port_text) <= 5 or not port_text.isascii() or not port_text.isdigit():
+        return None
+    port = int(port_text)
+    if not 1 <= port <= 65535:
+        return None
+    return hostname, port
 
 
 def check_request(

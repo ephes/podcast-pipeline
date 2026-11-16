@@ -563,3 +563,71 @@ def test_timed_out_summarize_job_fails_and_frees_the_stage(tmp_path: Path, monke
     second = client.post("/api/draft/summarize", json={})
     assert second.status_code == 200
     assert second.json()["job_id"] != job_id
+
+
+@pytest.mark.parametrize(
+    "port",
+    ["9" * 5000, "٠١", "²", "0", "65536", "999999", "-1", "+1", "", "1.0"],
+    ids=[
+        "long",
+        "arabic",
+        "superscript",
+        "zero",
+        "range",
+        "six-digits",
+        "negative",
+        "positive-sign",
+        "empty",
+        "float",
+    ],
+)
+@pytest.mark.parametrize("host", ["127.0.0.1", "[::1]"])
+def test_invalid_host_port_is_forbidden(host: str, port: str) -> None:
+    rejection = check_request(
+        method="POST",
+        host=f"{host}:{port}",
+        origin=None,
+        sec_fetch_site=None,
+        content_type="application/json",
+        expected_port=None,
+    )
+    assert rejection is not None
+    assert rejection.status == 403
+    assert rejection.message == "Forbidden host"
+
+
+@pytest.mark.parametrize("host", ["127.0.0.1", "localhost", "[::1]"])
+@pytest.mark.parametrize("port", ["1", "8765", "65535"])
+def test_valid_tcp_port_is_admitted(host: str, port: str) -> None:
+    assert (
+        check_request(
+            method="POST",
+            host=f"{host}:{port}",
+            origin=f"http://{host}:{port}",
+            sec_fetch_site=None,
+            content_type="application/json",
+            expected_port=int(port),
+        )
+        is None
+    )
+
+
+@pytest.mark.parametrize("port", ["9" * 5000, "²", "0", "65536"], ids=["long", "unicode", "zero", "range"])
+def test_pick_malformed_port_is_rejected_before_body(pick_port: int, port: str) -> None:
+    # No body is sent: accepting this Host would block reading the declared payload.
+    conn = http.client.HTTPConnection("127.0.0.1", pick_port, timeout=1)
+    try:
+        conn.request(
+            "POST",
+            "/api/select",
+            headers={
+                "Host": f"127.0.0.1:{port}",
+                "Content-Length": "2",
+                **_JSON,
+            },
+        )
+        response = conn.getresponse()
+        assert response.status == 403
+        assert json.loads(response.read()) == {"error": "Forbidden host"}
+    finally:
+        conn.close()

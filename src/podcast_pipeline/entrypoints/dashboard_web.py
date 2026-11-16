@@ -3,19 +3,21 @@ from __future__ import annotations
 import asyncio
 import io
 import json
+import math
 import socket
 import sys
 import threading
 import webbrowser
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar
 
 import uvicorn
 from starlette.applications import Starlette
+from starlette.concurrency import run_in_threadpool
 from starlette.datastructures import Headers
 from starlette.middleware import Middleware
-from starlette.requests import Request
+from starlette.requests import ClientDisconnect, Request
 from starlette.responses import HTMLResponse, JSONResponse, PlainTextResponse, Response, StreamingResponse
 from starlette.routing import Route
 from starlette.types import ASGIApp, Receive, Scope, Send
@@ -31,6 +33,21 @@ MAX_CANDIDATES = 10
 _DEFAULT_REVIEW_ITERATIONS = 3
 MAX_REVIEW_ITERATIONS = 10
 MAX_JSON_BODY_BYTES = 64 * 1024
+REQUEST_BODY_TIMEOUT_SECONDS = 10.0
+_T = TypeVar("_T")
+
+
+def _unique_members(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("Duplicate member")
+        result[key] = value
+    return result
+
+
+def _invalid_constant(value: str) -> Any:
+    raise ValueError("Invalid JSON constant")
 
 
 def _json_depth_allowed(payload: Any) -> bool:
@@ -42,6 +59,8 @@ def _json_depth_allowed(payload: Any) -> bool:
                 return False
             children = value.values() if isinstance(value, dict) else value
             pending.extend((child, depth + 1) for child in children)
+        elif isinstance(value, float) and not math.isfinite(value):
+            raise ValueError("Nonfinite number")
     return True
 
 
@@ -102,19 +121,38 @@ class _DashboardApi:
 
     async def _parse_json_object(self, request: Request) -> tuple[dict[str, Any] | None, Response | None]:
         raw = bytearray()
-        async for chunk in request.stream():
-            if len(raw) + len(chunk) > MAX_JSON_BODY_BYTES:
-                return None, JSONResponse({"error": "JSON body exceeds 64 KiB limit"}, status_code=413)
-            raw.extend(chunk)
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + REQUEST_BODY_TIMEOUT_SECONDS
         try:
-            payload = json.loads(raw.decode("utf-8"))
+            async with asyncio.timeout_at(deadline):
+                async for chunk in request.stream():
+                    # A ready receive may not yield control to the timeout callback.
+                    if loop.time() >= deadline:
+                        raise TimeoutError
+                    if len(raw) + len(chunk) > MAX_JSON_BODY_BYTES:
+                        return None, JSONResponse({"error": "JSON body exceeds 64 KiB limit"}, status_code=413)
+                    raw.extend(chunk)
+        except TimeoutError:
+            return None, JSONResponse({"error": "Request body timed out"}, status_code=408)
+        except ClientDisconnect:
+            return None, JSONResponse({"error": "Client disconnected"}, status_code=400)
+        try:
+            payload = json.loads(
+                raw.decode("utf-8"), object_pairs_hook=_unique_members, parse_constant=_invalid_constant
+            )
+            depth_allowed = _json_depth_allowed(payload)
         except (ValueError, UnicodeError, RecursionError):
             return None, JSONResponse({"error": "Invalid JSON"}, status_code=400)
         if not isinstance(payload, dict):
             return None, JSONResponse({"error": "Expected JSON object"}, status_code=400)
-        if not _json_depth_allowed(payload):
+        if not depth_allowed:
             return None, JSONResponse({"error": "JSON nesting exceeds 64 levels"}, status_code=400)
         return payload, None
+
+    def _locked_call(self, operation: Callable[..., _T], *args: Any, **kwargs: Any) -> _T:
+        """Run one cohesive storage operation under the context lock, in a worker thread."""
+        with self.ctx.lock:
+            return operation(*args, **kwargs)
 
     def _start_job(self, stage: str, target: Callable[..., Any], *args: Any) -> Response:
         """Start ``target`` unless a conflicting dashboard job is running."""
@@ -137,25 +175,25 @@ class _DashboardApi:
                 return JSONResponse({"error": job.error, "job_id": job.job_id}, status_code=503)
         return JSONResponse({"ok": True, "job_id": job.job_id})
 
-    async def serve_html(self, _request: Request) -> Response:
+    def serve_html(self, _request: Request) -> Response:
         try:
             html = _DASHBOARD_HTML_PATH.read_text(encoding="utf-8")
         except OSError as exc:
             return PlainTextResponse(f"Failed to load dashboard.html: {exc}", status_code=500)
         return HTMLResponse(html)
 
-    async def serve_status(self, _request: Request) -> Response:
+    def serve_status(self, _request: Request) -> Response:
         try:
             with self.ctx.lock:
                 data = self.ctx.get_status_json()
-            return JSONResponse(data)
+                return JSONResponse(data)
         except Exception as exc:
             return JSONResponse({"error": str(exc)}, status_code=500)
 
-    async def serve_episode(self, _request: Request) -> Response:
+    def serve_episode(self, _request: Request) -> Response:
         with self.ctx.lock:
             data = self.ctx.get_episode_json()
-        return JSONResponse(data)
+            return JSONResponse(data)
 
     async def handle_update_episode(self, request: Request) -> Response:
         payload, error_response = await self._parse_json_object(request)
@@ -164,18 +202,17 @@ class _DashboardApi:
         assert payload is not None
 
         try:
-            with self.ctx.lock:
-                error = self.ctx.update_episode(payload)
+            error = await run_in_threadpool(self._locked_call, self.ctx.update_episode, payload)
             if error:
                 return JSONResponse({"error": error}, status_code=400)
             return JSONResponse({"ok": True})
         except Exception as exc:
             return JSONResponse({"error": str(exc)}, status_code=500)
 
-    async def serve_assets(self, _request: Request) -> Response:
+    def serve_assets(self, _request: Request) -> Response:
         with self.ctx.lock:
             data = self.ctx.get_assets_json()
-        return JSONResponse(data)
+            return JSONResponse(data)
 
     async def handle_select(self, request: Request) -> Response:
         payload, error_response = await self._parse_json_object(request)
@@ -188,14 +225,13 @@ class _DashboardApi:
         if not isinstance(asset_id, str) or not isinstance(candidate_id, str):
             return JSONResponse({"error": "Missing asset_id or candidate_id"}, status_code=400)
 
-        with self.ctx.lock:
-            error = self.ctx.select_candidate(asset_id, candidate_id)
+        error = await run_in_threadpool(self._locked_call, self.ctx.select_candidate, asset_id, candidate_id)
 
         if error:
             return JSONResponse({"error": error}, status_code=400)
         return JSONResponse({"ok": True})
 
-    async def handle_delete_candidate(self, request: Request) -> Response:
+    def handle_delete_candidate(self, request: Request) -> Response:
         asset_id = request.path_params["asset_id"]
         candidate_id = request.path_params["candidate_id"]
 
@@ -205,17 +241,17 @@ class _DashboardApi:
             return JSONResponse({"error": error}, status_code=400)
         return JSONResponse({"ok": True})
 
-    async def serve_asset_notes(self, request: Request) -> Response:
+    def serve_asset_notes(self, request: Request) -> Response:
         asset_id = request.path_params["asset_id"]
         with self.ctx.lock:
             data = self.ctx.get_asset_notes_json(asset_id)
-        return JSONResponse(data)
+            return JSONResponse(data)
 
-    async def serve_asset_tags(self, request: Request) -> Response:
+    def serve_asset_tags(self, request: Request) -> Response:
         asset_id = request.path_params["asset_id"]
         with self.ctx.lock:
             data = self.ctx.get_asset_tags_json(asset_id)
-        return JSONResponse(data)
+            return JSONResponse(data)
 
     async def handle_put_notes(self, request: Request) -> Response:
         asset_id = request.path_params["asset_id"]
@@ -228,11 +264,10 @@ class _DashboardApi:
         if not isinstance(notes, str):
             return JSONResponse({"error": "notes must be a string"}, status_code=400)
 
-        with self.ctx.lock:
-            self.ctx.set_editorial_notes(asset_id, notes)
+        await run_in_threadpool(self._locked_call, self.ctx.set_editorial_notes, asset_id, notes)
         return JSONResponse({"ok": True})
 
-    async def handle_delete_notes(self, request: Request) -> Response:
+    def handle_delete_notes(self, request: Request) -> Response:
         asset_id = request.path_params["asset_id"]
         with self.ctx.lock:
             self.ctx.clear_editorial_notes(asset_id)
@@ -249,8 +284,7 @@ class _DashboardApi:
         if not isinstance(tags_raw, list) or not all(isinstance(tag, str) for tag in tags_raw):
             return JSONResponse({"error": "tags must be a list of strings"}, status_code=400)
 
-        with self.ctx.lock:
-            error = self.ctx.set_selected_tags(asset_id, tags_raw)
+        error = await run_in_threadpool(self._locked_call, self.ctx.set_selected_tags, asset_id, tags_raw)
         if error:
             return JSONResponse({"error": error}, status_code=400)
         return JSONResponse({"ok": True})
@@ -269,8 +303,7 @@ class _DashboardApi:
         if based_on is not None and not isinstance(based_on, str):
             return JSONResponse({"error": "based_on_candidate_id must be a string"}, status_code=400)
 
-        with self.ctx.lock:
-            error = self.ctx.select_custom_text(asset_id, text, based_on)
+        error = await run_in_threadpool(self._locked_call, self.ctx.select_custom_text, asset_id, text, based_on)
         if error:
             return JSONResponse({"error": error}, status_code=400)
         return JSONResponse({"ok": True})
@@ -292,11 +325,12 @@ class _DashboardApi:
         if text is not None and not isinstance(text, str):
             return JSONResponse({"error": "text must be a string"}, status_code=400)
 
-        with self.ctx.lock:
-            prepared = self.ctx.prepare_refine(asset_id, instruction, candidate_id, text)
+        prepared = await run_in_threadpool(
+            self._locked_call, self.ctx.prepare_refine, asset_id, instruction, candidate_id, text
+        )
         if isinstance(prepared, str):
             return JSONResponse({"error": prepared}, status_code=400)
-        return self._start_job(f"refine:{asset_id}", _run_refine_job, prepared)
+        return await run_in_threadpool(self._start_job, f"refine:{asset_id}", _run_refine_job, prepared)
 
     async def handle_regenerate(self, request: Request) -> Response:
         asset_id = request.path_params["asset_id"]
@@ -306,7 +340,9 @@ class _DashboardApi:
         assert payload is not None
 
         candidates_count = _bounded_int(payload.get("candidates"), default=_DEFAULT_CANDIDATES, maximum=MAX_CANDIDATES)
-        return self._start_job(f"regenerate:{asset_id}", _run_regenerate_job, asset_id, candidates_count)
+        return await run_in_threadpool(
+            self._start_job, f"regenerate:{asset_id}", _run_regenerate_job, asset_id, candidates_count
+        )
 
     async def handle_draft(self, request: Request) -> Response:
         payload, error_response = await self._parse_json_object(request)
@@ -319,14 +355,14 @@ class _DashboardApi:
         if isinstance(timeout, bool) or not isinstance(timeout, int | float) or timeout <= 0:
             timeout = None
 
-        return self._start_job("draft", _run_draft_job, candidates_count, timeout)
+        return await run_in_threadpool(self._start_job, "draft", _run_draft_job, candidates_count, timeout)
 
     async def handle_draft_summarize(self, request: Request) -> Response:
         _payload, error_response = await self._parse_json_object(request)
         if error_response is not None:
             return error_response
 
-        return self._start_job("summarize", _run_summarize_job)
+        return await run_in_threadpool(self._start_job, "summarize", _run_summarize_job)
 
     async def handle_draft_candidates(self, request: Request) -> Response:
         payload, error_response = await self._parse_json_object(request)
@@ -335,7 +371,7 @@ class _DashboardApi:
         assert payload is not None
 
         candidates_count = _bounded_int(payload.get("candidates"), default=_DEFAULT_CANDIDATES, maximum=MAX_CANDIDATES)
-        return self._start_job("candidates", _run_candidates_job, candidates_count)
+        return await run_in_threadpool(self._start_job, "candidates", _run_candidates_job, candidates_count)
 
     async def handle_review(self, request: Request) -> Response:
         payload, error_response = await self._parse_json_object(request)
@@ -349,19 +385,21 @@ class _DashboardApi:
         max_iterations = _bounded_int(
             payload.get("max_iterations"), default=_DEFAULT_REVIEW_ITERATIONS, maximum=MAX_REVIEW_ITERATIONS
         )
-        return self._start_job(f"review:{asset_id}", _run_review_job, asset_id, max_iterations)
+        return await run_in_threadpool(
+            self._start_job, f"review:{asset_id}", _run_review_job, asset_id, max_iterations
+        )
 
-    async def handle_produce_preview(self, _request: Request) -> Response:
+    def handle_produce_preview(self, _request: Request) -> Response:
         try:
             from podcast_pipeline.auphonic_payload import build_auphonic_payload
 
             with self.ctx.lock:
                 data = self.ctx._read_episode_yaml_safe()
-            payload = build_auphonic_payload(
-                episode_yaml=data,
-                workspace=self.ctx.workspace,
-            )
-            return JSONResponse(payload)
+                payload = build_auphonic_payload(
+                    episode_yaml=data,
+                    workspace=self.ctx.workspace,
+                )
+                return JSONResponse(payload)
         except Exception as exc:
             return JSONResponse({"error": str(exc)}, status_code=400)
 
@@ -372,7 +410,7 @@ class _DashboardApi:
 
         # Single flight: a second click while a production job runs gets 409
         # instead of starting (and paying for) a second Auphonic production.
-        return self._start_job("produce", _run_produce_job)
+        return await run_in_threadpool(self._start_job, "produce", _run_produce_job)
 
     async def handle_init(self, request: Request) -> Response:
         payload, error_response = await self._parse_json_object(request)
@@ -387,7 +425,9 @@ class _DashboardApi:
         try:
             from podcast_pipeline.entrypoints.init import run_init
 
-            run_init(
+            await run_in_threadpool(
+                self._locked_call,
+                run_init,
                 workspace=self.ctx.workspace,
                 episode_id=episode_id,
                 project_root=self.ctx.workspace.parent,
@@ -410,7 +450,9 @@ class _DashboardApi:
         try:
             from podcast_pipeline.entrypoints.ingest import run_ingest
 
-            run_ingest(
+            await run_in_threadpool(
+                self._locked_call,
+                run_ingest,
                 workspace=self.ctx.workspace,
                 reaper_media_dir=Path(reaper_dir),
                 tracks_glob=tracks_glob,
@@ -429,9 +471,9 @@ class _DashboardApi:
         if not isinstance(mode, str):
             return JSONResponse({"error": "mode must be a string"}, status_code=400)
 
-        return self._start_job("transcribe", _run_transcribe_job, mode)
+        return await run_in_threadpool(self._start_job, "transcribe", _run_transcribe_job, mode)
 
-    async def serve_jobs(self, _request: Request) -> Response:
+    def serve_jobs(self, _request: Request) -> Response:
         with self.ctx.lock:
             jobs = [
                 {
@@ -442,9 +484,9 @@ class _DashboardApi:
                 }
                 for j in self.ctx.jobs.values()
             ]
-        return JSONResponse(jobs)
+            return JSONResponse(jobs)
 
-    async def serve_job(self, request: Request) -> Response:
+    def serve_job(self, request: Request) -> Response:
         job_id = request.path_params["job_id"]
         with self.ctx.lock:
             job = self.ctx.jobs.get(job_id)
@@ -459,12 +501,23 @@ class _DashboardApi:
                 "error": job.error,
                 "result": job.result,
             }
-        return JSONResponse(snapshot)
+            return JSONResponse(snapshot)
+
+    def _progress_snapshot(
+        self, job: BackgroundJob, last_idx: int
+    ) -> tuple[int, list[tuple[int, str]], str, str | None]:
+        with self.ctx.lock:
+            first_idx = job.progress_start
+            progress = [
+                (first_idx + index + 1, _to_text(line))
+                for index, line in enumerate(job.progress)
+                if first_idx + index + 1 > last_idx
+            ]
+            return first_idx, progress, job.status, job.error
 
     async def serve_job_stream(self, request: Request) -> Response:
         job_id = request.path_params["job_id"]
-        with self.ctx.lock:
-            job = self.ctx.jobs.get(job_id)
+        job = await run_in_threadpool(self._locked_call, self.ctx.jobs.get, job_id)
         if job is None:
             return PlainTextResponse("Job not found", status_code=404)
 
@@ -477,15 +530,9 @@ class _DashboardApi:
                 if await request.is_disconnected():
                     break
 
-                with self.ctx.lock:
-                    first_idx = job.progress_start
-                    current_progress = [
-                        (first_idx + index + 1, line)
-                        for index, line in enumerate(job.progress)
-                        if first_idx + index + 1 > last_idx
-                    ]
-                    status = job.status
-                    error = job.error
+                first_idx, current_progress, status, error = await run_in_threadpool(
+                    self._progress_snapshot, job, last_idx
+                )
 
                 if last_idx < first_idx:
                     payload = {"type": "progress", "message": PROGRESS_TRUNCATED}

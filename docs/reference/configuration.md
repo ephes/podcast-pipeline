@@ -302,13 +302,23 @@ Custom wrappers must not hard-code the workspace transcript path.
 ### Dashboard request and history limits
 
 Dashboard JSON requests are streamed with a 64 KiB body ceiling (413 on overflow), regardless of
-Content-Length. Invalid UTF-8, malformed JSON or nesting beyond 64 levels returns 400 before work starts;
-local host/origin checks run before body consumption. A worker launch failure records a failed job,
+Content-Length. Invalid UTF-8, malformed JSON, duplicate object members at any depth, nonfinite numbers
+(including exponent overflow), or nesting beyond 64 levels returns 400 before work starts;
+local host/origin checks run before body consumption. Body acquisition has one monotonic 10-second
+deadline across all chunks (408 on expiry); disconnects stop reading with 400. Neither starts work or
+changes workspace state, and external request cancellation propagates. A worker launch failure records a failed job,
 returns 503 and permits immediate retry while preserving single-flight admission.
 Each job retains the latest 128 KiB / 1024 progress entries; oversized writes retain a UTF-8 tail.
 JSON/SSE responses include an earlier-progress-truncated notice when history was evicted.
 SSE progress IDs increase monotonically and support `Last-Event-ID` reconnects across eviction.
 The dashboard retains at most 64 terminal jobs plus all running jobs; evicted job URLs return 404.
+Both local UIs admit an explicit Host port only as one to five ASCII decimal digits in 1..65535.
+Malformed ports return the existing 403 Forbidden host response before reading a body, including
+oversized numbers, Unicode digits and out-of-range values. IPv4/IPv6 loopback hosts remain supported.
+Workspace reads/writes, job admission and context-lock acquisition run in Starlette's worker pool.
+Snapshots are serialized or copied under that same lock; HTTP/SSE sends and waits happen after it is
+released. A slow workspace operation or a worker-held lock can delay dependent snapshots, while the
+event loop and Done/shutdown endpoint remain responsive. Initialization and ingest use this boundary too.
 
 ### Concurrent selections and RSS imports
 
