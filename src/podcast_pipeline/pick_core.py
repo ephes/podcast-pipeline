@@ -95,7 +95,9 @@ def _load_candidates_from_dir(path: Path) -> list[Candidate]:
         try:
             raw = json.loads(read_regular_utf8(candidate_path, max_bytes=8 * 1024 * 1024))
         except (OSError, ValueError, RecursionError):
-            raise ValueError("Invalid candidate file: expected regular UTF-8 JSON within 8 MiB") from None
+            raise ValueError(
+                f"Invalid candidate file at {candidate_path}: expected regular UTF-8 JSON within 8 MiB"
+            ) from None
         try:
             candidate = Candidate.model_validate(raw)
         except ValidationError as exc:

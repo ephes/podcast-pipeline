@@ -64,6 +64,16 @@ def test_load_candidates_no_candidates_for_asset(tmp_path: Path) -> None:
         load_candidates(layout=layout, asset_id="description")
 
 
+def test_load_candidates_invalid_file_names_path(tmp_path: Path) -> None:
+    layout = EpisodeWorkspaceLayout(root=tmp_path)
+    _write_candidate(layout, "description", "Valid")
+    broken = layout.copy_candidates_dir / "description" / "candidate_broken.json"
+    broken.write_bytes(b"\xff")
+
+    with pytest.raises(ValueError, match="Invalid candidate file at .*candidate_broken.json"):
+        load_candidates(layout=layout, asset_id="description")
+
+
 def test_load_workspace_from_state_json(tmp_path: Path) -> None:
     store = EpisodeWorkspaceStore(tmp_path)
     ws = EpisodeWorkspace(episode_id="ep_test", root_dir=".")

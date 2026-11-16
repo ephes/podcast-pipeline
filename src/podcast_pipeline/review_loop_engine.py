@@ -196,12 +196,13 @@ def load_loop_protocol_state(path: Path) -> LoopProtocolState:
             body = stream.read(8 * 1024 * 1024 + 1)
         if len(body) > 8 * 1024 * 1024:
             raise ValueError("protocol byte limit")
-        return parse_loop_protocol_state(json.loads(body, object_pairs_hook=_unique_members))
+        return parse_loop_protocol_state(json.loads(body, object_pairs_hook=unique_json_members))
     except (OSError, ValueError, RecursionError):
         raise LoopProtocolError("Invalid review protocol state; restore or repair the saved evidence.") from None
 
 
-def _unique_members(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+def unique_json_members(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    """JSON object hook that refuses duplicate members instead of keeping the last one."""
     result: dict[str, Any] = {}
     for key, value in pairs:
         if key in result:

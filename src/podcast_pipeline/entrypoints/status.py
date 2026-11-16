@@ -24,7 +24,7 @@ from podcast_pipeline.pick_core import (
     has_manual_selection_provenance,
     normalize_custom_selection_text,
 )
-from podcast_pipeline.review_loop_engine import LoopOutcome, parse_loop_protocol_state
+from podcast_pipeline.review_loop_engine import LoopOutcome, parse_loop_protocol_state, unique_json_members
 from podcast_pipeline.review_loop_engine import LoopProtocolState as _ProtocolState
 from podcast_pipeline.tag_assets import TAG_ASSET_IDS, render_selected_tags_markdown
 from podcast_pipeline.tag_parsing import parse_tag_list
@@ -66,13 +66,18 @@ class _Inspection:
         try:
             text = read_workspace_utf8(self.layout.root, path.relative_to(self.layout.root), max_bytes=limit)
         except (OSError, ValueError):
-            self.bytes_read += limit
+            # Charge the observed size of a refused file, not the whole per-file allowance (best effort under races).
+            try:
+                size = max(size, path.lstat().st_size)
+            except OSError:
+                pass
+            self.bytes_read += min(size, limit)
             raise
         self.bytes_read += len(text.encode("utf-8"))
         return text
 
     def read_json(self, path: Path) -> Any:
-        raw = json.loads(self.read_text(path))
+        raw = json.loads(self.read_text(path), object_pairs_hook=unique_json_members)
         _check_json_depth(raw)
         return raw
 

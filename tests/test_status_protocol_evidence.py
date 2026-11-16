@@ -49,6 +49,7 @@ def test_status_rejects_protocol_directory_impersonation(
         "not_done",
         "unknown_outcome",
         "after_terminal",
+        "duplicate_member",
     ],
 )
 def test_status_requires_matching_terminal_review(
@@ -70,7 +71,11 @@ def test_status_requires_matching_terminal_review(
         raw["decision"]["outcome"] = "invented"
     elif damage == "after_terminal":
         raw["iterations"].append(raw["iterations"][-1])
-    path.write_text(json.dumps(raw))
+    text = json.dumps(raw)
+    if damage == "duplicate_member":
+        # The engine refuses duplicate members; status must not keep only the last (converged) one.
+        text = '{"decision": null, ' + text[1:]
+    path.write_text(text)
     before = path.read_bytes()
     result = CliRunner().invoke(app, ["status", "--workspace", str(tmp_path / "workspace")])
     assert result.exit_code != 0

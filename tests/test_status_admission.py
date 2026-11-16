@@ -79,3 +79,13 @@ def test_status_charges_reads_to_one_byte_budget(tmp_path: Path, monkeypatch: py
     result = CliRunner().invoke(app, ["status", "--workspace", str(tmp_path)])
     assert "incomplete" in result.output.lower()
     assert "Checklist:" not in result.output
+
+
+def test_status_charges_refused_read_by_file_size(tmp_path: Path) -> None:
+    path = tmp_path / "copy/selected/description.md"
+    path.parent.mkdir(parents=True)
+    path.write_bytes(b"\xff")
+    inspection = status._Inspection(status.EpisodeWorkspaceLayout(root=tmp_path))
+    with pytest.raises(ValueError):
+        inspection.read_text(path)
+    assert inspection.bytes_read == 1
