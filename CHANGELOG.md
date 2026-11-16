@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Bound chunk source bytes, tokens, chunk count and aggregate overlap output before retention or writes;
+  apply compatible limits to cache discovery and preserve completed chunks on refusal.
+
 - Require exact integer chunker settings before processing; reject booleans, floats and nonfinite values.
 
 - Reject malformed local dashboard/picker Host ports before body reads: require one to five ASCII

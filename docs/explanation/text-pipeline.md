@@ -39,6 +39,14 @@ Chunk outputs live under `transcript/chunks/`:
 - Text: `chunk_0001.txt`
 - Metadata: `chunk_0001.json` containing `chunk_id` and `text_relpath` (time fields are not populated yet)
 
+`ChunkerLimits` defaults to 8 MiB of coherent regular UTF-8 source, 500,000 whitespace tokens,
+4096 chunks and 32 MiB of aggregate UTF-8 chunk text (including overlap and added newlines).
+Token and output capacity is charged before retaining each token/chunk. A refusal raises
+`ChunkerResourceError` before any staging or publication, preserving the last completed set.
+Discovery uses the same envelope, plus 2 MiB for the manifest and 4096 bytes per metadata file;
+an excessive cache is not reused. Programmatic callers may supply smaller `limits` to chunking,
+writing and discovery. Reduce source size or overlap before retrying a refused transcript.
+
 ## LLM-backed summaries
 
 The default `podcast draft` flow uses `podcast_pipeline.summarization_llm`. It renders structured prompts for each
