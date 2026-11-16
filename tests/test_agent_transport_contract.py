@@ -121,6 +121,18 @@ def test_protocol_stdout_requires_exact_utf8() -> None:
         run('import os; os.write(1, b\'{"content":"\\xff"}\')')
 
 
+def test_non_protocol_stdout_keeps_replacement_decoding() -> None:
+    result = runners.run_cli_process(
+        [sys.executable, "-c", 'import os; os.write(1, b"progress \\xff done")'],
+        input="",
+        cwd=None,
+        timeout=3,
+        strict_stdout=False,
+    )
+    assert result.returncode == 0
+    assert result.stdout == "progress \ufffd done"
+
+
 def test_split_multibyte_stdout_is_preserved() -> None:
     assert run('import os; os.write(1,b"\\xc3"); os.write(1,b"\\xbc")').stdout == "ü"
 

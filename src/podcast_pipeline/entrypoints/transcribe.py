@@ -358,6 +358,7 @@ def _run_transcriber(
             cwd=str(cwd),
             timeout=_transcription_timeout(timeout_seconds),
             env=env,
+            strict_stdout=False,
         )
     except FileNotFoundError as exc:
         raise typer.BadParameter(f"Transcribe command not found: {command}") from exc

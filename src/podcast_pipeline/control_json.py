@@ -13,7 +13,12 @@ MAX_JSON_BYTES = 8 * 1024 * 1024
 MAX_JSON_DEPTH = 64
 MAX_JSON_TOKENS = 100_000  # Container starts, member names and scalar values.
 MAX_JSON_NUMBER_CHARS = 256
-_JSON_TOKEN = re.compile(r'"(?:[^"\\]|\\.)*"|[{}\[\]]|[^\s,:{}\[\]"]+')
+# Possessive string scanning consumes an unterminated string once instead of rescanning
+# from every later quote, which keeps admission linear in the input size.
+_JSON_TOKEN = re.compile(
+    r'"(?:[^"\\]++|\\.)*+(?:(?P<close>")|\\?\Z)|[{}\[\]]|[^\s,:{}\[\]"]+',
+    re.DOTALL,
+)
 
 
 def _admit_structure(raw: str) -> None:
@@ -33,6 +38,8 @@ def _admit_structure(raw: str) -> None:
             if depth > MAX_JSON_DEPTH:
                 raise ValueError("JSON depth limit")
         elif token.startswith('"'):
+            if match.group("close") is None:
+                raise ValueError("JSON unterminated string")
             # Escaped surrogate code points must not survive hydration.
             continue
         elif len(token) > MAX_JSON_NUMBER_CHARS:

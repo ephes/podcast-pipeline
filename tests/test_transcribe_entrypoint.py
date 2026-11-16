@@ -640,3 +640,14 @@ def test_run_transcribe_fails_instead_of_importing_stale_output(
 
     assert not stale_cache_output.exists()
     assert (mode_dir / "transcript.txt").read_text() == "stale workspace transcript"
+
+
+def test_run_transcriber_tolerates_non_utf8_progress_output(tmp_path: Path) -> None:
+    import sys
+
+    transcribe._run_transcriber(
+        command=sys.executable,
+        args=["-c", 'import os; os.write(1, b"50% \\xe4\\n")'],
+        cwd=tmp_path,
+        timeout_seconds=10,
+    )

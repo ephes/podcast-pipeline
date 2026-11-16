@@ -72,8 +72,13 @@ def run_cli_process(
     cwd: str | None,
     timeout: float,
     env: dict[str, str] | None = None,
+    strict_stdout: bool = True,
 ) -> subprocess.CompletedProcess[str]:
-    """Admit stdin, drain bounded pipes, and retire the owned group on every outcome."""
+    """Admit stdin, drain bounded pipes, and retire the owned group on every outcome.
+
+    ``strict_stdout`` rejects malformed UTF-8 protocol output; callers that ignore
+    stdout (such as the transcriber) pass ``False`` to keep replacement decoding.
+    """
     if not math.isfinite(timeout) or timeout <= 0:
         raise ValueError("process timeout must be finite and positive")
     encoded_input = _encode_cli_input(input)
@@ -122,10 +127,13 @@ def run_cli_process(
             if primary is None:
                 raise AgentRunnerError("CLI cleanup uncertain; check owned processes before retrying") from None
             primary.add_note("CLI cleanup uncertain; check owned processes before retrying")
-    try:
-        stdout = buffers[0].decode("utf-8")
-    except UnicodeError:
-        raise AgentRunnerError("CLI stdout must be valid UTF-8") from None
+    if not strict_stdout:
+        stdout = buffers[0].decode("utf-8", errors="replace")
+    else:
+        try:
+            stdout = buffers[0].decode("utf-8")
+        except UnicodeError:
+            raise AgentRunnerError("CLI stdout must be valid UTF-8") from None
     return subprocess.CompletedProcess(command, process.returncode, stdout, buffers[1].decode(errors="replace"))
 
 

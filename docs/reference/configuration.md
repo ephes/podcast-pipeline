@@ -398,13 +398,15 @@ a primary timeout/interruption remains primary with a fixed cleanup note. Check 
 Group signaling requires an unreaped child identity; external reaping revokes this authority.
 On Darwin, an EPERM group signal is accepted only when waitid confirms exit and libproc proves
 the reserved leader is the sole member.
-Stdout must be exact UTF-8; stderr remains a separately byte-bounded diagnostic stream.
+Agent stdout must be exact UTF-8; stderr remains a separately byte-bounded diagnostic stream.
+Transcriber stdout is not protocol output: it is still byte-bounded but decoded with replacement and ignored.
 
 Agent protocol stdout must contain exactly one JSON object, optionally wrapped in a complete
 ```` ```json ```` code block with no surrounding prose. Multiple results, duplicate members at any depth,
 nonstandard constants, nonfinite floats and surrogate strings are refused. Before JSON hydration,
 control input is capped at 8 MiB UTF-8, 64 container levels, 100,000 tokens (container starts,
-member names and scalar values), and 256 characters per numeric scalar. Invalid/excessive results
+member names and scalar values), and 256 characters per numeric scalar. Admission is a single linear
+scan; an unterminated string is refused immediately. Invalid/excessive results
 raise a content-free agent error before candidate or review publication; fix the wrapper and retry.
 
 Complete runner stdin, whether inline or from a prompt file, is limited to 1 MiB UTF-8 before launch.

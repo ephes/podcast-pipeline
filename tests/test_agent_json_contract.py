@@ -57,3 +57,25 @@ def test_excess_work_refused_before_decoder(monkeypatch: pytest.MonkeyPatch) -> 
     monkeypatch.setattr(control_json.json, "loads", forbidden)
     with pytest.raises(AgentRunnerError):
         extract_json_payload('{"values":[0,0,0]}', label="Synthetic")
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        '"' + '\\"' * 200_000,
+        '{"a":"' + "\\" * 400_001,
+        '{"a":"x' + '"\\' * 200_000,
+    ],
+)
+def test_unterminated_string_admission_is_linear(raw: str) -> None:
+    import time
+
+    started = time.monotonic()
+    with pytest.raises(AgentRunnerError, match="JSON"):
+        extract_json_payload(raw, label="Synthetic")
+    assert time.monotonic() - started < 2.0
+
+
+def test_escaped_quotes_inside_strings_still_admitted() -> None:
+    expected = {"text": 'say "hi" \\ done', "list": ["\\", '"']}
+    assert extract_json_payload(json.dumps(expected), label="Synthetic") == expected
