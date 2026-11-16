@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Agent calls require complete UTF-8 stdin delivery and retire the owned process group before reaping the leader, including successful calls.
+
 - Recheck the terminal picker's displayed candidate bytes and file generation under the update lock.
   Preserve the prior selection on change and print each commit receipt immediately, with saved/total
   progress on cancellation or later failure.

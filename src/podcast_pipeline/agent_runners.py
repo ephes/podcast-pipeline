@@ -58,8 +58,12 @@ def run_cli_process(
     """Drain both pipes with byte limits and kill/reap the owned group on failure."""
     if not math.isfinite(timeout) or timeout <= 0:
         raise ValueError("process timeout must be finite and positive")
+    try:
+        encoded_input = input.encode("utf-8")
+    except UnicodeError:
+        raise AgentRunnerError("CLI input must be UTF-8") from None
     deadline = time.monotonic() + timeout
-    with subprocess.Popen(
+    process = subprocess.Popen(
         command,
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
@@ -67,40 +71,39 @@ def run_cli_process(
         cwd=cwd,
         env=env,
         start_new_session=True,
-        bufsize=0,  # Raw pipes: close must not wait on a blocked buffered reader lock.
-    ) as process:
-        assert process.stdin is not None and process.stdout is not None and process.stderr is not None
-        buffers = [bytearray(), bytearray()]
-        failures: list[BaseException] = []
-        done = [threading.Event(), threading.Event()]
-
-        threads = [
-            threading.Thread(
-                target=_drain_cli_pipe,
-                args=(process.stdout, buffers[0], failures, done[0], CLI_STDOUT_LIMIT, "stdout"),
-                daemon=True,
-            ),
-            threading.Thread(
-                target=_drain_cli_pipe,
-                args=(process.stderr, buffers[1], failures, done[1], CLI_STDERR_LIMIT, "stderr"),
-                daemon=True,
-            ),
-            threading.Thread(target=_feed_cli_pipe, args=(process.stdin, input), daemon=True),
-        ]
-        try:
-            for thread in threads:
-                thread.start()
-            _wait_for_cli(process, failures, done, command, timeout, deadline)
-        except BaseException:
-            _kill_process_group(process)
-            raise
-        finally:
-            for thread in threads:
-                if thread.ident is not None:
-                    thread.join(timeout=0.05)
-        return subprocess.CompletedProcess(
-            command, process.returncode, buffers[0].decode(errors="replace"), buffers[1].decode(errors="replace")
-        )
+        bufsize=0,
+    )
+    assert process.stdin is not None and process.stdout is not None and process.stderr is not None
+    buffers = [bytearray(), bytearray()]
+    failures: list[BaseException] = []
+    done = [threading.Event(), threading.Event(), threading.Event()]
+    threads = [
+        threading.Thread(
+            target=_drain_cli_pipe,
+            args=(process.stdout, buffers[0], failures, done[0], CLI_STDOUT_LIMIT, "stdout"),
+            daemon=True,
+        ),
+        threading.Thread(
+            target=_drain_cli_pipe,
+            args=(process.stderr, buffers[1], failures, done[1], CLI_STDERR_LIMIT, "stderr"),
+            daemon=True,
+        ),
+        threading.Thread(target=_feed_cli_pipe, args=(process.stdin, encoded_input, failures, done[2]), daemon=True),
+    ]
+    try:
+        for thread in threads:
+            thread.start()
+        _wait_for_cli(process, failures, done, command, timeout, deadline)
+    finally:
+        _kill_process_group(process)
+        for pipe in (process.stdin, process.stdout, process.stderr):
+            pipe.close()
+        for thread in threads:
+            if thread.ident is not None:
+                thread.join(timeout=0.05)
+    return subprocess.CompletedProcess(
+        command, process.returncode, buffers[0].decode(errors="replace"), buffers[1].decode(errors="replace")
+    )
 
 
 def _drain_cli_pipe(
@@ -122,17 +125,22 @@ def _drain_cli_pipe(
         done.set()
 
 
-def _feed_cli_pipe(pipe: BinaryIO, text: str) -> None:
+def _feed_cli_pipe(pipe: BinaryIO, data: bytes, failures: list[BaseException], done: threading.Event) -> None:
     try:
-        remaining = memoryview(text.encode())
+        remaining = memoryview(data)
         while remaining:
             written = pipe.write(remaining)
-            if written is None:
+            if written is None or written <= 0:
                 raise OSError("stdin write made no progress")
             remaining = remaining[written:]
-        pipe.close()
-    except (BrokenPipeError, OSError):
-        pass
+    except BaseException:
+        failures.append(AgentRunnerError("CLI stdin delivery failed"))
+    finally:
+        try:
+            pipe.close()
+        except OSError:
+            failures.append(AgentRunnerError("CLI stdin close failed"))
+        done.set()
 
 
 def _wait_for_cli(
@@ -149,7 +157,9 @@ def _wait_for_cli(
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             raise subprocess.TimeoutExpired(command, timeout)
-        if process.poll() is not None and all(event.is_set() for event in done):
+        # WNOWAIT reserves the leader identity until the entire group is retired.
+        exited = os.waitid(os.P_PID, process.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT)
+        if exited is not None and all(event.is_set() for event in done):
             return
         time.sleep(min(0.01, remaining))
 

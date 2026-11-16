@@ -386,3 +386,8 @@ exception type, without prompt content, agent output, paths, credentials or raw 
 256 KiB per line and 10,000 physical lines including blanks. Duplicate JSON members,
 nonstandard/nonfinite numbers, excessive integers and nesting beyond 64 containers are refused
 with a line/category diagnostic before the agent starts. See `few-shot-dataset-jsonl.md`.
+
+### Agent transport completion
+
+Agent calls require complete UTF-8 stdin delivery and retire the owned process group before reaping the leader, including successful calls.
+A wrapper must keep all helpers in its session/process group; detached sessions are outside this ownership boundary.
