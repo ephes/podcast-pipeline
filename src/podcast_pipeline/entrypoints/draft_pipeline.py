@@ -30,8 +30,8 @@ def _copy_chapters_into_workspace(*, workspace: Path, chapters: Path) -> None:
         episode_yaml["inputs"] = inputs
 
 
-def _discover_chunk_ids(store: EpisodeWorkspaceStore) -> list[int]:
-    return discover_complete_chunk_ids(store.layout)
+def _discover_chunk_ids(store: EpisodeWorkspaceStore, config: ChunkerConfig | None = None) -> list[int]:
+    return discover_complete_chunk_ids(store.layout, config=config)
 
 
 def _load_chapters_lines(store: EpisodeWorkspaceStore) -> list[str]:
@@ -181,7 +181,7 @@ def _run_llm_pipeline(
     )
 
     # Discover or create chunks
-    chunk_ids = _discover_chunk_ids(store)
+    chunk_ids = _discover_chunk_ids(store, chunker_config)
     if not chunk_ids:
         transcript_path = store.layout.transcript_dir / "transcript.txt"
         if not transcript_path.exists():

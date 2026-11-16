@@ -213,5 +213,8 @@ Process death between renames can leave an incomplete generation (and sibling st
 completion validation prevents its reuse, and a retry rebuilds it. The deterministic dry-run golden
 fixture includes both manifests; new failure fixtures use invented transcript and summary text.
 
-Changing chunker settings alone does not invalidate an existing complete set; re-ingest the transcript
-to deliberately rebuild with different settings. The manifest records the settings used for provenance.
+Draft reuse requires all four requested chunker settings to match the manifest's validated configuration,
+as well as a supported version and source identity. Changing any setting rebuilds the chunks through
+the complete-set publication path. The changed manifest digest invalidates the episode summary;
+all chunk summaries and the episode summary are regenerated before candidate calls, so no summary
+from the incompatible configuration reaches drafting. Unchanged configurations reuse completed summaries.

@@ -286,7 +286,7 @@ def write_transcript_chunks(
 
 
 def discover_complete_chunk_ids(
-    layout: EpisodeWorkspaceLayout, *, limits: ChunkerLimits = DEFAULT_LIMITS
+    layout: EpisodeWorkspaceLayout, *, config: ChunkerConfig | None = None, limits: ChunkerLimits = DEFAULT_LIMITS
 ) -> list[int]:
     """Ignore interrupted/legacy chunks and sets built from another transcript."""
     directory = layout.transcript_chunks_dir
@@ -295,6 +295,12 @@ def discover_complete_chunk_ids(
         source = _read_source(layout.transcript_dir / "transcript.txt", limits).encode("utf-8")
         _tokenize(source.decode("utf-8"), limits)
         ids = manifest["chunk_ids"]
+        recorded = manifest["config"]
+        if not isinstance(recorded, dict) or set(recorded) != set(asdict(ChunkerConfig())):
+            return []
+        recorded_config = ChunkerConfig(**recorded)
+        if config is not None and recorded_config != config:
+            return []
         if manifest["version"] != 1 or manifest["source_sha256"] != hashlib.sha256(source).hexdigest():
             return []
         if not isinstance(ids, list) or len(ids) > limits.chunks or ids != list(range(1, len(ids) + 1)):

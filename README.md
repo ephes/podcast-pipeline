@@ -208,7 +208,8 @@ clearing hosts, takes precedence over the loaded field values.
 
 Transcript chunks and episode summaries use `complete.json` manifests with SHA-256 file identities.
 Drafting rebuilds legacy, interrupted, missing or changed sets instead of accepting a surviving prefix
-or summary JSON alone. Chunk manifests bind the source transcript and record chunker settings;
+or summary JSON alone. Chunk manifests bind the source transcript and requested chunker settings;
+changing any setting rebuilds chunks and invalidates the derived episode summary before drafting.
 summary manifests bind the chunk manifest and all three summary outputs. A contradictory LLM chunk ID
 fails before that result is saved or reduced. Chunk summary JSON uses atomic replacement, keeping
 the previous parseable cache on pre-publication failure. RSS example IDs now include the canonical

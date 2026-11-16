@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Bind draft cache reuse to all requested chunker settings and regenerate incompatible summaries
+  before candidate generation; unchanged completed generations remain reusable.
+
 - Bound chunk source bytes, tokens, chunk count and aggregate overlap output before retention or writes;
   apply compatible limits to cache discovery and preserve completed chunks on refusal.
 
