@@ -34,7 +34,7 @@ class RssEpisodeExample:
     keywords: tuple[str, ...] = ()
 
     def example_id(self) -> str:
-        seed = self.guid or self.link or self.title
+        seed = json.dumps([safe_rss_source(self.feed_url), self.guid or self.link or self.title], ensure_ascii=False)
         digest = sha256(seed.encode()).hexdigest()[:12]
         return f"rss_{digest}"
 

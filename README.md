@@ -192,7 +192,9 @@ Transcript chunks and episode summaries use `complete.json` manifests with SHA-2
 Drafting rebuilds legacy, interrupted, missing or changed sets instead of accepting a surviving prefix
 or summary JSON alone. Chunk manifests bind the source transcript and record chunker settings;
 summary manifests bind the chunk manifest and all three summary outputs. A contradictory LLM chunk ID
-fails before that result is saved or reduced. See `docs/explanation/text-pipeline.md` for recovery limits.
+fails before that result is saved or reduced. Chunk summary JSON uses atomic replacement, keeping
+the previous parseable cache on pre-publication failure. RSS example IDs now include the canonical
+credential-free feed source; regenerate old RSS corpora instead of mixing old and new IDs. See `docs/explanation/text-pipeline.md` for recovery limits.
 
 Canonical transcription publication validates the complete UTF-8 output and atomically replaces each file.
 Handled publication or metadata failures restore the previous canonical files, YAML and provenance.

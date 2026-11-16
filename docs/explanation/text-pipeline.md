@@ -174,7 +174,11 @@ individual files use atomic replacement and the completion marker is written las
 failures restore the previous files and their permissions. If recovery itself fails, remaining files
 are still restored where possible, the error identifies retained sibling backups for manual repair. A summary JSON alone is never a reusable completed generation.
 Rerun draft to rebuild incomplete legacy sets. Explicit contradictory LLM chunk identities are rejected;
-omitted identities are supplied from the request.
+omitted identities are supplied from the request. Each validated chunk summary is fully serialized,
+then written to a unique sibling temporary file, flushed/synced and atomically replaced. Partial-write,
+flush, sync, replacement and catchable interruption failures before replacement keep the previous
+chunk cache bytes intact and remove the temporary file. Retry can regenerate that chunk; a surviving
+chunk alone still does not certify a complete episode summary generation.
 
 These are local recovery boundaries, not multi-file atomic transactions or cross-process scheduling.
 Process death between renames can leave an incomplete generation (and sibling staging/backup files);

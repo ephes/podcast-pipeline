@@ -63,3 +63,14 @@ requested counts do not change IDs. Repeat exports from one source keep stable I
 This replaces the previous page-only digest. Regenerate existing CMS JSONL exports
 with `podcast cms-examples` and replace the old files rather than combining old and
 new identifiers. Record schema version remains 1.
+
+## RSS identifier migration
+
+RSS IDs hash a JSON pair of canonical credential-free feed source and episode GUID (falling back
+to link, then title). Host case/default ports are normalized; userinfo, query and fragment do not
+change identity. Different source origins or paths remain distinct, including feeds with local
+GUIDs such as `episode-1`. Repeat exports from a canonical source keep stable IDs.
+
+Regenerate existing RSS corpora with `podcast rss-examples` and replace old files rather than
+combining old and new identifiers. Record schema version remains 1. Sources distinguished only by
+query parameters intentionally share this credential-free provenance identity.

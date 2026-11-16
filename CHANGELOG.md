@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Bind RSS example IDs to canonical credential-free feed sources; regenerate old corpora to avoid mixed IDs.
+  Atomically publish validated chunk summary JSON so pre-publication failures preserve the old cache.
+
 - Bound RSS XML elements, depth and text during incremental item extraction; refuse DTDs and preserve
   prior exports on admission failure. Remove source credentials, query and fragment from RSS corpora and CLI output.
 

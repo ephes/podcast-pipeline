@@ -14,7 +14,7 @@ from podcast_pipeline.prompting import (
     render_episode_summary_prompt,
 )
 from podcast_pipeline.summarization_stub import write_episode_summary_artifacts
-from podcast_pipeline.workspace_store import EpisodeWorkspaceLayout
+from podcast_pipeline.workspace_store import EpisodeWorkspaceLayout, atomic_write_text
 
 
 def summarize_transcript_chunks_llm(
@@ -55,7 +55,7 @@ def summarize_transcript_chunks_llm(
         out_path = layout.chunk_summary_json_path(chunk_id)
         out_path.parent.mkdir(parents=True, exist_ok=True)
         dumped = json.dumps(summary.model_dump(mode="json"), indent=2, sort_keys=True) + "\n"
-        out_path.write_text(dumped, encoding="utf-8")
+        atomic_write_text(out_path, dumped)
 
         summaries.append(summary)
 
