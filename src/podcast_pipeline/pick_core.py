@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import unicodedata
 from collections.abc import Sequence
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -19,6 +21,7 @@ from podcast_pipeline.domain.models import (
     ProvenanceRef,
     TextFormat,
 )
+from podcast_pipeline.file_inputs import read_regular_utf8, read_workspace_utf8
 from podcast_pipeline.tag_assets import (
     TAG_ASSET_IDS,
     TagSettings,
@@ -90,9 +93,9 @@ def _load_candidates_from_dir(path: Path) -> list[Candidate]:
     candidates: list[Candidate] = []
     for candidate_path in sorted(path.glob("candidate_*.json")):
         try:
-            raw = json.loads(candidate_path.read_text(encoding="utf-8"))
-        except json.JSONDecodeError as exc:
-            raise ValueError(f"Invalid JSON at {candidate_path}: {exc}") from exc
+            raw = json.loads(read_regular_utf8(candidate_path, max_bytes=8 * 1024 * 1024))
+        except (OSError, ValueError, RecursionError):
+            raise ValueError("Invalid candidate file: expected regular UTF-8 JSON within 8 MiB") from None
         try:
             candidate = Candidate.model_validate(raw)
         except ValidationError as exc:
@@ -379,6 +382,34 @@ def save_custom_selection(
     return store.update_state(update, default=workspace, artifact_paths=paths)
 
 
+@dataclass(frozen=True)
+class CandidateGeneration:
+    identity: tuple[int, int, int, int, int]
+    digest: str
+
+
+class CandidateSelectionChanged(ValueError):
+    """Displayed candidate evidence lost authority before publication."""
+
+
+def candidate_generation(*, layout: EpisodeWorkspaceLayout, candidate: Candidate) -> CandidateGeneration:
+    """Bind displayed copy to coherent canonical bytes and the named file generation."""
+    path = layout.candidate_json_path(candidate.asset_id, candidate.candidate_id)
+    try:
+        before = path.lstat()
+        text = read_workspace_utf8(layout.root, path.relative_to(layout.root), max_bytes=8 * 1024 * 1024)
+        after = path.lstat()
+        identity = (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns, before.st_ctime_ns)
+        current = (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns, after.st_ctime_ns)
+        if identity != current or Candidate.model_validate_json(text) != candidate:
+            raise ValueError("candidate generation changed")
+        return CandidateGeneration(identity, hashlib.sha256(text.encode("utf-8")).hexdigest())
+    except (OSError, ValueError, RecursionError):
+        raise CandidateSelectionChanged(
+            "Candidate changed or disappeared; reload candidates and select again."
+        ) from None
+
+
 def save_candidate_selection(
     *,
     store: EpisodeWorkspaceStore,
@@ -387,11 +418,18 @@ def save_candidate_selection(
     candidates: list[Candidate],
     selected_format: TextFormat,
     selected_text: str,
+    expected_generation: CandidateGeneration | None = None,
 ) -> EpisodeWorkspace:
-    """Publish one candidate selection against current state under the state lock."""
+    """Publish under the state lock, optionally requiring the displayed file generation."""
     asset_id = candidate.asset_id
 
     def update(current: EpisodeWorkspace) -> EpisodeWorkspace:
+        if expected_generation is not None:
+            observed = candidate_generation(layout=store.layout, candidate=candidate)
+            if observed != expected_generation:
+                raise CandidateSelectionChanged(
+                    "Candidate changed or disappeared; reload candidates and select again."
+                )
         assets_by_id = {asset.asset_id: asset for asset in current.assets}
         assets_by_id[asset_id] = build_asset(
             asset_id=asset_id,

@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Recheck the terminal picker's displayed candidate bytes and file generation under the update lock.
+  Preserve the prior selection on change and print each commit receipt immediately, with saved/total
+  progress on cancellation or later failure.
+
 - Check canonical selected text against candidate state or custom provenance before declaring it ready.
   Escape terminal controls and bound status lines and CLI candidate previews without changing stored text.
 

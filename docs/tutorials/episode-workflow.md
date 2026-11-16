@@ -759,3 +759,13 @@ provenance marker. Curated tags keep their markdown selection convention.
 Status lines and CLI picker previews escape terminal controls (including ESC, OSC payload delimiters,
 CR and C1) as visible text. Status lines are capped at 1,000 characters and candidate previews at 72;
 these display limits never change the stored copy or review evidence.
+
+The terminal picker binds each displayed candidate to its canonical JSON bytes and file generation
+(regular UTF-8 JSON within 8 MiB). It rechecks that evidence inside the workspace update lock before
+publishing. If the candidate was regenerated, replaced or deleted while you were choosing, the
+previous selection survives: reload candidates by running `podcast pick` again and make a fresh choice.
+Even replacement with identical bytes requires a fresh choice. Workspace writers share this lock;
+manual filesystem edits after the final comparison are outside that coordination guarantee.
+Each successful asset prints `Selected <asset>: <path> (candidate=<id>)` immediately after commit.
+Cancellation or a later failure prints `Pick incomplete: <saved>/<total> assets committed` and exits
+unsuccessfully. Earlier receipts remain saved; inspect the current selection before continuing.

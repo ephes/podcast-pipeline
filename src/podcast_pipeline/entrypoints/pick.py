@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 from pathlib import Path
 from uuid import UUID
 
@@ -8,6 +7,7 @@ import typer
 
 from podcast_pipeline.domain.models import Candidate
 from podcast_pipeline.pick_core import (
+    candidate_generation,
     find_candidate_by_id,
     load_candidates,
     load_workspace,
@@ -15,13 +15,6 @@ from podcast_pipeline.pick_core import (
 )
 from podcast_pipeline.terminal_text import terminal_text
 from podcast_pipeline.workspace_store import EpisodeWorkspaceStore
-
-
-@dataclass(frozen=True)
-class _Selection:
-    asset_id: str
-    candidate: Candidate
-    path: Path
 
 
 def run_pick(
@@ -44,31 +37,43 @@ def run_pick(
     workspace_state = load_workspace(store)
     assets_by_id = {asset.asset_id: asset for asset in workspace_state.assets}
 
-    selections: list[_Selection] = []
-    for asset_key in sorted(candidates_by_asset):
-        candidates = candidates_by_asset[asset_key]
-        existing = assets_by_id.get(asset_key)
-        chosen = _choose_candidate(
-            asset_id=asset_key,
-            candidates=candidates,
-            candidate_id=candidate_id,
-            selected_candidate_id=existing.selected_candidate_id if existing else None,
-        )
-        workspace_state = save_candidate_selection(
-            store=store,
-            workspace=workspace_state,
-            candidate=chosen,
-            candidates=candidates,
-            selected_format=chosen.format,
-            selected_text=chosen.content,
-        )
-        assets_by_id = {asset.asset_id: asset for asset in workspace_state.assets}
-        selected_path = store.layout.selected_text_path(asset_key, chosen.format)
-        selections.append(_Selection(asset_id=asset_key, candidate=chosen, path=selected_path))
-
     typer.echo(f"Workspace: {terminal_text(str(workspace))}")
-    for selection in selections:
-        typer.echo(f"Selected {terminal_text(selection.asset_id)}: {terminal_text(str(selection.path))}")
+    completed = 0
+    total = len(candidates_by_asset)
+    try:
+        for asset_key in sorted(candidates_by_asset):
+            candidates = candidates_by_asset[asset_key]
+            generations = {c.candidate_id: candidate_generation(layout=layout, candidate=c) for c in candidates}
+            existing = assets_by_id.get(asset_key)
+            chosen = _choose_candidate(
+                asset_id=asset_key,
+                candidates=candidates,
+                candidate_id=candidate_id,
+                selected_candidate_id=existing.selected_candidate_id if existing else None,
+            )
+            workspace_state = save_candidate_selection(
+                store=store,
+                workspace=workspace_state,
+                candidate=chosen,
+                candidates=candidates,
+                selected_format=chosen.format,
+                selected_text=chosen.content,
+                expected_generation=generations[chosen.candidate_id],
+            )
+            assets_by_id = {asset.asset_id: asset for asset in workspace_state.assets}
+            selected_path = layout.selected_text_path(asset_key, chosen.format)
+            completed += 1
+            typer.echo(
+                f"Selected {terminal_text(asset_key)}: {terminal_text(str(selected_path))} "
+                f"(candidate={chosen.candidate_id})"
+            )
+    except (typer.Abort, KeyboardInterrupt, EOFError):
+        typer.echo(f"Pick incomplete: {completed}/{total} assets committed. Earlier receipts remain saved.", err=True)
+        raise typer.Exit(1) from None
+    except Exception as exc:
+        typer.echo(f"Pick incomplete: {completed}/{total} assets committed. Earlier receipts remain saved.", err=True)
+        typer.echo(f"Selection stopped: {terminal_text(str(exc))}", err=True)
+        raise typer.Exit(1) from None
 
 
 def _choose_candidate(
@@ -83,12 +88,12 @@ def _choose_candidate(
         if match is None:
             raise typer.BadParameter(f"candidate_id {candidate_id} not found for asset {terminal_text(asset_id)}")
         typer.echo(f"Asset: {terminal_text(asset_id)}")
-        typer.echo(f"Selected candidate: {candidate_id}")
+        typer.echo(f"Candidate: {candidate_id}")
         return match
 
     typer.echo(f"Asset: {terminal_text(asset_id)}")
     if len(candidates) == 1:
-        typer.echo("Only one candidate found; selecting it.")
+        typer.echo("Only one candidate found.")
         return candidates[0]
 
     default_index = _candidate_index(candidates, selected_candidate_id)
