@@ -23,6 +23,8 @@ Chunking is implemented in `podcast_pipeline.transcript_chunker` and writes a `.
 - Tokenization: whitespace-delimited tokens matched by `\S+`.
 - Chunk IDs: start at 1 and increment per chunk.
 - Default config: `ChunkerConfig(max_tokens=1200, overlap_tokens=200, boundary_lookback_tokens=200, min_tokens=None)`.
+- All four settings require actual integers (booleans, floats and nonfinite numbers are refused before processing).
+  Only `min_tokens` may be `None`; existing positive-size and overlap range relationships still apply.
 - Effective minimum size: when `min_tokens` is `None`, `effective_min_tokens` is 60 percent of `max_tokens`.
 - Boundary selection:
   - Prefer paragraph boundaries (`\n\n`), then sentence boundaries (`.`/`!`/`?` followed by whitespace), then line boundaries (`\n`).

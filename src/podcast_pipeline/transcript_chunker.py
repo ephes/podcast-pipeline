@@ -23,6 +23,12 @@ class ChunkerConfig:
     min_tokens: int | None = None
 
     def __post_init__(self) -> None:
+        for name in ("max_tokens", "overlap_tokens", "boundary_lookback_tokens", "min_tokens"):
+            value = getattr(self, name)
+            if name == "min_tokens" and value is None:
+                continue
+            if type(value) is not int:
+                raise ValueError(f"{name} must be an integer")
         if self.max_tokens < 1:
             raise ValueError("max_tokens must be >= 1")
         if self.overlap_tokens < 0:
@@ -40,7 +46,7 @@ class ChunkerConfig:
     def effective_min_tokens(self) -> int:
         if self.min_tokens is not None:
             return self.min_tokens
-        return max(1, int(self.max_tokens * 0.6))
+        return max(1, self.max_tokens * 3 // 5)
 
 
 @dataclass(frozen=True)

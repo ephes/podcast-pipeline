@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Require exact integer chunker settings before processing; reject booleans, floats and nonfinite values.
+
 - Reject malformed local dashboard/picker Host ports before body reads: require one to five ASCII
   decimal digits in 1..65535, with the existing 403 response instead of parser exceptions.
 
