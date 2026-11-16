@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Bound read-only status inspection to regular UTF-8 JSON, 8 MiB per file, 32 MiB total and
+  10,000 visited entries; report invalid evidence or incomplete inspection without a ready checklist.
+
 - Bind regeneration chapter reads to opened workspace/file authority with coherent UTF-8 byte/line
   limits; refuse swaps, special files and excessive chapter input before starting the agent.
 - Cap chunk source and complete chunk/reduction prompts at 256 KiB of UTF-8. Admit reduction JSON

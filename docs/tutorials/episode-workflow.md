@@ -739,3 +739,12 @@ API errors show the trusted method, endpoint, HTTP status and allowlisted error/
 only the destination origin (no userinfo, path, query or fragment) and are never followed. Response bodies and raw
 server messages are omitted, including revision-conflict payloads; conflicts still explain checking Wagtail before
 retrying. Checkpoint recovery instructions omit remote edit URLs too.
+
+## Inspect workspace status
+
+`podcast status --workspace <episode>` is read-only. Status JSON must be coherent regular UTF-8
+workspace files (no symlink components), at most 8 MiB each and 64 JSON container levels deep.
+An inspection admits at most 10,000 directory entries (including ignored names and repeated scans)
+and 32 MiB of file contents. Exceeding an aggregate limit reports **inspection incomplete** with
+exit code 1 and omits the checklist; split or clean up the workspace before retrying.
+Invalid state blocks selection readiness; invalid review evidence stops status with a concise error.
