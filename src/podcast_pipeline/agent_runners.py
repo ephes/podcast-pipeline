@@ -73,10 +73,12 @@ def run_cli_process(
     timeout: float,
     env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
-    """Drain both pipes with byte limits and kill/reap the owned group on failure."""
+    """Admit stdin, drain bounded pipes, and retire the owned group on every outcome."""
     if not math.isfinite(timeout) or timeout <= 0:
         raise ValueError("process timeout must be finite and positive")
     encoded_input = _encode_cli_input(input)
+    if not callable(getattr(os, "waitid", None)):
+        raise AgentRunnerError("CLI supervision requires waitid with WNOWAIT")
     deadline = time.monotonic() + timeout
     process = subprocess.Popen(
         command,
@@ -180,9 +182,20 @@ def _feed_cli_pipe(pipe: BinaryIO, data: bytes, failures: list[BaseException], d
     finally:
         try:
             pipe.close()
-        except OSError:
+        except BaseException:
             failures.append(AgentRunnerError("CLI stdin close failed"))
         done.set()
+
+
+def _observe_cli_exit(pid: int, *, block: bool = False) -> Any:
+    # Typeshed omits waitid on Darwin even where the interpreter provides it.
+    waitid = getattr(os, "waitid", None)
+    if waitid is None:
+        raise AgentRunnerError("CLI supervision requires waitid with WNOWAIT")
+    flags = os.WEXITED | os.WNOWAIT
+    if not block:
+        flags |= os.WNOHANG
+    return waitid(os.P_PID, pid, flags)
 
 
 def _wait_for_cli(
@@ -200,8 +213,10 @@ def _wait_for_cli(
         if remaining <= 0:
             raise subprocess.TimeoutExpired(command, timeout)
         # WNOWAIT reserves the leader identity until the entire group is retired.
-        exited = os.waitid(os.P_PID, process.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT)
+        exited = _observe_cli_exit(process.pid)
         if exited is not None and all(event.is_set() for event in done):
+            if failures:
+                raise failures[0]
             return
         time.sleep(min(0.01, remaining))
 
@@ -209,6 +224,10 @@ def _wait_for_cli(
 def _kill_process_group(process: subprocess.Popen[bytes]) -> None:
     if process.returncode is not None:
         raise AgentRunnerError("CLI process ownership lost before retirement")
+    try:
+        _observe_cli_exit(process.pid)
+    except ChildProcessError:
+        raise AgentRunnerError("CLI process ownership lost before retirement") from None
     uncertain = False
     try:
         os.killpg(process.pid, signal.SIGKILL)
@@ -240,6 +259,9 @@ def _darwin_leader_only(pid: int) -> bool:
     if sys.platform != "darwin":
         return False
     try:
+        exited = _observe_cli_exit(pid)
+        if exited is None:
+            return False
         libproc = ctypes.CDLL("/usr/lib/libproc.dylib", use_errno=True)
         list_members = libproc.proc_listpgrppids
         list_members.argtypes = [ctypes.c_int, ctypes.c_void_p, ctypes.c_int]
@@ -268,8 +290,10 @@ def run_agent_cli(
     try:
         result = run_cli_process(command, input=prompt_text, cwd=cwd, timeout=timeout_seconds)
     except subprocess.TimeoutExpired as exc:
-        cleanup = " Cleanup uncertain; check owned processes before retrying." if getattr(exc, "__notes__", []) else ""
-        raise AgentRunnerError(f"{label} CLI timed out after {timeout_seconds:g} s.{cleanup}") from None
+        cleanup = (
+            ". Cleanup uncertain; check owned processes before retrying." if getattr(exc, "__notes__", []) else ""
+        )
+        raise AgentRunnerError(f"{label} CLI timed out after {timeout_seconds:g} s{cleanup}") from None
     except OSError:
         raise AgentRunnerError(f"{label} CLI could not start; check command configuration before retrying") from None
     if result.returncode != 0:

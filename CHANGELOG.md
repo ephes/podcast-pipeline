@@ -15,7 +15,8 @@
   nonfinite/invalid scalars, and admit structural work before decoding or writing artifacts.
 
 - Bound agent cleanup to a one-second reap allowance, retain primary failures with safe cleanup uncertainty,
-  and reject malformed UTF-8 protocol output instead of replacing its bytes.
+  and reject malformed UTF-8 protocol output instead of replacing its bytes. Recheck unreaped child
+  authority before signaling; late feeder errors cannot race a successful result.
 
 - Agent calls require complete UTF-8 stdin delivery and retire the owned process group before reaping the leader, including successful calls.
 

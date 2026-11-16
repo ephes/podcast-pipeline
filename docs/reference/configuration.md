@@ -395,7 +395,9 @@ A wrapper must keep all helpers in its session/process group; detached sessions 
 Agent cleanup adds at most a one-second leader reap allowance and three 50 ms thread joins.
 All pipe closes are attempted even after a signal/wait failure. An uncertain cleanup refuses success;
 a primary timeout/interruption remains primary with a fixed cleanup note. Check owned processes before retrying.
-On Darwin, an EPERM group signal is accepted only when libproc proves the reserved leader is the sole member.
+Group signaling requires an unreaped child identity; external reaping revokes this authority.
+On Darwin, an EPERM group signal is accepted only when waitid confirms exit and libproc proves
+the reserved leader is the sole member.
 Stdout must be exact UTF-8; stderr remains a separately byte-bounded diagnostic stream.
 
 Agent protocol stdout must contain exactly one JSON object, optionally wrapped in a complete
