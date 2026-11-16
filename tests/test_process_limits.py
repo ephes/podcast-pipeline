@@ -63,7 +63,7 @@ class StalledProcess:
     def kill(self) -> None:
         pass
 
-    def wait(self) -> int:
+    def wait(self, timeout: float | None = None) -> int:
         self.reaped = True
         return -9
 
@@ -78,6 +78,7 @@ def test_transcriber_deadline_kills_owned_group(
     killed: list[int] = []
     monkeypatch.setattr(runners.subprocess, "Popen", lambda *a, **kw: process)
     monkeypatch.setattr(runners.os, "killpg", lambda pid, sig: killed.append(pid))
+    monkeypatch.setattr(runners.os, "waitid", lambda *args: None)
     clock = iter([0.0, 0.0, 10000.0])
     monkeypatch.setattr(runners.time, "monotonic", lambda: next(clock, 10000.0))
     with pytest.raises(typer.BadParameter, match="timed out"):

@@ -284,8 +284,14 @@ Cleanup failures log the retained path without masking the publication result or
 ### Subprocess output and transcription limits
 
 Agent and transcription commands have independent 8 MiB stdout and 1 MiB stderr byte ceilings.
-Overflow fails the step and kills/reaps the owned process group, as do timeout and interruption;
-nonzero-exit diagnostics retain only the final 4096 characters. Normal stdout is preserved within the limit.
+Overflow fails the step and kills/reaps the owned process group, as do timeout and interruption.
+Successful agent and transcription commands are retired the same way, so helpers left in their
+session/process group do not survive, and uncertain cleanup fails the step;
+transcription nonzero-exit diagnostics retain only the final 4096 characters. Agent errors omit raw stderr.
+Agent stdin must be completely delivered and fit 1 MiB of UTF-8; protocol stdout is decoded strictly.
+Normal stdout is preserved within the limit.
+Process supervision needs `os.waitid` with `WNOWAIT`: on macOS that means Python 3.13 or newer
+(the repository pins 3.14). Older macOS interpreters refuse agent and transcription calls before launch.
 Transcription defaults to a finite 7200-second (two-hour) deadline; `podcast transcribe --timeout`
 overrides it with finite positive seconds. This deadline is separate from the agent timeout.
 Custom transcribers must write UTF-8, nonblank `transcript.txt` (and optionally `chapters.txt`) into
@@ -386,3 +392,49 @@ exception type, without prompt content, agent output, paths, credentials or raw 
 256 KiB per line and 10,000 physical lines including blanks. Duplicate JSON members,
 nonstandard/nonfinite numbers, excessive integers and nesting beyond 64 containers are refused
 with a line/category diagnostic before the agent starts. See `few-shot-dataset-jsonl.md`.
+
+### Agent transport completion
+
+Agent calls require complete UTF-8 stdin delivery and retire the owned process group before reaping the leader, including successful calls.
+A wrapper must keep all helpers in its session/process group; detached sessions are outside this ownership boundary.
+
+Agent cleanup adds at most a one-second leader reap allowance and three 50 ms thread joins.
+All pipe closes are attempted even after a signal/wait failure. An uncertain cleanup refuses success;
+a primary timeout/interruption remains primary with a fixed cleanup note. Check owned processes before retrying.
+Group signaling requires an unreaped child identity; external reaping revokes this authority.
+On Darwin, an EPERM group signal is accepted only when waitid confirms exit and libproc proves
+the reserved leader is the sole member.
+Agent stdout must be exact UTF-8; stderr remains a separately byte-bounded diagnostic stream.
+Transcriber stdout is not protocol output: it is still byte-bounded but decoded with replacement and ignored.
+
+Agent protocol stdout must contain exactly one JSON object, optionally wrapped in a complete
+```` ```json ```` code block with no surrounding prose. Multiple results, duplicate members at any depth,
+nonstandard constants, nonfinite floats and surrogate strings are refused. Before JSON hydration,
+control input is capped at 8 MiB UTF-8, 64 container levels, 100,000 tokens (container starts,
+member names and scalar values), and 256 characters per numeric scalar. Admission is a single linear
+scan; an unterminated string is refused immediately. Invalid/excessive results
+raise a content-free agent error before candidate or review publication; fix the wrapper and retry.
+
+Complete runner stdin, whether inline or from a prompt file, is limited to 1 MiB UTF-8 before launch.
+Prompt files must be regular, coherent, non-symlink files; FIFOs, oversized/growing files and observed
+generation changes are refused before any agent starts. Inline text is the explicit alternative.
+Agent failures show fixed categories, exit status and retry guidance; raw stderr and JSON decoder
+details are omitted from ordinary errors and default chained tracebacks. Check configuration before
+retrying a failed agent. Prompt/result prose remains private even when it contains terminal controls.
+
+### Deterministic draft inputs
+
+`draft-candidates` reads a regular coherent workspace summary of at most 1 MiB and chapters of
+at most 1 MiB / 200 physical lines. Fake `draft-demo` uses the same chapter envelope and an
+8 MiB transcript envelope. These readers reject special files, invalid UTF-8 and observed generation
+changes before candidate/protocol publication. Episode metadata references and fixed defaults must
+be relative paths inside the workspace with no `..` or symlink components. Missing optional chapters
+or demo inputs stay empty; invalid existing inputs fail. `draft-candidates --chapters` remains an
+explicit operator file option outside the workspace, with the same regular-file and byte/line checks.
+
+Summary JSON for `draft-candidates` uses the strict control JSON contract above before EpisodeSummary
+validation: duplicate members, NaN/Infinity, nonfinite numbers and excessive structure fail with zero
+candidate writes. The summary file itself retains the tighter 1 MiB ceiling.
+`draft-candidates --candidates N` supports **1–10** variants per asset (default 3). The direct
+`generate_draft_candidates` API checks the same integer range, rejecting booleans and invalid config
+values before any rendering/storage work. At admitted counts the variant IDs and content remain deterministic.

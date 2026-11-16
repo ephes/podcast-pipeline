@@ -624,8 +624,14 @@ emphasis such as `foo*bar*` is not supported.
 ### Subprocess output and transcription limits
 
 Agent and transcription commands have independent 8 MiB stdout and 1 MiB stderr byte ceilings.
-Overflow fails the step and kills/reaps the owned process group, as do timeout and interruption;
-nonzero-exit diagnostics retain only the final 4096 characters. Normal stdout is preserved within the limit.
+Overflow fails the step and kills/reaps the owned process group, as do timeout and interruption.
+Successful agent and transcription commands are retired the same way, so helpers left in their
+session/process group do not survive, and uncertain cleanup fails the step;
+transcription nonzero-exit diagnostics retain only the final 4096 characters. Agent errors omit raw stderr.
+Agent stdin must be completely delivered and fit 1 MiB of UTF-8; protocol stdout is decoded strictly.
+Normal stdout is preserved within the limit.
+Process supervision needs `os.waitid` with `WNOWAIT`: on macOS that means Python 3.13 or newer
+(the repository pins 3.14). Older macOS interpreters refuse agent and transcription calls before launch.
 Transcription defaults to a finite 7200-second (two-hour) deadline; `podcast transcribe --timeout`
 overrides it with finite positive seconds. This deadline is separate from the agent timeout.
 Custom transcribers must write UTF-8, nonblank `transcript.txt` (and optionally `chapters.txt`) into

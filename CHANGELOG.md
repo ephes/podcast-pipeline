@@ -2,6 +2,31 @@
 
 ## Unreleased
 
+- Keep control JSON admission linear for unterminated or escape-heavy strings so adversarial agent
+  output cannot stall summary or result parsing. Transcriber stdout keeps replacement decoding; only
+  agent protocol stdout must be exact UTF-8. Agent and transcription supervision needs `os.waitid`
+  (Python 3.13+ on macOS); older interpreters are refused before launch with an explicit message.
+  Successful transcription commands retire their process group like agent calls, and a transcription
+  timeout reports uncertain cleanup with the same retry guidance.
+
+- Require strict unambiguous summary JSON evidence for deterministic drafts. Limit candidate variants
+  to integers from 1 to 10 at CLI and generator admission before rendering or storage.
+
+- Bound deterministic draft and fake-demo input reads to coherent regular UTF-8 files, enforce chapter
+  byte/line limits before generation, and contain episode-controlled references within the workspace.
+
+- Admit prompt files through coherent bounded regular UTF-8 reads and cap complete runner input at 1 MiB
+  before launch. Keep raw agent stderr, decoder details and launch errors out of default diagnostics.
+
+- Require one unambiguous agent JSON object (or one complete json fence), reject duplicate members and
+  nonfinite/invalid scalars, and admit structural work before decoding or writing artifacts.
+
+- Bound agent cleanup to a one-second reap allowance, retain primary failures with safe cleanup uncertainty,
+  and reject malformed UTF-8 protocol output instead of replacing its bytes. Recheck unreaped child
+  authority before signaling; late feeder errors cannot race a successful result.
+
+- Agent calls require complete UTF-8 stdin delivery and retire the owned process group before reaping the leader, including successful calls.
+
 - Recheck the terminal picker's displayed candidate bytes and file generation under the update lock.
   Preserve the prior selection on change and print each commit receipt immediately, with saved/total
   progress on cancellation or later failure.

@@ -4,6 +4,8 @@ from uuid import UUID
 
 import typer
 
+from podcast_pipeline.asset_candidates_stub import MAX_CANDIDATES_PER_ASSET
+
 app = typer.Typer(add_completion=False)
 
 
@@ -259,7 +261,7 @@ def draft_candidates(
     ] = None,
     candidates_per_asset: Annotated[
         int,
-        typer.Option("--candidates", "-n", min=1, help="Candidates per asset."),
+        typer.Option("--candidates", "-n", min=1, max=MAX_CANDIDATES_PER_ASSET, help="Candidates per asset (1–10)."),
     ] = 3,
 ) -> None:
     """Generate N candidate assets from episode summary + chapters."""

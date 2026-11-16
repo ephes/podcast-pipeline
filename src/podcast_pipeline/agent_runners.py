@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import ctypes
 import json
 import math
 import os
 import signal
 import subprocess
+import sys
 import threading
 import time
 from collections.abc import Callable, Mapping, Sequence
@@ -14,7 +16,9 @@ from typing import Any, BinaryIO
 from uuid import UUID, uuid5
 
 from podcast_pipeline.agent_cli_config import AgentCliBundle, AgentCliConfig, resolve_agent_timeout
+from podcast_pipeline.control_json import load_control_json
 from podcast_pipeline.domain.models import Candidate, ProvenanceRef, ReviewIteration
+from podcast_pipeline.file_inputs import read_regular_utf8
 from podcast_pipeline.prompting import (
     FewShotExample,
     GlossaryEntry,
@@ -44,7 +48,22 @@ class AgentRunnerError(RuntimeError):
 
 CLI_STDOUT_LIMIT = 8 * 1024 * 1024
 CLI_STDERR_LIMIT = 1024 * 1024
+CLI_INPUT_LIMIT = 1024 * 1024
 CLI_DIAGNOSTIC_LIMIT = 4096
+CLI_CLEANUP_SECONDS = 1.0
+_WAITID_REQUIRED = "CLI supervision requires os.waitid with WNOWAIT (Python 3.13+ on macOS)"
+
+
+def _encode_cli_input(text: str) -> bytes:
+    try:
+        if len(text) > CLI_INPUT_LIMIT:
+            raise AgentRunnerError("CLI input exceeds the 1 MiB byte limit")
+        encoded = text.encode("utf-8")
+    except UnicodeError:
+        raise AgentRunnerError("CLI input must be UTF-8") from None
+    if len(encoded) > CLI_INPUT_LIMIT:
+        raise AgentRunnerError("CLI input exceeds the 1 MiB byte limit")
+    return encoded
 
 
 def run_cli_process(
@@ -54,12 +73,20 @@ def run_cli_process(
     cwd: str | None,
     timeout: float,
     env: dict[str, str] | None = None,
+    strict_stdout: bool = True,
 ) -> subprocess.CompletedProcess[str]:
-    """Drain both pipes with byte limits and kill/reap the owned group on failure."""
+    """Admit stdin, drain bounded pipes, and retire the owned group on every outcome.
+
+    ``strict_stdout`` rejects malformed UTF-8 protocol output; callers that ignore
+    stdout (such as the transcriber) pass ``False`` to keep replacement decoding.
+    """
     if not math.isfinite(timeout) or timeout <= 0:
         raise ValueError("process timeout must be finite and positive")
+    encoded_input = _encode_cli_input(input)
+    if not callable(getattr(os, "waitid", None)):
+        raise AgentRunnerError(_WAITID_REQUIRED)
     deadline = time.monotonic() + timeout
-    with subprocess.Popen(
+    process = subprocess.Popen(
         command,
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
@@ -67,40 +94,67 @@ def run_cli_process(
         cwd=cwd,
         env=env,
         start_new_session=True,
-        bufsize=0,  # Raw pipes: close must not wait on a blocked buffered reader lock.
-    ) as process:
-        assert process.stdin is not None and process.stdout is not None and process.stderr is not None
-        buffers = [bytearray(), bytearray()]
-        failures: list[BaseException] = []
-        done = [threading.Event(), threading.Event()]
-
-        threads = [
-            threading.Thread(
-                target=_drain_cli_pipe,
-                args=(process.stdout, buffers[0], failures, done[0], CLI_STDOUT_LIMIT, "stdout"),
-                daemon=True,
-            ),
-            threading.Thread(
-                target=_drain_cli_pipe,
-                args=(process.stderr, buffers[1], failures, done[1], CLI_STDERR_LIMIT, "stderr"),
-                daemon=True,
-            ),
-            threading.Thread(target=_feed_cli_pipe, args=(process.stdin, input), daemon=True),
-        ]
+        bufsize=0,
+    )
+    assert process.stdin is not None and process.stdout is not None and process.stderr is not None
+    buffers = [bytearray(), bytearray()]
+    failures: list[BaseException] = []
+    done = [threading.Event(), threading.Event(), threading.Event()]
+    threads = [
+        threading.Thread(
+            target=_drain_cli_pipe,
+            args=(process.stdout, buffers[0], failures, done[0], CLI_STDOUT_LIMIT, "stdout"),
+            daemon=True,
+        ),
+        threading.Thread(
+            target=_drain_cli_pipe,
+            args=(process.stderr, buffers[1], failures, done[1], CLI_STDERR_LIMIT, "stderr"),
+            daemon=True,
+        ),
+        threading.Thread(target=_feed_cli_pipe, args=(process.stdin, encoded_input, failures, done[2]), daemon=True),
+    ]
+    primary: BaseException | None = None
+    try:
+        for thread in threads:
+            thread.start()
+        _wait_for_cli(process, failures, done, command, timeout, deadline)
+    except BaseException as exc:
+        primary = exc
+        raise
+    finally:
         try:
-            for thread in threads:
-                thread.start()
-            _wait_for_cli(process, failures, done, command, timeout, deadline)
+            _cleanup_cli(process, threads)
         except BaseException:
-            _kill_process_group(process)
-            raise
-        finally:
-            for thread in threads:
-                if thread.ident is not None:
-                    thread.join(timeout=0.05)
-        return subprocess.CompletedProcess(
-            command, process.returncode, buffers[0].decode(errors="replace"), buffers[1].decode(errors="replace")
-        )
+            if primary is None:
+                raise AgentRunnerError("CLI cleanup uncertain; check owned processes before retrying") from None
+            primary.add_note("CLI cleanup uncertain; check owned processes before retrying")
+    if not strict_stdout:
+        stdout = buffers[0].decode("utf-8", errors="replace")
+    else:
+        try:
+            stdout = buffers[0].decode("utf-8")
+        except UnicodeError:
+            raise AgentRunnerError("CLI stdout must be valid UTF-8") from None
+    return subprocess.CompletedProcess(command, process.returncode, stdout, buffers[1].decode(errors="replace"))
+
+
+def _cleanup_cli(process: subprocess.Popen[bytes], threads: list[threading.Thread]) -> None:
+    uncertain = False
+    try:
+        _kill_process_group(process)
+    except BaseException:
+        uncertain = True
+    for pipe in (process.stdin, process.stdout, process.stderr):
+        try:
+            if pipe is not None:
+                pipe.close()
+        except BaseException:
+            uncertain = True
+    for thread in threads:
+        if thread.ident is not None:
+            thread.join(timeout=0.05)
+    if uncertain:
+        raise AgentRunnerError("CLI cleanup uncertain")
 
 
 def _drain_cli_pipe(
@@ -116,23 +170,41 @@ def _drain_cli_pipe(
             if len(buffer) + len(chunk) > limit:
                 raise AgentRunnerError(f"CLI {label} exceeded {limit} byte limit")
             buffer.extend(chunk)
-    except BaseException as exc:
+    except AgentRunnerError as exc:
         failures.append(exc)
+    except BaseException:
+        failures.append(AgentRunnerError(f"CLI {label} read failed"))
     finally:
         done.set()
 
 
-def _feed_cli_pipe(pipe: BinaryIO, text: str) -> None:
+def _feed_cli_pipe(pipe: BinaryIO, data: bytes, failures: list[BaseException], done: threading.Event) -> None:
     try:
-        remaining = memoryview(text.encode())
+        remaining = memoryview(data)
         while remaining:
             written = pipe.write(remaining)
-            if written is None:
+            if written is None or written <= 0:
                 raise OSError("stdin write made no progress")
             remaining = remaining[written:]
-        pipe.close()
-    except (BrokenPipeError, OSError):
-        pass
+    except BaseException:
+        failures.append(AgentRunnerError("CLI stdin delivery failed"))
+    finally:
+        try:
+            pipe.close()
+        except BaseException:
+            failures.append(AgentRunnerError("CLI stdin close failed"))
+        done.set()
+
+
+def _observe_cli_exit(pid: int, *, block: bool = False) -> Any:
+    # Typeshed omits waitid on Darwin even where the interpreter provides it.
+    waitid = getattr(os, "waitid", None)
+    if waitid is None:
+        raise AgentRunnerError(_WAITID_REQUIRED)
+    flags = os.WEXITED | os.WNOWAIT
+    if not block:
+        flags |= os.WNOHANG
+    return waitid(os.P_PID, pid, flags)
 
 
 def _wait_for_cli(
@@ -149,17 +221,65 @@ def _wait_for_cli(
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             raise subprocess.TimeoutExpired(command, timeout)
-        if process.poll() is not None and all(event.is_set() for event in done):
+        # WNOWAIT reserves the leader identity until the entire group is retired.
+        exited = _observe_cli_exit(process.pid)
+        if exited is not None and all(event.is_set() for event in done):
+            if failures:
+                raise failures[0]
             return
         time.sleep(min(0.01, remaining))
 
 
 def _kill_process_group(process: subprocess.Popen[bytes]) -> None:
+    if process.returncode is not None:
+        raise AgentRunnerError("CLI process ownership lost before retirement")
+    try:
+        _observe_cli_exit(process.pid)
+    except ChildProcessError:
+        raise AgentRunnerError("CLI process ownership lost before retirement") from None
+    uncertain = False
     try:
         os.killpg(process.pid, signal.SIGKILL)
-    except (ProcessLookupError, PermissionError):
-        process.kill()
-    process.wait()
+    except ProcessLookupError:
+        pass
+    except PermissionError:
+        # Darwin can report EPERM when only the reserved zombie leader remains.
+        # Prove that exact membership through libproc; never ignore a live helper.
+        uncertain = not _darwin_leader_only(process.pid)
+        try:
+            process.kill()
+        except OSError:
+            pass
+    except OSError:
+        uncertain = True
+        try:
+            process.kill()
+        except OSError:
+            pass
+    try:
+        process.wait(timeout=CLI_CLEANUP_SECONDS)
+    except (OSError, subprocess.TimeoutExpired):
+        uncertain = True
+    if uncertain:
+        raise AgentRunnerError("CLI cleanup uncertain")
+
+
+def _darwin_leader_only(pid: int) -> bool:
+    if sys.platform != "darwin":
+        return False
+    try:
+        exited = _observe_cli_exit(pid)
+        if exited is None:
+            return False
+        libproc = ctypes.CDLL("/usr/lib/libproc.dylib", use_errno=True)
+        list_members = libproc.proc_listpgrppids
+        list_members.argtypes = [ctypes.c_int, ctypes.c_void_p, ctypes.c_int]
+        list_members.restype = ctypes.c_int
+        members = (ctypes.c_int * 2)()
+        count = list_members(pid, members, ctypes.sizeof(members))
+        return count == 1 and members[0] == pid
+    except (OSError, AttributeError):
+        return False
 
 
 def run_agent_cli(
@@ -179,12 +299,16 @@ def run_agent_cli(
     try:
         result = run_cli_process(command, input=prompt_text, cwd=cwd, timeout=timeout_seconds)
     except subprocess.TimeoutExpired as exc:
-        raise AgentRunnerError(f"{label} CLI timed out after {timeout_seconds:g} s") from exc
+        cleanup = (
+            ". Cleanup uncertain; check owned processes before retrying." if getattr(exc, "__notes__", []) else ""
+        )
+        raise AgentRunnerError(f"{label} CLI timed out after {timeout_seconds:g} s{cleanup}") from None
+    except OSError:
+        raise AgentRunnerError(f"{label} CLI could not start; check command configuration before retrying") from None
     if result.returncode != 0:
-        detail = (result.stderr or "")[-CLI_DIAGNOSTIC_LIMIT:].strip()
-        if detail:
-            detail = f" {detail}"
-        raise AgentRunnerError(f"{label} CLI failed with exit code {result.returncode}.{detail}")
+        raise AgentRunnerError(
+            f"{label} CLI failed with exit code {result.returncode}; check agent configuration before retrying"
+        )
     if not (result.stdout or "").strip():
         raise AgentRunnerError(f"{label} CLI returned empty output")
     return result.stdout or ""
@@ -270,7 +394,7 @@ def _append_provenance(items: Sequence[ProvenanceRef], extra: ProvenanceRef) -> 
 
 
 def extract_json_payload(raw: str, *, label: str) -> dict[str, Any]:
-    """Extract a JSON object from CLI output, tolerating surrounding text."""
+    """Read exactly one JSON object, optionally in a complete json code fence."""
     return _extract_json_payload(raw, label=label)
 
 
@@ -278,24 +402,12 @@ def _extract_json_payload(raw: str, *, label: str) -> dict[str, Any]:
     stripped = raw.strip()
     if not stripped:
         raise AgentRunnerError(f"{label} CLI output was empty")
-
-    decoder = json.JSONDecoder()
+    if stripped.startswith("```json\n") and stripped.endswith("\n```"):
+        stripped = stripped[len("```json\n") : -len("\n```")]
     try:
-        parsed = json.loads(stripped)
-    except json.JSONDecodeError as exc:
-        # Fall back to decoding the first valid JSON object embedded in surrounding text.
-        for idx, ch in enumerate(stripped):
-            if ch != "{":
-                continue
-            try:
-                candidate, _end = decoder.raw_decode(stripped, idx)
-            except json.JSONDecodeError:
-                continue
-            if isinstance(candidate, dict):
-                parsed = candidate
-                break
-        else:
-            raise AgentRunnerError(f"{label} CLI returned invalid JSON: {exc}") from exc
+        parsed = load_control_json(stripped)
+    except ValueError:
+        raise AgentRunnerError(f"{label} CLI returned invalid or excessive JSON") from None
     if not isinstance(parsed, dict):
         raise AgentRunnerError(f"{label} CLI JSON must be an object")
     return parsed
@@ -303,10 +415,16 @@ def _extract_json_payload(raw: str, *, label: str) -> dict[str, Any]:
 
 def _load_prompt_text(*, prompt_path: Path | None, prompt_text: str | None) -> str:
     if prompt_text is not None:
+        _encode_cli_input(prompt_text)
         return prompt_text
     if prompt_path is None:
         raise ValueError("prompt_path or prompt_text is required")
-    return prompt_path.read_text(encoding="utf-8")
+    try:
+        return read_regular_utf8(prompt_path, max_bytes=CLI_INPUT_LIMIT)
+    except (OSError, ValueError):
+        raise AgentRunnerError(
+            "CLI prompt must be a coherent regular UTF-8 file within the 1 MiB input limit"
+        ) from None
 
 
 def _extract_review_payload(payload: Mapping[str, Any]) -> dict[str, Any]:

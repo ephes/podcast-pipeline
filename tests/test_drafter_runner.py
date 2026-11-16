@@ -44,20 +44,19 @@ def test_run_parses_json_from_stdout(monkeypatch: pytest.MonkeyPatch) -> None:
     expected = {"summary_markdown": "hello", "bullets": ["a", "b"]}
     monkeypatch.setattr(agent_runners, "run_cli_process", _fake_run_ok(json.dumps(expected)))
     runner = _make_runner()
-    result = runner.run("test prompt")
-    assert result == expected
+    assert runner.run("test prompt") == expected
 
 
-def test_run_extracts_json_from_surrounding_text(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_run_refuses_json_in_surrounding_text(monkeypatch: pytest.MonkeyPatch) -> None:
     expected = {"key": "value"}
     raw_output = f"Some preamble text\n{json.dumps(expected)}\nSome trailing text"
     monkeypatch.setattr(agent_runners, "run_cli_process", _fake_run_ok(raw_output))
     runner = _make_runner()
-    result = runner.run("test prompt")
-    assert result == expected
+    with pytest.raises(AgentRunnerError, match="JSON"):
+        runner.run("test prompt")
 
 
-def test_run_extracts_first_valid_json_when_trailing_text_contains_braces(
+def test_run_refuses_trailing_text_with_braces(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     expected = {"key": "value"}
@@ -66,8 +65,8 @@ def test_run_extracts_first_valid_json_when_trailing_text_contains_braces(
     )
     monkeypatch.setattr(agent_runners, "run_cli_process", _fake_run_ok(raw_output))
     runner = _make_runner()
-    result = runner.run("test prompt")
-    assert result == expected
+    with pytest.raises(AgentRunnerError, match="JSON"):
+        runner.run("test prompt")
 
 
 def test_run_raises_on_nonzero_exit(monkeypatch: pytest.MonkeyPatch) -> None:

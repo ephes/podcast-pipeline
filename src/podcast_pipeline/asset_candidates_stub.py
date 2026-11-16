@@ -17,6 +17,7 @@ from podcast_pipeline.domain.models import (
 _FAKE_UUID_NAMESPACE = UUID("00000000-0000-0000-0000-000000000000")
 _DEFAULT_CREATED_AT = datetime(2000, 1, 1, 0, 0, 0, tzinfo=UTC)
 _GENERATOR_VERSION = "stub_asset_generator_v1"
+MAX_CANDIDATES_PER_ASSET = 10
 
 
 @dataclass(frozen=True)
@@ -24,6 +25,11 @@ class DraftCandidatesConfig:
     candidates_per_asset: int = 3
     created_at: datetime = _DEFAULT_CREATED_AT
     version: str = _GENERATOR_VERSION
+
+
+def validate_candidate_count(count: object) -> None:
+    if type(count) is not int or not 1 <= count <= MAX_CANDIDATES_PER_ASSET:
+        raise ValueError(f"candidates_per_asset must be an integer from 1 to {MAX_CANDIDATES_PER_ASSET}")
 
 
 def _deterministic_uuid(*, prefix: str, parts: Sequence[str]) -> UUID:
@@ -342,8 +348,9 @@ def generate_draft_candidates(
     chapters: Sequence[str],
     config: DraftCandidatesConfig,
 ) -> dict[str, list[Candidate]]:
-    if config.candidates_per_asset < 1:
-        raise ValueError("candidates_per_asset must be >= 1")
+    if not isinstance(config, DraftCandidatesConfig):
+        raise ValueError("config must be DraftCandidatesConfig")
+    validate_candidate_count(config.candidates_per_asset)
 
     assets: dict[str, list[Candidate]] = {}
     for kind in AssetKind:

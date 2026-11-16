@@ -245,7 +245,7 @@ print(json.dumps({key: [c.model_dump(mode='json') for c in values] for key, valu
 
 @pytest.mark.parametrize("count", [0, -1])
 def test_invalid_candidate_counts_are_rejected(count: int, summary: EpisodeSummary) -> None:
-    with pytest.raises(ValueError, match="candidates_per_asset must be >= 1"):
+    with pytest.raises(ValueError, match="candidates_per_asset must be an integer from 1 to 10"):
         generate_draft_candidates(
             episode_summary=summary, chapters=[], config=DraftCandidatesConfig(candidates_per_asset=count)
         )
