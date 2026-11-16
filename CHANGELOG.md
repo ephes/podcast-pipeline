@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- Recheck the terminal picker's displayed candidate bytes and file generation under the update lock.
+  Preserve the prior selection on change and print each commit receipt immediately, with saved/total
+  progress on cancellation or later failure.
+
+- Check canonical selected text against candidate state or custom provenance before declaring it ready.
+  Escape terminal controls and bound status lines and CLI candidate previews without changing stored text.
+
+- Validate status protocol directory identity and complete review-engine evidence before reporting
+  convergence; refuse duplicate JSON members and duplicate, coerced or contradictory review histories.
+
+- Bound read-only status inspection to regular UTF-8 JSON, 8 MiB per file, 32 MiB total and
+  10,000 visited entries; report invalid evidence or incomplete inspection without a ready checklist.
+  Refused reads count their file size, not the whole per-file allowance; invalid candidate files are named.
+
 - Bind regeneration chapter reads to opened workspace/file authority with coherent UTF-8 byte/line
   limits; refuse swaps, special files and excessive chapter input before starting the agent.
 - Cap chunk source and complete chunk/reduction prompts at 256 KiB of UTF-8. Admit reduction JSON

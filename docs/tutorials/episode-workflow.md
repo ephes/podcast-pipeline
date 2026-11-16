@@ -739,3 +739,33 @@ API errors show the trusted method, endpoint, HTTP status and allowlisted error/
 only the destination origin (no userinfo, path, query or fragment) and are never followed. Response bodies and raw
 server messages are omitted, including revision-conflict payloads; conflicts still explain checking Wagtail before
 retrying. Checkpoint recovery instructions omit remote edit URLs too.
+
+## Inspect workspace status
+
+`podcast status --workspace <episode>` is read-only. Status JSON must be coherent regular UTF-8
+workspace files (no symlink components), at most 8 MiB each and 64 JSON container levels deep.
+An inspection admits at most 10,000 directory entries (including ignored names and repeated scans)
+and 32 MiB of file contents. Exceeding an aggregate limit reports **inspection incomplete** with
+exit code 1 and omits the checklist; split or clean up the workspace before retrying.
+Invalid state blocks selection readiness; invalid review evidence stops status with a concise error.
+Review protocol folders must match a supported asset ID and supply unique evidence for that asset.
+Status uses the review engine's persisted protocol contract: contiguous strict integer iterations,
+matching creator/reviewer records, and a terminal decision matching the latest terminal review.
+A `converged` label alone, a missing final review or a contradictory decision is invalid evidence.
+Selection readiness requires the canonical, nonblank selected file in the recorded candidate's
+format and matching its content in `state.json`; unrelated stems, superseded formats and stale
+text do not count. Custom text uses the asset's canonical custom format and its manual-selection
+provenance marker. Curated tags keep their markdown selection convention.
+Status lines and CLI picker previews escape terminal controls (including ESC, OSC payload delimiters,
+CR and C1) as visible text. Status lines are capped at 1,000 characters and candidate previews at 72;
+these display limits never change the stored copy or review evidence.
+
+The terminal picker binds each displayed candidate to its canonical JSON bytes and file generation
+(regular UTF-8 JSON within 8 MiB). It rechecks that evidence inside the workspace update lock before
+publishing. If the candidate was regenerated, replaced or deleted while you were choosing, the
+previous selection survives: reload candidates by running `podcast pick` again and make a fresh choice.
+Even replacement with identical bytes requires a fresh choice. Workspace writers share this lock;
+manual filesystem edits after the final comparison are outside that coordination guarantee.
+Each successful asset prints `Selected <asset>: <path> (candidate=<id>)` immediately after commit.
+Cancellation or a later failure prints `Pick incomplete: <saved>/<total> assets committed` and exits
+unsuccessfully. Earlier receipts remain saved; inspect the current selection before continuing.
