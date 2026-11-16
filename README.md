@@ -101,7 +101,9 @@ Details: `docs/reference/configuration.md`.
 Generated `cms_tags`, `audio_tags` and `itunes_keywords` candidates target 6-10 specific terms and are post-filtered:
 host names, show-level constants (`Python Podcast`, `Deutsch`, ...) and a configurable `tags.exclude` list are dropped,
 and the count is capped (`tags.max`, default 12). `tags.examples` can point at a `podcast rss-examples` JSONL export so
-past episodes' keywords serve as few-shot examples. `podcast pick --web` and the dashboard merge all tag candidates
+past episodes' keywords serve as few-shot examples. Corpus files must be coherent regular UTF-8 files
+(no symlinks), at most 8 MiB, 256 KiB per line and 10,000 physical lines; ambiguous or excessive JSON
+fails as a configuration error before the agent starts. `podcast pick --web` and the dashboard merge all tag candidates
 into one pool ordered by agreement, where you toggle individual tags instead of picking a whole list (at most
 `tags.max`); tag assets never block "Done". Details: `docs/reference/configuration.md` ("Tag assets").
 

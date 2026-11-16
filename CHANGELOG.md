@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Admit few-shot corpora through a bounded nonblocking regular-file read with generation checks.
+  Refuse duplicate JSON members, nonstandard/nonfinite numbers and excessive nesting/integers with
+  content-free line diagnostics before tag generation starts.
+
 - Bind RSS example IDs to canonical credential-free feed sources; regenerate old corpora to avoid mixed IDs.
   Atomically publish validated chunk summary JSON so pre-publication failures preserve the old cache.
 
