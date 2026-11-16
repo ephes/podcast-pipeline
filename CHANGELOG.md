@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Bound complete dashboard request-body acquisition to ten seconds; stop on timeout or disconnect
+  before starting work or changing workspace state.
+
+- Reject dashboard JSON with duplicate members at any depth or nonfinite numbers before endpoint dispatch.
+
 - Keep control JSON admission linear for unterminated or escape-heavy strings so adversarial agent
   output cannot stall summary or result parsing. Transcriber stdout keeps replacement decoding; only
   agent protocol stdout must be exact UTF-8. Agent and transcription supervision needs `os.waitid`

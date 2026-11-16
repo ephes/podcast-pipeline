@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import io
 import json
+import math
 import socket
 import sys
 import threading
@@ -15,7 +16,7 @@ import uvicorn
 from starlette.applications import Starlette
 from starlette.datastructures import Headers
 from starlette.middleware import Middleware
-from starlette.requests import Request
+from starlette.requests import ClientDisconnect, Request
 from starlette.responses import HTMLResponse, JSONResponse, PlainTextResponse, Response, StreamingResponse
 from starlette.routing import Route
 from starlette.types import ASGIApp, Receive, Scope, Send
@@ -31,6 +32,20 @@ MAX_CANDIDATES = 10
 _DEFAULT_REVIEW_ITERATIONS = 3
 MAX_REVIEW_ITERATIONS = 10
 MAX_JSON_BODY_BYTES = 64 * 1024
+REQUEST_BODY_TIMEOUT_SECONDS = 10.0
+
+
+def _unique_members(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("Duplicate member")
+        result[key] = value
+    return result
+
+
+def _invalid_constant(value: str) -> Any:
+    raise ValueError("Invalid JSON constant")
 
 
 def _json_depth_allowed(payload: Any) -> bool:
@@ -42,6 +57,8 @@ def _json_depth_allowed(payload: Any) -> bool:
                 return False
             children = value.values() if isinstance(value, dict) else value
             pending.extend((child, depth + 1) for child in children)
+        elif isinstance(value, float) and not math.isfinite(value):
+            raise ValueError("Nonfinite number")
     return True
 
 
@@ -102,17 +119,31 @@ class _DashboardApi:
 
     async def _parse_json_object(self, request: Request) -> tuple[dict[str, Any] | None, Response | None]:
         raw = bytearray()
-        async for chunk in request.stream():
-            if len(raw) + len(chunk) > MAX_JSON_BODY_BYTES:
-                return None, JSONResponse({"error": "JSON body exceeds 64 KiB limit"}, status_code=413)
-            raw.extend(chunk)
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + REQUEST_BODY_TIMEOUT_SECONDS
         try:
-            payload = json.loads(raw.decode("utf-8"))
+            async with asyncio.timeout_at(deadline):
+                async for chunk in request.stream():
+                    # A ready receive may not yield control to the timeout callback.
+                    if loop.time() >= deadline:
+                        raise TimeoutError
+                    if len(raw) + len(chunk) > MAX_JSON_BODY_BYTES:
+                        return None, JSONResponse({"error": "JSON body exceeds 64 KiB limit"}, status_code=413)
+                    raw.extend(chunk)
+        except TimeoutError:
+            return None, JSONResponse({"error": "Request body timed out"}, status_code=408)
+        except ClientDisconnect:
+            return None, JSONResponse({"error": "Client disconnected"}, status_code=400)
+        try:
+            payload = json.loads(
+                raw.decode("utf-8"), object_pairs_hook=_unique_members, parse_constant=_invalid_constant
+            )
+            depth_allowed = _json_depth_allowed(payload)
         except (ValueError, UnicodeError, RecursionError):
             return None, JSONResponse({"error": "Invalid JSON"}, status_code=400)
         if not isinstance(payload, dict):
             return None, JSONResponse({"error": "Expected JSON object"}, status_code=400)
-        if not _json_depth_allowed(payload):
+        if not depth_allowed:
             return None, JSONResponse({"error": "JSON nesting exceeds 64 levels"}, status_code=400)
         return payload, None
 

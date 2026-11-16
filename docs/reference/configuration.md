@@ -302,8 +302,11 @@ Custom wrappers must not hard-code the workspace transcript path.
 ### Dashboard request and history limits
 
 Dashboard JSON requests are streamed with a 64 KiB body ceiling (413 on overflow), regardless of
-Content-Length. Invalid UTF-8, malformed JSON or nesting beyond 64 levels returns 400 before work starts;
-local host/origin checks run before body consumption. A worker launch failure records a failed job,
+Content-Length. Invalid UTF-8, malformed JSON, duplicate object members at any depth, nonfinite numbers
+(including exponent overflow), or nesting beyond 64 levels returns 400 before work starts;
+local host/origin checks run before body consumption. Body acquisition has one monotonic 10-second
+deadline across all chunks (408 on expiry); disconnects stop reading with 400. Neither starts work or
+changes workspace state, and external request cancellation propagates. A worker launch failure records a failed job,
 returns 503 and permits immediate retry while preserving single-flight admission.
 Each job retains the latest 128 KiB / 1024 progress entries; oversized writes retain a UTF-8 tail.
 JSON/SSE responses include an earlier-progress-truncated notice when history was evicted.
