@@ -391,3 +391,9 @@ with a line/category diagnostic before the agent starts. See `few-shot-dataset-j
 
 Agent calls require complete UTF-8 stdin delivery and retire the owned process group before reaping the leader, including successful calls.
 A wrapper must keep all helpers in its session/process group; detached sessions are outside this ownership boundary.
+
+Agent cleanup adds at most a one-second leader reap allowance and three 50 ms thread joins.
+All pipe closes are attempted even after a signal/wait failure. An uncertain cleanup refuses success;
+a primary timeout/interruption remains primary with a fixed cleanup note. Check owned processes before retrying.
+On Darwin, an EPERM group signal is accepted only when libproc proves the reserved leader is the sole member.
+Stdout must be exact UTF-8; stderr remains a separately byte-bounded diagnostic stream.

@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Bound agent cleanup to a one-second reap allowance, retain primary failures with safe cleanup uncertainty,
+  and reject malformed UTF-8 protocol output instead of replacing its bytes.
+
 - Agent calls require complete UTF-8 stdin delivery and retire the owned process group before reaping the leader, including successful calls.
 
 - Recheck the terminal picker's displayed candidate bytes and file generation under the update lock.

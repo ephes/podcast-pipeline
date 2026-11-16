@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import ctypes
 import json
 import math
 import os
 import signal
 import subprocess
+import sys
 import threading
 import time
 from collections.abc import Callable, Mapping, Sequence
@@ -45,6 +47,7 @@ class AgentRunnerError(RuntimeError):
 CLI_STDOUT_LIMIT = 8 * 1024 * 1024
 CLI_STDERR_LIMIT = 1024 * 1024
 CLI_DIAGNOSTIC_LIMIT = 4096
+CLI_CLEANUP_SECONDS = 1.0
 
 
 def run_cli_process(
@@ -90,20 +93,45 @@ def run_cli_process(
         ),
         threading.Thread(target=_feed_cli_pipe, args=(process.stdin, encoded_input, failures, done[2]), daemon=True),
     ]
+    primary: BaseException | None = None
     try:
         for thread in threads:
             thread.start()
         _wait_for_cli(process, failures, done, command, timeout, deadline)
+    except BaseException as exc:
+        primary = exc
+        raise
     finally:
+        try:
+            _cleanup_cli(process, threads)
+        except BaseException:
+            if primary is None:
+                raise AgentRunnerError("CLI cleanup uncertain; check owned processes before retrying") from None
+            primary.add_note("CLI cleanup uncertain; check owned processes before retrying")
+    try:
+        stdout = buffers[0].decode("utf-8")
+    except UnicodeError:
+        raise AgentRunnerError("CLI stdout must be valid UTF-8") from None
+    return subprocess.CompletedProcess(command, process.returncode, stdout, buffers[1].decode(errors="replace"))
+
+
+def _cleanup_cli(process: subprocess.Popen[bytes], threads: list[threading.Thread]) -> None:
+    uncertain = False
+    try:
         _kill_process_group(process)
-        for pipe in (process.stdin, process.stdout, process.stderr):
-            pipe.close()
-        for thread in threads:
-            if thread.ident is not None:
-                thread.join(timeout=0.05)
-    return subprocess.CompletedProcess(
-        command, process.returncode, buffers[0].decode(errors="replace"), buffers[1].decode(errors="replace")
-    )
+    except BaseException:
+        uncertain = True
+    for pipe in (process.stdin, process.stdout, process.stderr):
+        try:
+            if pipe is not None:
+                pipe.close()
+        except BaseException:
+            uncertain = True
+    for thread in threads:
+        if thread.ident is not None:
+            thread.join(timeout=0.05)
+    if uncertain:
+        raise AgentRunnerError("CLI cleanup uncertain")
 
 
 def _drain_cli_pipe(
@@ -165,11 +193,48 @@ def _wait_for_cli(
 
 
 def _kill_process_group(process: subprocess.Popen[bytes]) -> None:
+    if process.returncode is not None:
+        raise AgentRunnerError("CLI process ownership lost before retirement")
+    uncertain = False
     try:
         os.killpg(process.pid, signal.SIGKILL)
-    except (ProcessLookupError, PermissionError):
-        process.kill()
-    process.wait()
+    except ProcessLookupError:
+        pass
+    except PermissionError:
+        # Darwin can report EPERM when only the reserved zombie leader remains.
+        # Prove that exact membership through libproc; never ignore a live helper.
+        uncertain = not _darwin_leader_only(process.pid)
+        try:
+            process.kill()
+        except OSError:
+            pass
+    except OSError:
+        uncertain = True
+        try:
+            process.kill()
+        except OSError:
+            pass
+    try:
+        process.wait(timeout=CLI_CLEANUP_SECONDS)
+    except (OSError, subprocess.TimeoutExpired):
+        uncertain = True
+    if uncertain:
+        raise AgentRunnerError("CLI cleanup uncertain")
+
+
+def _darwin_leader_only(pid: int) -> bool:
+    if sys.platform != "darwin":
+        return False
+    try:
+        libproc = ctypes.CDLL("/usr/lib/libproc.dylib", use_errno=True)
+        list_members = libproc.proc_listpgrppids
+        list_members.argtypes = [ctypes.c_int, ctypes.c_void_p, ctypes.c_int]
+        list_members.restype = ctypes.c_int
+        members = (ctypes.c_int * 2)()
+        count = list_members(pid, members, ctypes.sizeof(members))
+        return count == 1 and members[0] == pid
+    except (OSError, AttributeError):
+        return False
 
 
 def run_agent_cli(
