@@ -26,6 +26,11 @@ MAX_INSTRUCTION_CHARS = 2000
 MAX_SUMMARY_BYTES = 1024 * 1024
 MAX_REFINE_PROMPT_BYTES = 256 * 1024
 
+
+class RefinePromptTooLargeError(ValueError):
+    """The assembled refinement prompt exceeds the drafter input limit."""
+
+
 _RESPONSE_SCHEMA = {
     "type": "object",
     "required": ["content"],
@@ -99,7 +104,7 @@ def build_refine_prompt(
         response_schema=json.dumps(_RESPONSE_SCHEMA, indent=2),
     )
     if len(prompt.encode("utf-8")) > MAX_REFINE_PROMPT_BYTES:
-        raise ValueError(
+        raise RefinePromptTooLargeError(
             f"Refinement prompt exceeds {MAX_REFINE_PROMPT_BYTES} UTF-8 bytes; "
             "shorten the source text, editorial notes or episode summary and retry."
         )

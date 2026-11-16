@@ -625,6 +625,25 @@ def test_post_api_refine_reports_drafter_failure(
     assert ctx.refining == set()
 
 
+def test_post_api_refine_reports_oversized_prompt_as_input_error(
+    pick_server: _PickServerTuple, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _server, base_url, ctx, _candidates = pick_server
+    message = (
+        f"Refinement prompt exceeds {asset_refine_llm.MAX_REFINE_PROMPT_BYTES} UTF-8 bytes; "
+        "shorten the source text, editorial notes or episode summary and retry."
+    )
+
+    def too_large(*, workspace: Path, request: RefineRequest) -> Candidate:
+        raise asset_refine_llm.RefinePromptTooLargeError(message)
+
+    monkeypatch.setattr(asset_refine_llm, "refine_asset_text", too_large)
+    status, data = _post_json(f"{base_url}/api/refine", {"asset_id": "description", "instruction": "x", "text": "y"})
+    assert status == 400
+    assert data == {"error": message, "code": "refine_prompt_too_large"}
+    assert ctx.refining == set()
+
+
 def test_post_api_refine_rejects_concurrent_refine_of_same_asset(
     pick_server: _PickServerTuple,
     monkeypatch: pytest.MonkeyPatch,

@@ -225,7 +225,8 @@ editor, choose the text to refine (the editor's text or one of the candidates), 
   prompt contains the asset's guidance, the text, the instruction, the asset's editorial notes (dashboard "Editorial
   Notes") and, when it exists, the episode summary as context.
 - The complete prompt, including guidance and schema, is limited to 256 KiB of UTF-8 bytes. Oversized requests
-  fail before the agent runs; shorten the source, notes or summary and retry. No factual context is truncated,
+  fail before the agent runs, and both the dashboard and the pick UI show the limit message; shorten the source,
+  notes or summary and retry. No factual context is truncated,
   and existing candidates and selections survive the refusal.
 - Optional summary JSON must be a regular, nonsymlink UTF-8 file of at most 1 MiB. Refinement omits missing
   summaries; unreadable, oversized, malformed or detectably changed files are omitted with a short diagnostic.
