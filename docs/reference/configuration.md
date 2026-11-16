@@ -421,3 +421,10 @@ changes before candidate/protocol publication. Episode metadata references and f
 be relative paths inside the workspace with no `..` or symlink components. Missing optional chapters
 or demo inputs stay empty; invalid existing inputs fail. `draft-candidates --chapters` remains an
 explicit operator file option outside the workspace, with the same regular-file and byte/line checks.
+
+Summary JSON for `draft-candidates` uses the strict control JSON contract above before EpisodeSummary
+validation: duplicate members, NaN/Infinity, nonfinite numbers and excessive structure fail with zero
+candidate writes. The summary file itself retains the tighter 1 MiB ceiling.
+`draft-candidates --candidates N` supports **1–10** variants per asset (default 3). The direct
+`generate_draft_candidates` API checks the same integer range, rejecting booleans and invalid config
+values before any rendering/storage work. At admitted counts the variant IDs and content remain deterministic.

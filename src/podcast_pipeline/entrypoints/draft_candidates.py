@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 import typer
@@ -8,7 +7,9 @@ import typer
 from podcast_pipeline.asset_candidates_stub import (
     DraftCandidatesConfig,
     generate_draft_candidates,
+    validate_candidate_count,
 )
+from podcast_pipeline.control_json import load_control_json
 from podcast_pipeline.domain.intermediate_formats import EpisodeSummary
 from podcast_pipeline.file_inputs import read_regular_utf8, read_workspace_utf8
 from podcast_pipeline.workspace_store import EpisodeWorkspaceStore
@@ -60,6 +61,7 @@ def run_draft_candidates(
     chapters: Path | None,
     candidates_per_asset: int,
 ) -> None:
+    validate_candidate_count(candidates_per_asset)
     store = EpisodeWorkspaceStore(workspace)
     summary_path = store.layout.episode_summary_json_path()
     if not summary_path.exists():
@@ -75,7 +77,10 @@ def run_draft_candidates(
         raise typer.BadParameter(
             "Invalid summary: require coherent regular workspace UTF-8 input within 1 MiB"
         ) from None
-    episode_summary = EpisodeSummary.model_validate(json.loads(summary_text))
+    try:
+        episode_summary = EpisodeSummary.model_validate(load_control_json(summary_text))
+    except ValueError:
+        raise typer.BadParameter("Invalid or excessive summary JSON evidence") from None
     chapters_lines = _load_chapters(store=store, chapters=chapters)
 
     assets = generate_draft_candidates(

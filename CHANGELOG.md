@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Require strict unambiguous summary JSON evidence for deterministic drafts. Limit candidate variants
+  to integers from 1 to 10 at CLI and generator admission before rendering or storage.
+
 - Bound deterministic draft and fake-demo input reads to coherent regular UTF-8 files, enforce chapter
   byte/line limits before generation, and contain episode-controlled references within the workspace.
 
