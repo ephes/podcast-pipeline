@@ -10,6 +10,7 @@ import typer
 from podcast_pipeline.domain.intermediate_formats import EpisodeSummary
 from podcast_pipeline.domain.models import AssetKind, Candidate, ProvenanceRef, TextFormat
 from podcast_pipeline.drafter_runner import DrafterRunner  # noqa: TC001
+from podcast_pipeline.pick_core import custom_selection_format, normalize_custom_selection_text
 from podcast_pipeline.prompting import PromptRenderer, render_asset_candidates_prompt
 from podcast_pipeline.tag_assets import TAG_ASSET_IDS, TagSettings, postprocess_tag_content, tag_few_shots
 
@@ -46,13 +47,13 @@ _ASSET_GUIDANCE: dict[str, str] = {
         "Write a short summary (2-3 sentences) in German suitable for RSS feeds and podcast directories."
     ),
     AssetKind.title_detail: (
-        "Write a detailed episode title in German that includes the main topic. Keep it under 100 characters."
+        "Write a single-line episode title in German that includes the main topic. Keep it under 100 characters."
     ),
     AssetKind.title_seo: (
-        "Write an SEO-optimized episode title in German with relevant keywords. Keep it under 70 characters."
+        "Write a single-line SEO episode title in German with relevant keywords. Keep it under 70 characters."
     ),
     AssetKind.subtitle_auphonic: (
-        "Write a short subtitle (one sentence) in German for the Auphonic metadata. Keep it under 255 characters."
+        "Write a single-line subtitle (one sentence) in German for Auphonic metadata. Keep it under 255 characters."
     ),
     AssetKind.slug: (
         "Generate a URL-safe slug in lowercase English/German. Use hyphens to "
@@ -92,6 +93,8 @@ def _tag_count_target(max_tags: int) -> str:
 
 def _asset_guidance(asset_id: str, *, tag_settings: TagSettings) -> str:
     guidance = _ASSET_GUIDANCE.get(asset_id, f"Generate content for {asset_id}.")
+    if custom_selection_format(asset_id) == TextFormat.plain:
+        guidance += "\nReturn plain text without Markdown headings or formatting."
     if asset_id in TAG_ASSET_IDS:
         guidance += (
             f"\n- Return {_tag_count_target(tag_settings.max_tags)}, never more than {tag_settings.max_tags}. "
@@ -127,6 +130,8 @@ def _parse_raw_candidates(
             raise RuntimeError(f"Drafter candidate {idx} for {asset_id} is not an object")
         raw = dict(raw)
         raw.pop("candidate_id", None)
+        raw.pop("created_at", None)
+        raw.pop("provenance", None)
         raw.setdefault("asset_id", asset_id)
         if raw.get("asset_id") != asset_id:
             raise RuntimeError(
@@ -134,18 +139,25 @@ def _parse_raw_candidates(
             )
         raw.setdefault("format", TextFormat.markdown.value)
         content = raw.get("content")
+        if custom_selection_format(asset_id) == TextFormat.plain:
+            try:
+                if not isinstance(content, str):
+                    raise ValueError("Expected text")
+                content = normalize_custom_selection_text(asset_id, content)
+            except ValueError:
+                raise RuntimeError(f"Drafter candidate {idx} for {asset_id} has unusable text") from None
+            raw["format"] = TextFormat.plain.value
         if isinstance(content, str):
             raw["content"] = postprocess_tag_content(asset_id, content, settings=tag_settings, hosts=hosts)
-        raw.setdefault(
-            "provenance",
-            [
-                ProvenanceRef(
-                    kind="llm_drafter",
-                    ref=f"{provenance_prefix}:{idx + 1:02d}",
-                ).model_dump(mode="json")
-            ],
-        )
-        candidates.append(Candidate.model_validate(raw))
+        candidate = Candidate.model_validate(raw)
+        candidate.provenance = [
+            ProvenanceRef(
+                kind="llm_drafter",
+                ref=f"{provenance_prefix}:{idx + 1:02d}",
+                created_at=candidate.created_at,
+            )
+        ]
+        candidates.append(candidate)
     return candidates
 
 

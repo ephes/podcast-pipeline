@@ -600,9 +600,12 @@ class EpisodeWorkspaceStore:
         path = self.layout.candidate_json_path(asset_id, candidate_id)
         raw = _read_json(path)
         try:
-            return Candidate.model_validate(raw)
+            candidate = Candidate.model_validate(raw)
         except ValidationError as exc:
             raise WorkspaceStoreError(f"Invalid candidate JSON at {path}: {exc}") from exc
+        if candidate.asset_id != asset_id or candidate.candidate_id != candidate_id:
+            raise WorkspaceStoreError(f"Candidate identity does not match requested path at {path}")
+        return candidate
 
     def write_review(self, asset_id: str, review: ReviewIteration) -> Path:
         path = self.layout.review_iteration_json_path(
@@ -628,9 +631,12 @@ class EpisodeWorkspaceStore:
         )
         raw = _read_json(path)
         try:
-            return ReviewIteration.model_validate(raw)
+            review = ReviewIteration.model_validate(raw)
         except ValidationError as exc:
             raise WorkspaceStoreError(f"Invalid review JSON at {path}: {exc}") from exc
+        if review.iteration != iteration or review.reviewer != reviewer:
+            raise WorkspaceStoreError(f"Review identity does not match requested path at {path}")
+        return review
 
     def write_selected_text(
         self,

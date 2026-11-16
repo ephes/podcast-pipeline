@@ -9,6 +9,8 @@ candidate that records the instruction in its provenance.
 from __future__ import annotations
 
 import json
+import os
+import stat
 from dataclasses import dataclass
 from pathlib import Path
 from uuid import UUID
@@ -21,6 +23,13 @@ from podcast_pipeline.pick_core import custom_selection_format, normalize_custom
 
 REFINE_PROVENANCE_KIND = "llm_refine"
 MAX_INSTRUCTION_CHARS = 2000
+MAX_SUMMARY_BYTES = 1024 * 1024
+MAX_REFINE_PROMPT_BYTES = 256 * 1024
+
+
+class RefinePromptTooLargeError(ValueError):
+    """The assembled refinement prompt exceeds the drafter input limit."""
+
 
 _RESPONSE_SCHEMA = {
     "type": "object",
@@ -84,7 +93,7 @@ def build_refine_prompt(
     context = ""
     if episode_summary_markdown:
         context = f"\nEpisode summary (context only):\n{episode_summary_markdown.strip()}\n"
-    return _REFINE_TEMPLATE.format(
+    prompt = _REFINE_TEMPLATE.format(
         asset_id=asset_id,
         asset_guidance=_ASSET_GUIDANCE.get(asset_id, f"Text for {asset_id}."),
         format_rule=format_rule,
@@ -94,6 +103,12 @@ def build_refine_prompt(
         episode_context=context,
         response_schema=json.dumps(_RESPONSE_SCHEMA, indent=2),
     )
+    if len(prompt.encode("utf-8")) > MAX_REFINE_PROMPT_BYTES:
+        raise RefinePromptTooLargeError(
+            f"Refinement prompt exceeds {MAX_REFINE_PROMPT_BYTES} UTF-8 bytes; "
+            "shorten the source text, editorial notes or episode summary and retry."
+        )
+    return prompt
 
 
 def validate_instruction(instruction: str) -> str:
@@ -157,13 +172,6 @@ def refine_asset_text(
         raise ValueError("There is no text to refine")
     asset_id = request.asset_id
 
-    if runner is None:
-        from podcast_pipeline.agent_cli_config import load_agent_cli_bundle
-        from podcast_pipeline.drafter_runner import DrafterCliRunner
-
-        bundle = load_agent_cli_bundle(workspace=workspace)
-        runner = DrafterCliRunner(config=bundle.drafter, timeout_seconds=timeout_seconds, cwd=str(workspace))
-
     prompt = build_refine_prompt(
         asset_id=asset_id,
         source_text=request.source_text,
@@ -171,6 +179,13 @@ def refine_asset_text(
         editorial_notes=request.editorial_notes,
         episode_summary_markdown=_episode_summary_markdown(workspace),
     )
+    if runner is None:
+        from podcast_pipeline.agent_cli_config import load_agent_cli_bundle
+        from podcast_pipeline.drafter_runner import DrafterCliRunner
+
+        bundle = load_agent_cli_bundle(workspace=workspace)
+        runner = DrafterCliRunner(config=bundle.drafter, timeout_seconds=timeout_seconds, cwd=str(workspace))
+
     typer.echo(f"  Refining {asset_id}: {instruction}", err=True)
     payload = runner.run(prompt)
     return parse_refined_candidate(
@@ -187,12 +202,44 @@ def _episode_summary_markdown(workspace: Path) -> str | None:
     from podcast_pipeline.workspace_store import EpisodeWorkspaceLayout
 
     path = EpisodeWorkspaceLayout(root=workspace).episode_summary_json_path()
-    if not path.exists():
-        return None
     try:
-        return EpisodeSummary.model_validate(json.loads(path.read_text(encoding="utf-8"))).summary_markdown
-    except (OSError, ValueError):
+        raw = _read_summary_snapshot(path)
+        return EpisodeSummary.model_validate(json.loads(raw)).summary_markdown
+    except FileNotFoundError:
         return None
+    except (OSError, ValueError, RecursionError):
+        typer.echo(
+            "Refinement: optional episode summary omitted (unusable or changed file; rebuild summary).", err=True
+        )
+        return None
+
+
+def _read_summary_snapshot(path: Path) -> str:
+    """Read one bounded regular-file generation; refuse observed descriptor changes."""
+    fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
+    try:
+        before = os.fstat(fd)
+        if not stat.S_ISREG(before.st_mode) or before.st_size > MAX_SUMMARY_BYTES:
+            raise ValueError("Summary must be a regular file within the byte limit")
+        chunks: list[bytes] = []
+        size = 0
+        while chunk := os.read(fd, min(64 * 1024, MAX_SUMMARY_BYTES + 1 - size)):
+            size += len(chunk)
+            if size > MAX_SUMMARY_BYTES:
+                raise ValueError("Summary exceeds byte limit")
+            chunks.append(chunk)
+        after = os.fstat(fd)
+        if (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns, before.st_ctime_ns) != (
+            after.st_dev,
+            after.st_ino,
+            after.st_size,
+            after.st_mtime_ns,
+            after.st_ctime_ns,
+        ) or size != before.st_size:
+            raise ValueError("Summary changed during read")
+        return b"".join(chunks).decode("utf-8")
+    finally:
+        os.close(fd)
 
 
 def build_refine_request(

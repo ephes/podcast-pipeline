@@ -128,3 +128,96 @@ def test_regeneration_preserves_existing_identity(
         candidates = [Candidate.model_validate_json(path.read_text()) for path in paths]
         assert len({c.candidate_id for c in candidates}) == 3
         assert {c.content for c in candidates} == {old.content, "Alternative A", "Alternative B"}
+
+
+def test_regeneration_owns_candidate_origin_and_observation_time(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from datetime import UTC, datetime
+
+    store = _workspace(tmp_path)
+    old = Candidate(asset_id="description", content="Historical copy")
+    old_path = store.write_candidate(old)
+    historical = old_path.read_bytes()
+    forged = {
+        "candidate_id": str(old.candidate_id),
+        "created_at": "2099-01-01T00:00:00Z",
+        "provenance": [{"kind": "producer", "ref": "forged-origin"}],
+        "content": "New copy",
+    }
+    runner = Mock()
+    runner.return_value.run.return_value = {"candidates": [forged]}
+    monkeypatch.setattr("podcast_pipeline.drafter_runner.DrafterCliRunner", runner)
+    before = datetime.now(UTC)
+    (candidate,) = generate_single_asset_candidates_llm(
+        workspace=tmp_path, asset_id="description", candidates_per_asset=1
+    )
+    after = datetime.now(UTC)
+    assert candidate.content == "New copy"
+    assert candidate.candidate_id != old.candidate_id
+    assert before <= candidate.created_at <= after
+    (origin,) = candidate.provenance
+    assert (origin.kind, origin.ref, origin.created_at) == ("llm_drafter", "regen_v1:01", candidate.created_at)
+    assert forged["created_at"] == "2099-01-01T00:00:00Z"
+    assert old_path.read_bytes() == historical
+
+
+@pytest.mark.parametrize(
+    ("asset_id", "bad_text"),
+    [
+        ("title_detail", "PRIVATE_SENTINEL\nSecond line"),
+        ("title_seo", "PRIVATE_SENTINEL\rSecond line"),
+        ("subtitle_auphonic", "PRIVATE_SENTINEL\r\nSecond line"),
+        ("slug", "PRIVATE_SENTINEL invalid slug"),
+        ("slug", "bad--slug"),
+        ("slug", ""),
+    ],
+)
+def test_regeneration_semantics_reject_entire_response_before_publication(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, asset_id: str, bad_text: str
+) -> None:
+    store = _workspace(tmp_path)
+    original = Candidate(asset_id=asset_id, content="historical")
+    store.write_candidate(original)
+    before = {path: path.read_bytes() for path in store.layout.copy_candidates_dir.rglob("*") if path.is_file()}
+    runner = Mock()
+    runner.return_value.run.return_value = {"candidates": [{"content": "valid-title"}, {"content": bad_text}]}
+    monkeypatch.setattr("podcast_pipeline.drafter_runner.DrafterCliRunner", runner)
+    ctx = DashboardContext(workspace=tmp_path)
+    job = BackgroundJob(job_id="test", stage="regenerate")
+    _run_regenerate_job(ctx, job, asset_id, 2)
+    assert job.status == "failed"
+    assert job.error == f"Drafter candidate 1 for {asset_id} has unusable text"
+    assert "PRIVATE_SENTINEL" not in job.error
+    assert {
+        path: path.read_bytes() for path in store.layout.copy_candidates_dir.rglob("*") if path.is_file()
+    } == before
+
+
+@pytest.mark.parametrize(
+    ("asset_id", "text"),
+    [
+        ("title_detail", "Über Python 🐍"),
+        ("title_seo", "Bibliotheken für morgen"),
+        ("subtitle_auphonic", "Werkzeuge im Gespräch"),
+        ("slug", "python-315-neuigkeiten"),
+    ],
+)
+def test_generated_single_line_assets_round_trip_selection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, asset_id: str, text: str
+) -> None:
+    from podcast_pipeline.domain.models import TextFormat
+    from podcast_pipeline.pick_core import read_current_selection
+
+    store = _workspace(tmp_path)
+    runner = Mock()
+    runner.return_value.run.return_value = {"candidates": [{"content": text, "format": "markdown"}]}
+    monkeypatch.setattr("podcast_pipeline.drafter_runner.DrafterCliRunner", runner)
+    (candidate,) = generate_single_asset_candidates_llm(workspace=tmp_path, asset_id=asset_id, candidates_per_asset=1)
+    assert candidate.content == text
+    assert candidate.format == TextFormat.plain
+    store.write_candidate(candidate)
+    assert store.read_candidate(asset_id, candidate.candidate_id) == candidate
+    ctx = DashboardContext(workspace=tmp_path)
+    assert ctx.select_candidate(asset_id, str(candidate.candidate_id)) is None
+    assert read_current_selection(store.layout, asset_id) == (TextFormat.plain, text + "\n")

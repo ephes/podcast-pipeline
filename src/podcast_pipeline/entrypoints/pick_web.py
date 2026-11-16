@@ -590,6 +590,10 @@ class _PickWebHandler(BaseHTTPRequestHandler):
             candidate = asset_refine_llm.refine_asset_text(workspace=self.ctx.store.layout.root, request=prepared)
             with self.ctx.lock:
                 self.ctx.add_candidate(candidate)
+        except asset_refine_llm.RefinePromptTooLargeError as exc:
+            # The message names only the limit and what to shorten.
+            self._respond_json(400, {"error": str(exc), "code": "refine_prompt_too_large"})
+            return
         except Exception as exc:
             reference = uuid4().hex[:12]
             # Correlate locally without printing prompts, paths or agent diagnostics.

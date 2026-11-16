@@ -409,7 +409,12 @@ class DashboardContext:
             )
             return update_workspace_assets(current, assets_by_id)
 
-        self._workspace_state = self.store.update_state(update, default=self._ensure_workspace_state())
+        paths = [self.layout.candidate_json_path(asset_id, candidate_uuid)]
+        paths.extend(self.layout.candidate_text_path(asset_id, candidate_uuid, fmt) for fmt in TextFormat)
+        paths.extend(self.layout.selected_text_path(asset_id, fmt) for fmt in TextFormat)
+        self._workspace_state = self.store.update_state(
+            update, default=self._ensure_workspace_state(), artifact_paths=paths
+        )
         remaining_candidates = [c for c in asset_candidates if c.candidate_id != candidate_uuid]
         if remaining_candidates:
             candidates[asset_id] = remaining_candidates
