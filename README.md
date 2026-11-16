@@ -288,3 +288,13 @@ acknowledgements. Native sidebar buttons, focus/caret preservation and IME-aware
 See `docs/tutorials/episode-workflow.md` and `docs/reference/configuration.md` for limits and recovery.
 The shipped picker and dashboard Chromium journeys run with `just test`; optional Node tests also exercise
 the picker's exchange/draft logic without a browser.
+
+### Summary and regeneration input limits
+
+LLM chunk sources require a coherent regular UTF-8 file of at most 256 KiB. Complete chunk and
+reduction prompts, including hosts and schemas, must fit 256 KiB of UTF-8; reduction JSON is admitted
+incrementally. Refusal keeps the current call's artifacts and makes no runner call; previously
+completed chunks remain cached. Context is never silently truncated.
+Per-asset regeneration chapters must be coherent regular workspace files without symlink components,
+at most 1 MiB and 200 physical lines. Opened file/directory identity checks reject observed swaps
+and in-place changes before starting the agent. See `docs/explanation/text-pipeline.md`.

@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Bind regeneration chapter reads to opened workspace/file authority with coherent UTF-8 byte/line
+  limits; refuse swaps, special files and excessive chapter input before starting the agent.
+- Cap chunk source and complete chunk/reduction prompts at 256 KiB of UTF-8. Admit reduction JSON
+  incrementally and refuse excessive context without truncation or publication for that call.
+
 - Admit few-shot corpora through a bounded nonblocking regular-file read with generation checks.
   Refuse duplicate JSON members, nonstandard/nonfinite numbers and excessive nesting/integers with
   content-free line diagnostics before tag generation starts.
