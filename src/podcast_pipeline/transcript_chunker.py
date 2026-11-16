@@ -9,6 +9,7 @@ import shutil
 import tempfile
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from typing import Any
 from uuid import uuid4
 
 from podcast_pipeline.domain.intermediate_formats import TranscriptChunkMeta
@@ -60,6 +61,10 @@ class TranscriptChunk:
 
 class ChunkerResourceError(ValueError):
     """Chunking would exceed its finite work envelope."""
+
+
+class ChunkRecoveryError(RuntimeError):
+    """Retained generations require explicit operator reconciliation."""
 
 
 @dataclass(frozen=True)
@@ -234,6 +239,8 @@ def write_transcript_chunks(
     config: ChunkerConfig,
     limits: ChunkerLimits = DEFAULT_LIMITS,
 ) -> list[TranscriptChunkMeta]:
+    with EpisodeWorkspaceStore(layout.root).publication_lock():
+        _recover_chunks(layout, limits)
     transcript_text = _read_source(transcript_path, limits)
     transcript_bytes = transcript_text.encode("utf-8")
     chunks = chunk_transcript_text(transcript_text, config=config, limits=limits)
@@ -268,6 +275,7 @@ def write_transcript_chunks(
         }
         (staged / "complete.json").write_text(json.dumps(manifest, sort_keys=True) + "\n", encoding="utf-8")
         with EpisodeWorkspaceStore(layout.root).publication_lock():
+            _recover_chunks(layout, limits)
             if _read_source(transcript_path, limits).encode("utf-8") != transcript_bytes:
                 raise ValueError("Transcript changed while staging chunks; retry with the current source")
             _publish_chunks(staged, destination)
@@ -298,30 +306,56 @@ def discover_complete_chunk_ids(
 ) -> list[int]:
     """Ignore interrupted/legacy chunks and sets built from another transcript."""
     with EpisodeWorkspaceStore(layout.root).publication_lock():
-        return _discover_chunk_ids(layout.transcript_chunks_dir, layout=layout, config=config, limits=limits)
+        _recover_chunks(layout, limits)
+        return _validated_chunk_ids(layout.transcript_chunks_dir, layout=layout, config=config, limits=limits) or []
 
 
-def _discover_chunk_ids(
+def _recover_chunks(layout: EpisodeWorkspaceLayout, limits: ChunkerLimits) -> None:
+    """Restore only one unambiguous validated backup; never promote staging."""
+    destination = layout.transcript_chunks_dir
+    if destination.exists():
+        return
+    candidate: Path | None = None
+    for backup in destination.parent.glob(".chunks-previous-*"):
+        if candidate is not None:
+            raise ChunkRecoveryError(
+                "Ambiguous chunk backups; retain evidence and reconcile .chunks-previous-* manually"
+            )
+        candidate = backup
+    if candidate is None:
+        return
+    if (
+        candidate.is_symlink()
+        or not candidate.is_dir()
+        or _validated_chunk_ids(candidate, layout=layout, config=None, limits=limits) is None
+    ):
+        raise ChunkRecoveryError(f"Unusable chunk backup retained at {candidate}; repair before retrying")
+    os.replace(candidate, destination)
+
+
+def _validated_chunk_ids(
     directory: Path, *, layout: EpisodeWorkspaceLayout, config: ChunkerConfig | None, limits: ChunkerLimits
-) -> list[int]:
+) -> list[int] | None:
     try:
         manifest = json.loads(read_regular_utf8(directory / "complete.json", max_bytes=_MANIFEST_BYTES))
         source = _read_source(layout.transcript_dir / "transcript.txt", limits).encode("utf-8")
         _tokenize(source.decode("utf-8"), limits)
         ids = manifest["chunk_ids"]
-        recorded = manifest["config"]
-        if not isinstance(recorded, dict) or set(recorded) != set(asdict(ChunkerConfig())):
-            return []
-        recorded_config = ChunkerConfig(**recorded)
-        if config is not None and recorded_config != config:
-            return []
-        if manifest["version"] != 1 or manifest["source_sha256"] != hashlib.sha256(source).hexdigest():
-            return []
-        if not isinstance(ids, list) or len(ids) > limits.chunks or ids != list(range(1, len(ids) + 1)):
-            return []
+        if not _matches_config(manifest["config"], config):
+            return None
+        if (
+            type(manifest["version"]) is not int
+            or manifest["version"] != 1
+            or manifest["source_sha256"] != hashlib.sha256(source).hexdigest()
+        ):
+            return None
+        if not isinstance(ids, list) or len(ids) > limits.chunks or any(type(i) is not int for i in ids):
+            return None
+        if ids != list(range(1, len(ids) + 1)):
+            return None
         expected = {f"chunk_{i:04d}{ext}" for i in ids for ext in (".txt", ".json")}
         if set(manifest["files"]) != expected:
-            return []
+            return None
         output_bytes = 0
         for name in sorted(expected):
             ceiling = limits.output_bytes - output_bytes if name.endswith(".txt") else _META_BYTES
@@ -329,7 +363,14 @@ def _discover_chunk_ids(
             if name.endswith(".txt"):
                 output_bytes += len(data)
             if hashlib.sha256(data).hexdigest() != manifest["files"][name]:
-                return []
+                return None
         return ids
     except (OSError, ValueError, KeyError, TypeError):
-        return []
+        return None
+
+
+def _matches_config(recorded: Any, requested: ChunkerConfig | None) -> bool:
+    if not isinstance(recorded, dict) or set(recorded) != set(asdict(ChunkerConfig())):
+        return False
+    validated = ChunkerConfig(**recorded)
+    return requested is None or requested == validated

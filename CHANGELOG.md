@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Recover a unique validated retained chunk generation after process death between directory renames,
+  before new staging; refuse ambiguous or damaged backups and preserve all recovery evidence.
+
 - Serialize chunk publication, rollback, discovery and transcript invalidation on the stable workspace
   lock; stage outside it and revalidate source before swapping complete generations.
 

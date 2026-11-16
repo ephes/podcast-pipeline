@@ -216,10 +216,20 @@ flush, sync, replacement and catchable interruption failures before replacement 
 chunk cache bytes intact and remove the temporary file. Retry can regenerate that chunk; a surviving
 chunk alone still does not certify a complete episode summary generation.
 
-These are local recovery boundaries, not multi-file atomic transactions or cross-process scheduling.
-Process death between renames can leave an incomplete generation (and sibling staging/backup files);
-completion validation prevents its reuse, and a retry rebuilds it. The deterministic dry-run golden
-fixture includes both manifests; new failure fixtures use invented transcript and summary text.
+These are local recovery boundaries, not multi-file atomic transactions or cross-process draft scheduling.
+If process death between directory renames leaves `transcript/chunks` absent, discovery and writers
+recover under the workspace lock, before attempting new staging. Exactly one `.chunks-previous-*`
+directory must remain, with a complete, bounded manifest/file set matching the canonical transcript.
+Its recorded configuration is validated but need not match the new request; normal reuse admission
+then decides whether it needs rebuilding. Staging directories (`.chunks-*` without `previous-`) are
+never promoted. Complete empty generations can also be recovered.
+
+Multiple backups, damaged files or a changed/missing source raise `ChunkRecoveryError` and retain
+all evidence. Inspect the manifests, hashes and canonical transcript; deliberately move unrelated
+backups out of the `.chunks-previous-*` namespace, restore the intended source/backup, then retry.
+Do not delete backups just to suppress an ambiguous outcome. An existing canonical directory remains
+authoritative; this rule does not replace it with an older backup. The deterministic dry-run golden
+fixture includes both manifests; failure fixtures use invented transcript and summary text.
 
 Draft reuse requires all four requested chunker settings to match the manifest's validated configuration,
 as well as a supported version and source identity. Changing any setting rebuilds the chunks through

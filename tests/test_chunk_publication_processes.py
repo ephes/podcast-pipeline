@@ -102,12 +102,12 @@ def test_two_writers_and_reader_share_publication_boundary(tmp_path: Path, faile
     try:
         a.start()
         assert _receive(first) == "staged"
+        b.start()
+        assert _receive(second) == "staged"  # expensive staging stays outside the swap lock
         first.send("continue")
         assert _receive(first) == "gap"
         r.start()
         assert _receive(reader) == "reading"
-        b.start()
-        assert _receive(second) == "staged"  # expensive staging stays outside the lock
         second.send("continue")
         assert not reader.poll(0.3), "reader observed the inter-rename gap"
         assert not second.poll(0.3), "second writer entered another publisher's swap"
@@ -125,3 +125,83 @@ def test_two_writers_and_reader_share_publication_boundary(tmp_path: Path, faile
                 if process.is_alive():
                     process.terminate()
                 process.join(10)
+
+
+def test_killed_publisher_recovers_previous_before_failing_new_stage(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    layout = _initial(tmp_path)
+    before = {p.name: p.read_bytes() for p in layout.transcript_chunks_dir.iterdir()}
+    ctx = mp.get_context("spawn")
+    parent, child = ctx.Pipe()
+    publisher = ctx.Process(target=_publish, args=(str(tmp_path), child, 4, True, False))
+    try:
+        publisher.start()
+        assert _receive(parent) == "staged"
+        parent.send("continue")
+        assert _receive(parent) == "gap"
+        publisher.kill()
+        publisher.join(10)
+        assert not publisher.is_alive()
+        assert not layout.transcript_chunks_dir.exists()
+        assert len(list(layout.transcript_dir.glob(".chunks-previous-*"))) == 1
+        write = Path.write_text
+
+        def fail_stage(path: Path, text: str, *args: Any, **kwargs: Any) -> int:
+            if path.name == "complete.json":
+                raise OSError("new staging intentionally fails")
+            return write(path, text, *args, **kwargs)
+
+        with monkeypatch.context() as patch:
+            patch.setattr(Path, "write_text", fail_stage)
+            with pytest.raises(OSError, match="intentionally fails"):
+                chunker.write_transcript_chunks(
+                    layout=layout,
+                    transcript_path=layout.transcript_dir / "transcript.txt",
+                    config=chunker.ChunkerConfig(max_tokens=4, overlap_tokens=0),
+                )
+        assert chunker.discover_complete_chunk_ids(layout) == [1, 2, 3]
+        assert {p.name: p.read_bytes() for p in layout.transcript_chunks_dir.iterdir()} == before
+        assert not list(layout.transcript_dir.glob(".chunks-previous-*"))
+    finally:
+        if publisher.is_alive():
+            publisher.kill()
+        publisher.join(10)
+
+
+@pytest.mark.parametrize("problem", ["multiple", "corrupt", "changed_source"])
+def test_recovery_refuses_ambiguous_or_unusable_evidence(tmp_path: Path, problem: str) -> None:
+    import shutil
+
+    layout = _initial(tmp_path)
+    backup = layout.transcript_dir / ".chunks-previous-first"
+    layout.transcript_chunks_dir.rename(backup)
+    if problem == "multiple":
+        shutil.copytree(backup, layout.transcript_dir / ".chunks-previous-second")
+    elif problem == "corrupt":
+        (backup / "chunk_0001.txt").write_text("corrupt")
+    else:
+        (layout.transcript_dir / "transcript.txt").write_text("different source")
+    before = {p.relative_to(tmp_path): p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
+    with pytest.raises(chunker.ChunkRecoveryError):
+        chunker.discover_complete_chunk_ids(layout)
+    with pytest.raises(chunker.ChunkRecoveryError):
+        chunker.write_transcript_chunks(
+            layout=layout, transcript_path=layout.transcript_dir / "transcript.txt", config=chunker.ChunkerConfig()
+        )
+    assert not layout.transcript_chunks_dir.exists()
+    assert {p.relative_to(tmp_path): p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()} == before
+
+
+def test_recovery_accepts_complete_empty_generation_but_never_staging(tmp_path: Path) -> None:
+    layout = _initial(tmp_path)
+    source = layout.transcript_dir / "transcript.txt"
+    source.write_text(" \n")
+    chunker.write_transcript_chunks(layout=layout, transcript_path=source, config=chunker.ChunkerConfig())
+    backup = layout.transcript_dir / ".chunks-previous-empty"
+    layout.transcript_chunks_dir.rename(backup)
+    assert chunker.discover_complete_chunk_ids(layout) == []
+    assert layout.transcript_chunks_dir.exists() and not backup.exists()
+    layout.transcript_chunks_dir.rename(layout.transcript_dir / ".chunks-interrupted-stage")
+    assert chunker.discover_complete_chunk_ids(layout) == []
+    assert not layout.transcript_chunks_dir.exists()
