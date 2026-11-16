@@ -312,6 +312,21 @@ def test_run_transcriber_wraps_timeout(tmp_path: Path, monkeypatch: pytest.Monke
     assert "timed out" in str(exc.value)
 
 
+def test_run_transcriber_timeout_keeps_cleanup_uncertainty(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake_run(*_args: object, **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        exc = subprocess.TimeoutExpired(cmd="podcast-transcript", timeout=12.5)
+        exc.add_note("CLI cleanup uncertain; check owned processes before retrying")
+        raise exc
+
+    monkeypatch.setattr(transcribe, "run_cli_process", fake_run)
+
+    with pytest.raises(typer.BadParameter) as exc:
+        transcribe._run_transcriber(command="podcast-transcript", args=[], cwd=tmp_path, timeout_seconds=12.5)
+
+    assert "timed out" in str(exc.value)
+    assert "Cleanup uncertain; check owned processes before retrying." in str(exc.value)
+
+
 def test_run_transcribe_keeps_legacy_wrapper_args_for_custom_commands(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

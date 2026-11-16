@@ -6,7 +6,8 @@
   output cannot stall summary or result parsing. Transcriber stdout keeps replacement decoding; only
   agent protocol stdout must be exact UTF-8. Agent and transcription supervision needs `os.waitid`
   (Python 3.13+ on macOS); older interpreters are refused before launch with an explicit message.
-  Successful transcription commands retire their process group like agent calls.
+  Successful transcription commands retire their process group like agent calls, and a transcription
+  timeout reports uncertain cleanup with the same retry guidance.
 
 - Require strict unambiguous summary JSON evidence for deterministic drafts. Limit candidate variants
   to integers from 1 to 10 at CLI and generator admission before rendering or storage.

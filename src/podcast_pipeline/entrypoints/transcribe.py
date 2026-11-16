@@ -365,7 +365,8 @@ def _run_transcriber(
     except AgentRunnerError as exc:
         raise typer.BadParameter(str(exc)) from exc
     except subprocess.TimeoutExpired as exc:
-        raise typer.BadParameter(f"Transcribe command timed out after {exc.timeout} seconds.") from exc
+        cleanup = " Cleanup uncertain; check owned processes before retrying." if getattr(exc, "__notes__", []) else ""
+        raise typer.BadParameter(f"Transcribe command timed out after {exc.timeout} seconds.{cleanup}") from exc
 
     if result.returncode != 0:
         detail = (result.stderr or "")[-CLI_DIAGNOSTIC_LIMIT:].strip()
