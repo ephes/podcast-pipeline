@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Admit prompt files through coherent bounded regular UTF-8 reads and cap complete runner input at 1 MiB
+  before launch. Keep raw agent stderr, decoder details and launch errors out of default diagnostics.
+
 - Require one unambiguous agent JSON object (or one complete json fence), reject duplicate members and
   nonfinite/invalid scalars, and admit structural work before decoding or writing artifacts.
 

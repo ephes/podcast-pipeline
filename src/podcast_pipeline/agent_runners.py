@@ -18,6 +18,7 @@ from uuid import UUID, uuid5
 from podcast_pipeline.agent_cli_config import AgentCliBundle, AgentCliConfig, resolve_agent_timeout
 from podcast_pipeline.control_json import load_control_json
 from podcast_pipeline.domain.models import Candidate, ProvenanceRef, ReviewIteration
+from podcast_pipeline.file_inputs import read_regular_utf8
 from podcast_pipeline.prompting import (
     FewShotExample,
     GlossaryEntry,
@@ -47,8 +48,21 @@ class AgentRunnerError(RuntimeError):
 
 CLI_STDOUT_LIMIT = 8 * 1024 * 1024
 CLI_STDERR_LIMIT = 1024 * 1024
+CLI_INPUT_LIMIT = 1024 * 1024
 CLI_DIAGNOSTIC_LIMIT = 4096
 CLI_CLEANUP_SECONDS = 1.0
+
+
+def _encode_cli_input(text: str) -> bytes:
+    try:
+        if len(text) > CLI_INPUT_LIMIT:
+            raise AgentRunnerError("CLI input exceeds the 1 MiB byte limit")
+        encoded = text.encode("utf-8")
+    except UnicodeError:
+        raise AgentRunnerError("CLI input must be UTF-8") from None
+    if len(encoded) > CLI_INPUT_LIMIT:
+        raise AgentRunnerError("CLI input exceeds the 1 MiB byte limit")
+    return encoded
 
 
 def run_cli_process(
@@ -62,10 +76,7 @@ def run_cli_process(
     """Drain both pipes with byte limits and kill/reap the owned group on failure."""
     if not math.isfinite(timeout) or timeout <= 0:
         raise ValueError("process timeout must be finite and positive")
-    try:
-        encoded_input = input.encode("utf-8")
-    except UnicodeError:
-        raise AgentRunnerError("CLI input must be UTF-8") from None
+    encoded_input = _encode_cli_input(input)
     deadline = time.monotonic() + timeout
     process = subprocess.Popen(
         command,
@@ -148,8 +159,10 @@ def _drain_cli_pipe(
             if len(buffer) + len(chunk) > limit:
                 raise AgentRunnerError(f"CLI {label} exceeded {limit} byte limit")
             buffer.extend(chunk)
-    except BaseException as exc:
+    except AgentRunnerError as exc:
         failures.append(exc)
+    except BaseException:
+        failures.append(AgentRunnerError(f"CLI {label} read failed"))
     finally:
         done.set()
 
@@ -255,12 +268,14 @@ def run_agent_cli(
     try:
         result = run_cli_process(command, input=prompt_text, cwd=cwd, timeout=timeout_seconds)
     except subprocess.TimeoutExpired as exc:
-        raise AgentRunnerError(f"{label} CLI timed out after {timeout_seconds:g} s") from exc
+        cleanup = " Cleanup uncertain; check owned processes before retrying." if getattr(exc, "__notes__", []) else ""
+        raise AgentRunnerError(f"{label} CLI timed out after {timeout_seconds:g} s.{cleanup}") from None
+    except OSError:
+        raise AgentRunnerError(f"{label} CLI could not start; check command configuration before retrying") from None
     if result.returncode != 0:
-        detail = (result.stderr or "")[-CLI_DIAGNOSTIC_LIMIT:].strip()
-        if detail:
-            detail = f" {detail}"
-        raise AgentRunnerError(f"{label} CLI failed with exit code {result.returncode}.{detail}")
+        raise AgentRunnerError(
+            f"{label} CLI failed with exit code {result.returncode}; check agent configuration before retrying"
+        )
     if not (result.stdout or "").strip():
         raise AgentRunnerError(f"{label} CLI returned empty output")
     return result.stdout or ""
@@ -367,10 +382,16 @@ def _extract_json_payload(raw: str, *, label: str) -> dict[str, Any]:
 
 def _load_prompt_text(*, prompt_path: Path | None, prompt_text: str | None) -> str:
     if prompt_text is not None:
+        _encode_cli_input(prompt_text)
         return prompt_text
     if prompt_path is None:
         raise ValueError("prompt_path or prompt_text is required")
-    return prompt_path.read_text(encoding="utf-8")
+    try:
+        return read_regular_utf8(prompt_path, max_bytes=CLI_INPUT_LIMIT)
+    except (OSError, ValueError):
+        raise AgentRunnerError(
+            "CLI prompt must be a coherent regular UTF-8 file within the 1 MiB input limit"
+        ) from None
 
 
 def _extract_review_payload(payload: Mapping[str, Any]) -> dict[str, Any]:

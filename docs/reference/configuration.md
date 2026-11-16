@@ -404,3 +404,10 @@ nonstandard constants, nonfinite floats and surrogate strings are refused. Befor
 control input is capped at 8 MiB UTF-8, 64 container levels, 100,000 tokens (container starts,
 member names and scalar values), and 256 characters per numeric scalar. Invalid/excessive results
 raise a content-free agent error before candidate or review publication; fix the wrapper and retry.
+
+Complete runner stdin, whether inline or from a prompt file, is limited to 1 MiB UTF-8 before launch.
+Prompt files must be regular, coherent, non-symlink files; FIFOs, oversized/growing files and observed
+generation changes are refused before any agent starts. Inline text is the explicit alternative.
+Agent failures show fixed categories, exit status and retry guidance; raw stderr and JSON decoder
+details are omitted from ordinary errors and default chained tracebacks. Check configuration before
+retrying a failed agent. Prompt/result prose remains private even when it contains terminal controls.
