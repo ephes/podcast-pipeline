@@ -748,3 +748,7 @@ An inspection admits at most 10,000 directory entries (including ignored names a
 and 32 MiB of file contents. Exceeding an aggregate limit reports **inspection incomplete** with
 exit code 1 and omits the checklist; split or clean up the workspace before retrying.
 Invalid state blocks selection readiness; invalid review evidence stops status with a concise error.
+Review protocol folders must match a supported asset ID and supply unique evidence for that asset.
+Status uses the review engine's persisted protocol contract: contiguous strict integer iterations,
+matching creator/reviewer records, and a terminal decision matching the latest terminal review.
+A `converged` label alone, a missing final review or a contradictory decision is invalid evidence.

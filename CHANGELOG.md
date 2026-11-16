@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Validate status protocol directory identity and complete review-engine evidence before reporting
+  convergence; refuse duplicate, coerced or contradictory review histories.
+
 - Bound read-only status inspection to regular UTF-8 JSON, 8 MiB per file, 32 MiB total and
   10,000 visited entries; report invalid evidence or incomplete inspection without a ready checklist.
 

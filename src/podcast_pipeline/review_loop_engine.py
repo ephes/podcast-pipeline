@@ -101,8 +101,12 @@ class _IterationDocument(_Document):
     @field_validator("reviewer", mode="before")
     @classmethod
     def complete_review(cls, value: Any) -> Any:
-        if not isinstance(value, dict) or not ReviewIteration.model_fields.keys() <= value.keys():
-            raise ValueError("incomplete persisted review")
+        if (
+            not isinstance(value, dict)
+            or not ReviewIteration.model_fields.keys() <= value.keys()
+            or type(value.get("iteration")) is not int
+        ):
+            raise ValueError("incomplete or invalid persisted review")
         return value
 
 

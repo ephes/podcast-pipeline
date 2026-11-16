@@ -16,10 +16,10 @@ from podcast_pipeline.domain.models import (
     EpisodeWorkspace,
     IssueSeverity,
     ReviewIssue,
-    ReviewIteration,
 )
 from podcast_pipeline.file_inputs import read_workspace_utf8
-from podcast_pipeline.review_loop_engine import LoopOutcome
+from podcast_pipeline.review_loop_engine import LoopOutcome, parse_loop_protocol_state
+from podcast_pipeline.review_loop_engine import LoopProtocolState as _ProtocolState
 from podcast_pipeline.workspace_store import EpisodeWorkspaceLayout
 
 MAX_STATUS_FILE_BYTES = 8 * 1024 * 1024
@@ -74,27 +74,6 @@ def _check_json_depth(value: Any, depth: int = 0) -> None:
             raise ValueError("JSON nesting limit exceeded")
         for child in value.values() if isinstance(value, dict) else value:
             _check_json_depth(child, depth + 1)
-
-
-@dataclass(frozen=True)
-class _ProtocolDecision:
-    outcome: str
-    final_iteration: int | None
-    reason: str | None
-
-
-@dataclass(frozen=True)
-class _ProtocolIteration:
-    iteration: int
-    review: ReviewIteration
-
-
-@dataclass(frozen=True)
-class _ProtocolState:
-    asset_id: str
-    max_iterations: int
-    iterations: tuple[_ProtocolIteration, ...]
-    decision: _ProtocolDecision | None
 
 
 @dataclass(frozen=True)
@@ -160,7 +139,12 @@ def _find_protocol_states(layout: EpisodeWorkspaceLayout, inspection: _Inspectio
     for directory in inspection.paths(protocol_root):
         if directory.is_dir():
             for path in inspection.paths(directory, "state.json"):
-                states.append(_load_protocol_state(path, inspection))
+                state = _load_protocol_state(path, inspection)
+                if state.asset_id != directory.name or state.asset_id not in _required_asset_ids():
+                    raise typer.BadParameter("Invalid protocol directory/asset identity")
+                if any(previous.asset_id == state.asset_id for previous in states):
+                    raise typer.BadParameter("Invalid duplicate protocol asset evidence")
+                states.append(state)
     return states
 
 
@@ -479,81 +463,11 @@ def _dedupe_lines(lines: list[str]) -> list[str]:
 
 def _load_protocol_state(path: Path, inspection: _Inspection) -> _ProtocolState:
     try:
-        raw = inspection.read_json(path)
+        return parse_loop_protocol_state(inspection.read_json(path))
     except _IncompleteInspection:
         raise
     except (OSError, ValueError, RecursionError):
-        raise typer.BadParameter("Invalid protocol state: expected bounded regular UTF-8 JSON") from None
-
-    if not isinstance(raw, dict):
-        raise typer.BadParameter(f"Expected object JSON at {path}")
-
-    asset_id = _require_str(raw, "asset_id", path)
-    max_iterations = _require_int(raw, "max_iterations", path)
-
-    iterations_raw = raw.get("iterations", [])
-    if not isinstance(iterations_raw, list):
-        raise typer.BadParameter(f"Expected list for iterations at {path}")
-
-    iterations: list[_ProtocolIteration] = []
-    for item in iterations_raw:
-        if not isinstance(item, dict):
-            raise typer.BadParameter(f"Expected object iteration at {path}")
-        iteration = _require_int(item, "iteration", path)
-        review_raw = item.get("reviewer")
-        if not isinstance(review_raw, dict):
-            raise typer.BadParameter(f"Expected reviewer object at {path}")
-        try:
-            review = ReviewIteration.model_validate(review_raw)
-        except ValueError:
-            raise typer.BadParameter("Invalid protocol review evidence") from None
-        if review.iteration != iteration:
-            raise typer.BadParameter(
-                f"Iteration mismatch at {path}: iteration={iteration} review.iteration={review.iteration}",
-            )
-        iterations.append(_ProtocolIteration(iteration=iteration, review=review))
-
-    iterations.sort(key=lambda it: it.iteration)
-    decision = _parse_decision(raw.get("decision"), path)
-    return _ProtocolState(
-        asset_id=asset_id,
-        max_iterations=max_iterations,
-        iterations=tuple(iterations),
-        decision=decision,
-    )
-
-
-def _parse_decision(raw: object, path: Path) -> _ProtocolDecision | None:
-    if raw is None:
-        return None
-    if not isinstance(raw, dict):
-        raise typer.BadParameter(f"Expected decision object at {path}")
-    outcome = _require_str(raw, "outcome", path)
-    final_iteration = raw.get("final_iteration")
-    if final_iteration is not None and not isinstance(final_iteration, int):
-        raise typer.BadParameter(f"Expected final_iteration int at {path}")
-    reason = raw.get("reason")
-    if reason is not None and not isinstance(reason, str):
-        raise typer.BadParameter(f"Expected reason string at {path}")
-    return _ProtocolDecision(
-        outcome=outcome,
-        final_iteration=final_iteration,
-        reason=reason,
-    )
-
-
-def _require_str(raw: dict[str, object], key: str, path: Path) -> str:
-    value = raw.get(key)
-    if not isinstance(value, str) or not value:
-        raise typer.BadParameter(f"Expected non-empty string for {key} at {path}")
-    return value
-
-
-def _require_int(raw: dict[str, object], key: str, path: Path) -> int:
-    value = raw.get(key)
-    if not isinstance(value, int):
-        raise typer.BadParameter(f"Expected int for {key} at {path}")
-    return value
+        raise typer.BadParameter("Invalid protocol state: repair bounded regular UTF-8 review evidence") from None
 
 
 def _build_status(state: _ProtocolState) -> _AssetStatus:
