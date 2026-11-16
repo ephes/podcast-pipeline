@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Serialize chunk publication, rollback, discovery and transcript invalidation on the stable workspace
+  lock; stage outside it and revalidate source before swapping complete generations.
+
 - Bind draft cache reuse to all requested chunker settings and regenerate incompatible summaries
   before candidate generation; unchanged completed generations remain reusable.
 

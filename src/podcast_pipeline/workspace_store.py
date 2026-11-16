@@ -440,6 +440,15 @@ class EpisodeWorkspaceStore:
             raise WorkspaceStoreError(f"Invalid state.json at {self.layout.state_json}: {exc}") from exc
 
     @contextmanager
+    def publication_lock(self) -> Iterator[None]:
+        """Hold the stable workspace lock for artifact publication or discovery.
+
+        Do not reacquire it or call state/YAML writers inside this scope.
+        """
+        with self._state_lock():
+            yield
+
+    @contextmanager
     def _state_lock(self) -> Iterator[None]:
         """Serialize read-modify-write cycles on ``state.json`` across threads and processes."""
         # Lock the workspace directory itself so no lock file shows up in the workspace.

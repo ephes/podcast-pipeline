@@ -87,6 +87,11 @@ def _open_or_create_workspace(
 
 def _clear_stale_artifacts(store: EpisodeWorkspaceStore) -> None:
     """Remove existing chunks and summaries so they are rebuilt from a new transcript."""
+    with store.publication_lock():
+        _clear_stale_artifacts_unlocked(store)
+
+
+def _clear_stale_artifacts_unlocked(store: EpisodeWorkspaceStore) -> None:
     chunks_dir = store.layout.transcript_chunks_dir
     if chunks_dir.exists():
         shutil.rmtree(chunks_dir)
@@ -125,8 +130,9 @@ def _ingest_transcript(*, store: EpisodeWorkspaceStore, transcript: Path) -> Non
                 os.fsync(target.fileno())
             if transcript_dest.exists():
                 shutil.copymode(transcript_dest, staged)
-            _clear_stale_artifacts(store)
-            os.replace(staged, transcript_dest)
+            with store.publication_lock():
+                _clear_stale_artifacts_unlocked(store)
+                os.replace(staged, transcript_dest)
         finally:
             staged.unlink(missing_ok=True)
 

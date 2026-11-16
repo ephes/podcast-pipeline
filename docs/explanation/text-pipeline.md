@@ -195,6 +195,14 @@ and a `files` map of text/metadata basenames to SHA-256 digests. Chunks are writ
 directory, then the previous directory is moved aside and the completed directory renamed into place.
 A handled publication error restores the previous directory. Discovery rejects legacy prefixes,
 missing or changed members and sets whose source no longer matches `transcript/transcript.txt`.
+Publication and discovery share the existing stable workspace-directory lock with state/YAML writers.
+Staging happens outside the lock; the source is read again under the lock before swapping. Changed
+source refuses publication and preserves the current set. Swap, rollback and old-set retirement stay
+under that lock, so one writer cannot restore over another writer's committed generation and discovery
+cannot inspect the inter-rename gap. Transcript ingestion uses the same lock for invalidation and swap.
+`EpisodeWorkspaceStore.publication_lock()` exposes this boundary for other artifact readers; do not
+reacquire it or call state/YAML writers inside it. Discovery returns a snapshot, not a lease across
+later agent calls; this does not serialize entire draft jobs or exclude manual filesystem edits.
 
 `summaries/episode/complete.json` version 1 records `chunks_sha256` (the chunk manifest digest)
 and `files` digests for JSON, Markdown and HTML. All outputs are rendered before publication;

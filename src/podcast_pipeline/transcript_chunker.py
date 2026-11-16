@@ -13,7 +13,7 @@ from uuid import uuid4
 
 from podcast_pipeline.domain.intermediate_formats import TranscriptChunkMeta
 from podcast_pipeline.file_inputs import read_regular_utf8
-from podcast_pipeline.workspace_store import EpisodeWorkspaceLayout
+from podcast_pipeline.workspace_store import EpisodeWorkspaceLayout, EpisodeWorkspaceStore
 
 
 @dataclass(frozen=True)
@@ -267,29 +267,43 @@ def write_transcript_chunks(
             "files": files,
         }
         (staged / "complete.json").write_text(json.dumps(manifest, sort_keys=True) + "\n", encoding="utf-8")
-        backup = destination.parent / f".chunks-previous-{uuid4().hex}"
-        if destination.exists():
-            os.replace(destination, backup)
-        try:
-            os.replace(staged, destination)
-        except BaseException:
-            if backup.exists():
-                try:
-                    os.replace(backup, destination)
-                except BaseException as recovery_error:
-                    recovery_error.add_note(f"Previous chunks retained at {backup}")
-                    raise
-            raise
-        if backup.exists():
-            shutil.rmtree(backup)
+        with EpisodeWorkspaceStore(layout.root).publication_lock():
+            if _read_source(transcript_path, limits).encode("utf-8") != transcript_bytes:
+                raise ValueError("Transcript changed while staging chunks; retry with the current source")
+            _publish_chunks(staged, destination)
     return metas
+
+
+def _publish_chunks(staged: Path, destination: Path) -> None:
+    """Caller holds the stable workspace lock through swap, rollback and retirement."""
+    backup = destination.parent / f".chunks-previous-{uuid4().hex}"
+    if destination.exists():
+        os.replace(destination, backup)
+    try:
+        os.replace(staged, destination)
+    except BaseException:
+        if backup.exists():
+            try:
+                os.replace(backup, destination)
+            except BaseException as recovery_error:
+                recovery_error.add_note(f"Previous chunks retained at {backup}")
+                raise
+        raise
+    if backup.exists():
+        shutil.rmtree(backup)
 
 
 def discover_complete_chunk_ids(
     layout: EpisodeWorkspaceLayout, *, config: ChunkerConfig | None = None, limits: ChunkerLimits = DEFAULT_LIMITS
 ) -> list[int]:
     """Ignore interrupted/legacy chunks and sets built from another transcript."""
-    directory = layout.transcript_chunks_dir
+    with EpisodeWorkspaceStore(layout.root).publication_lock():
+        return _discover_chunk_ids(layout.transcript_chunks_dir, layout=layout, config=config, limits=limits)
+
+
+def _discover_chunk_ids(
+    directory: Path, *, layout: EpisodeWorkspaceLayout, config: ChunkerConfig | None, limits: ChunkerLimits
+) -> list[int]:
     try:
         manifest = json.loads(read_regular_utf8(directory / "complete.json", max_bytes=_MANIFEST_BYTES))
         source = _read_source(layout.transcript_dir / "transcript.txt", limits).encode("utf-8")
