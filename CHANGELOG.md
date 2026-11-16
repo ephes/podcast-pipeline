@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Require one unambiguous agent JSON object (or one complete json fence), reject duplicate members and
+  nonfinite/invalid scalars, and admit structural work before decoding or writing artifacts.
+
 - Bound agent cleanup to a one-second reap allowance, retain primary failures with safe cleanup uncertainty,
   and reject malformed UTF-8 protocol output instead of replacing its bytes.
 

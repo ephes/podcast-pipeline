@@ -397,3 +397,10 @@ All pipe closes are attempted even after a signal/wait failure. An uncertain cle
 a primary timeout/interruption remains primary with a fixed cleanup note. Check owned processes before retrying.
 On Darwin, an EPERM group signal is accepted only when libproc proves the reserved leader is the sole member.
 Stdout must be exact UTF-8; stderr remains a separately byte-bounded diagnostic stream.
+
+Agent protocol stdout must contain exactly one JSON object, optionally wrapped in a complete
+```` ```json ```` code block with no surrounding prose. Multiple results, duplicate members at any depth,
+nonstandard constants, nonfinite floats and surrogate strings are refused. Before JSON hydration,
+control input is capped at 8 MiB UTF-8, 64 container levels, 100,000 tokens (container starts,
+member names and scalar values), and 256 characters per numeric scalar. Invalid/excessive results
+raise a content-free agent error before candidate or review publication; fix the wrapper and retry.

@@ -16,6 +16,7 @@ from typing import Any, BinaryIO
 from uuid import UUID, uuid5
 
 from podcast_pipeline.agent_cli_config import AgentCliBundle, AgentCliConfig, resolve_agent_timeout
+from podcast_pipeline.control_json import load_control_json
 from podcast_pipeline.domain.models import Candidate, ProvenanceRef, ReviewIteration
 from podcast_pipeline.prompting import (
     FewShotExample,
@@ -345,7 +346,7 @@ def _append_provenance(items: Sequence[ProvenanceRef], extra: ProvenanceRef) -> 
 
 
 def extract_json_payload(raw: str, *, label: str) -> dict[str, Any]:
-    """Extract a JSON object from CLI output, tolerating surrounding text."""
+    """Read exactly one JSON object, optionally in a complete json code fence."""
     return _extract_json_payload(raw, label=label)
 
 
@@ -353,24 +354,12 @@ def _extract_json_payload(raw: str, *, label: str) -> dict[str, Any]:
     stripped = raw.strip()
     if not stripped:
         raise AgentRunnerError(f"{label} CLI output was empty")
-
-    decoder = json.JSONDecoder()
+    if stripped.startswith("```json\n") and stripped.endswith("\n```"):
+        stripped = stripped[len("```json\n") : -len("\n```")]
     try:
-        parsed = json.loads(stripped)
-    except json.JSONDecodeError as exc:
-        # Fall back to decoding the first valid JSON object embedded in surrounding text.
-        for idx, ch in enumerate(stripped):
-            if ch != "{":
-                continue
-            try:
-                candidate, _end = decoder.raw_decode(stripped, idx)
-            except json.JSONDecodeError:
-                continue
-            if isinstance(candidate, dict):
-                parsed = candidate
-                break
-        else:
-            raise AgentRunnerError(f"{label} CLI returned invalid JSON: {exc}") from exc
+        parsed = load_control_json(stripped)
+    except ValueError:
+        raise AgentRunnerError(f"{label} CLI returned invalid or excessive JSON") from None
     if not isinstance(parsed, dict):
         raise AgentRunnerError(f"{label} CLI JSON must be an object")
     return parsed
