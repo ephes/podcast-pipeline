@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import json
+import math
+import os
 import re
+import stat
 import unicodedata
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
@@ -13,6 +16,9 @@ from podcast_pipeline.prompting import FewShotExample
 
 _TOKEN_RE = re.compile(r"[^\W_]+")
 _TAG_SPLIT_RE = re.compile(r"[;,]")
+MAX_CORPUS_BYTES = 8 * 1024 * 1024
+MAX_CORPUS_LINE_BYTES = 256 * 1024
+MAX_CORPUS_RECORDS = 10_000
 
 
 @dataclass(frozen=True)
@@ -71,17 +77,90 @@ ScoredRecord = tuple[int, int, FewShotExampleRecord]
 
 def load_few_shot_records(path: Path) -> list[FewShotExampleRecord]:
     records: list[FewShotExampleRecord] = []
-    for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
-        if not line.strip():
-            continue
+    for line_number, raw_line in enumerate(_read_corpus_lines(path), start=1):
         try:
-            raw = json.loads(line)
-        except json.JSONDecodeError as exc:
-            raise ValueError(f"Invalid JSONL at line {line_number}: {exc}") from exc
-        if not isinstance(raw, Mapping):
-            raise TypeError(f"Few-shot JSONL records must be objects (line {line_number}).")
-        records.append(FewShotExampleRecord.from_value(raw))
+            line = raw_line.decode("utf-8")
+            if not line.strip():
+                continue
+            raw = json.loads(
+                line,
+                object_pairs_hook=_unique_members,
+                parse_constant=_invalid_number,
+                parse_float=_finite_float,
+                parse_int=_bounded_int,
+            )
+            _check_record_depth(raw)
+            if not isinstance(raw, Mapping):
+                raise TypeError
+            records.append(FewShotExampleRecord.from_value(raw))
+        except (ValueError, TypeError, RecursionError, OverflowError) as exc:
+            raise ValueError(f"Invalid JSONL record at line {line_number} (JSON/record admission).") from exc
     return records
+
+
+def _check_record_depth(payload: Any) -> None:
+    pending = [(payload, 0)]
+    while pending:
+        value, depth = pending.pop()
+        if isinstance(value, (dict, list)):
+            if depth >= 64:
+                raise ValueError("JSON depth limit")
+            children = value.values() if isinstance(value, dict) else value
+            pending.extend((child, depth + 1) for child in children)
+
+
+def _read_corpus_lines(path: Path) -> list[bytes]:
+    # Admission finishes before constructing any JSON objects. All reads use this descriptor.
+    fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
+    with os.fdopen(fd, "rb") as source:
+        before = os.fstat(source.fileno())
+        if not stat.S_ISREG(before.st_mode) or before.st_size > MAX_CORPUS_BYTES:
+            raise ValueError("Few-shot corpus must be a regular file within the byte limit")
+        lines: list[bytes] = []
+        total = 0
+        while line := source.readline(min(MAX_CORPUS_LINE_BYTES + 1, MAX_CORPUS_BYTES + 1 - total)):
+            total += len(line)
+            if total > MAX_CORPUS_BYTES or len(line) > MAX_CORPUS_LINE_BYTES:
+                raise ValueError("Few-shot corpus byte/line limit exceeded")
+            if len(lines) >= MAX_CORPUS_RECORDS:
+                raise ValueError("Few-shot corpus record/line limit exceeded")
+            lines.append(line)
+        after = os.fstat(source.fileno())
+        if (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns, before.st_ctime_ns) != (
+            after.st_dev,
+            after.st_ino,
+            after.st_size,
+            after.st_mtime_ns,
+            after.st_ctime_ns,
+        ) or total != before.st_size:
+            raise ValueError("Few-shot corpus changed during read")
+        return lines
+
+
+def _unique_members(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("Duplicate member")
+        result[key] = value
+    return result
+
+
+def _invalid_number(value: str) -> Any:
+    raise ValueError("Nonstandard number")
+
+
+def _finite_float(value: str) -> float:
+    number = float(value)
+    if not math.isfinite(number):
+        raise ValueError("Nonfinite number")
+    return number
+
+
+def _bounded_int(value: str) -> int:
+    if len(value) > 4300:
+        raise ValueError("Integer digit limit")
+    return int(value)
 
 
 def select_few_shot_examples(

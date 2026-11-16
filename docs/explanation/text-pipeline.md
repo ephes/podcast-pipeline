@@ -43,6 +43,16 @@ The default `podcast draft` flow uses `podcast_pipeline.summarization_llm`. It r
 chunk, validates each JSON response, writes chunk summaries, and then renders a roll-up prompt for the episode summary.
 The drafter CLI is selected from the workspace or global agent configuration.
 
+Each chunk source must be one coherent regular UTF-8 file of at most 256 KiB (no symlinks/FIFOs).
+Actual reads enforce the ceiling and check descriptor/name generations. Each complete rendered
+chunk or reduction prompt is capped at 256 KiB of UTF-8, including schemas, host constraints and
+all context. Reduction serializes one summary at a time into a bounded compact JSON array, preserving
+all values and provenance, instead of building an unlimited aggregate first. An oversized source,
+host list or complete prompt raises `SummarizationResourceError` before that runner call and its
+artifact publication. Existing artifacts for the refused call stay intact; earlier completed chunk
+calls remain cached. Nothing is silently truncated. Split/rechunk excessive source explicitly and
+retry; increasing the agent timeout does not raise these limits.
+
 LLM-backed summaries use the same paths as the stub mode:
 
 - Chunk summaries: `summaries/chunks/chunk_0001.summary.json`
@@ -68,6 +78,14 @@ Stub behaviors:
 
 The default `podcast draft` flow uses `podcast_pipeline.asset_candidates_llm`. It provides the episode summary,
 optional chapters, and host names to the configured drafter CLI and validates the structured candidate response.
+For per-asset regeneration, `inputs.chapters` is read through nonblocking regular-file and
+workspace-directory descriptors. Every path component must stay inside that opened workspace;
+symlinks, changed file/directory names, in-place changes, invalid UTF-8, more than 1 MiB or more than
+200 physical lines (including blanks) are refused before creating the runner. Admitted chapter
+lines keep their order after stripping/blank removal. Shorten an excessive chapter file explicitly;
+the former silent first-200-lines truncation is gone. These checks detect observed changes during
+the read; they do not lock out manual edits after the read completes.
+
 Generated candidates receive a fresh application UUID, observation timestamp and `llm_drafter` provenance
 (`asset_v1` for drafts, `regen_v1` for regeneration); model-supplied identity, date and provenance are discarded.
 Historical stored records retain their original metadata.
@@ -174,7 +192,11 @@ individual files use atomic replacement and the completion marker is written las
 failures restore the previous files and their permissions. If recovery itself fails, remaining files
 are still restored where possible, the error identifies retained sibling backups for manual repair. A summary JSON alone is never a reusable completed generation.
 Rerun draft to rebuild incomplete legacy sets. Explicit contradictory LLM chunk identities are rejected;
-omitted identities are supplied from the request.
+omitted identities are supplied from the request. Each validated chunk summary is fully serialized,
+then written to a unique sibling temporary file, flushed/synced and atomically replaced. Partial-write,
+flush, sync, replacement and catchable interruption failures before replacement keep the previous
+chunk cache bytes intact and remove the temporary file. Retry can regenerate that chunk; a surviving
+chunk alone still does not certify a complete episode summary generation.
 
 These are local recovery boundaries, not multi-file atomic transactions or cross-process scheduling.
 Process death between renames can leave an incomplete generation (and sibling staging/backup files);

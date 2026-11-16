@@ -169,3 +169,11 @@ fails with "Missing transcript output" instead of keeping an older one. A `TRANS
 ignored for these runs, and the shared `~/.podcast-transcripts/transcripts/` cache is no longer read (it is left in
 place; delete it yourself if you no longer need it). Cache directories for older audio of the same mode are removed
 after a successful run. `TRANSCRIPT_HOME` (and its `.env`) is still honored.
+
+### Regeneration chapter admission
+
+Per-asset regeneration accepts `inputs.chapters` only as a relative regular UTF-8 file inside the
+episode workspace, without symlink components. One opened generation is read nonblocking and checked
+against its current names: at most 1 MiB and 200 physical lines including blanks. Changed, oversized
+or special files cause a content-free `Invalid chapters input` error before the runner starts;
+existing candidates survive. This replaces silent truncation to the first 200 nonblank lines.

@@ -17,9 +17,8 @@
 
 ## RSS-only fields
 
-- `description_html` (string): normalized HTML from the RSS `<description>` or `<content:encoded>` tag.
 - `guid` (string or null): RSS GUID.
-- `feed_url` (string): RSS feed URL used to fetch the data.
+- `feed_url` (string): canonical RSS source without userinfo, query or fragment (HTTPX host/default-port normalization).
 - `keywords` (list of strings): comma-separated `<itunes:keywords>` split into terms; empty when the item has none.
   Tag-asset few-shot prompts use these as the published tags.
 
@@ -64,3 +63,28 @@ requested counts do not change IDs. Repeat exports from one source keep stable I
 This replaces the previous page-only digest. Regenerate existing CMS JSONL exports
 with `podcast cms-examples` and replace the old files rather than combining old and
 new identifiers. Record schema version remains 1.
+
+## RSS identifier migration
+
+RSS IDs hash a JSON pair of canonical credential-free feed source and episode GUID (falling back
+to link, then title). Host case/default ports are normalized; userinfo, query and fragment do not
+change identity. Different source origins or paths remain distinct, including feeds with local
+GUIDs such as `episode-1`. Repeat exports from a canonical source keep stable IDs.
+
+Regenerate existing RSS corpora with `podcast rss-examples` and replace old files rather than
+combining old and new identifiers. Record schema version remains 1. Sources distinguished only by
+query parameters intentionally share this credential-free provenance identity.
+
+## Local corpus admission
+
+Configured `tags.examples` is opened once, nonblocking and without following symlinks, and must
+be a regular UTF-8 file. Limits are 8 MiB total, 256 KiB per physical line (including its newline)
+and 10,000 physical lines (including blank lines). Actual reads enforce the byte limits even when
+the file grows. Size, modification/change times and descriptor identity must stay unchanged during
+reading. All file admission finishes before JSON construction; failures leave the runner unstarted.
+
+Each nonblank line must be one object. Duplicate members at every level, NaN/Infinity, overflowing
+floats, integers over 4,300 encoded characters, and nesting beyond 64 containers are refused.
+Decoder recursion/numeric and record-shape failures become `TagConfigError` with a bounded line
+number/category diagnostic, never example text. Legacy `user`/`assistant` records still work.
+Split oversized corpora explicitly; selection does not silently truncate a refused corpus.

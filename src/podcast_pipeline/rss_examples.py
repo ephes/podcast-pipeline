@@ -34,7 +34,7 @@ class RssEpisodeExample:
     keywords: tuple[str, ...] = ()
 
     def example_id(self) -> str:
-        seed = self.guid or self.link or self.title
+        seed = json.dumps([safe_rss_source(self.feed_url), self.guid or self.link or self.title], ensure_ascii=False)
         digest = sha256(seed.encode()).hexdigest()[:12]
         return f"rss_{digest}"
 
@@ -56,7 +56,7 @@ class RssEpisodeExample:
             "link": self.link,
             "guid": self.guid,
             "published": self.published,
-            "feed_url": self.feed_url,
+            "feed_url": safe_rss_source(self.feed_url),
             "keywords": list(self.keywords),
         }
 
@@ -64,6 +64,89 @@ class RssEpisodeExample:
 _COMMENT_RE = re.compile(r"<!--.*?-->", re.DOTALL)
 _INLINE_SPACE_RE = re.compile(r"[ \t]+")
 _BLANK_LINES_RE = re.compile(r"\n{3,}")
+
+
+def safe_rss_source(value: str) -> str:
+    """Canonical provenance; the original URL belongs only to the transport."""
+    try:
+        url = httpx.URL(value)
+        if url.scheme not in {"http", "https"} or not url.host:
+            raise ValueError
+        return str(url.copy_with(username="", password="", query=None, fragment=None))
+    except (httpx.InvalidURL, ValueError) as exc:
+        raise RssExamplesError("Invalid RSS source URL.") from exc
+
+
+MAX_XML_ELEMENTS = 100_000
+MAX_XML_DEPTH = 64
+MAX_XML_TEXT_BYTES = 4 * 1024 * 1024
+
+
+class _ExampleTarget:
+    """Count all XML work, retaining only one requested item subtree at a time."""
+
+    def __init__(self, *, feed_url: str, limit: int) -> None:
+        self.feed_url = feed_url
+        self.limit = limit
+        self.stack: list[str] = []
+        self.elements = 0
+        self.text_bytes = 0
+        self.channel_depth: int | None = None
+        self.found_channel = False
+        self.builder: ElementTree.TreeBuilder | None = None
+        self.examples: list[RssEpisodeExample] = []
+
+    def start(self, tag: str, attrs: dict[str, str]) -> None:
+        self.elements += 1
+        self.stack.append(_strip_namespace(tag))
+        if self.elements > MAX_XML_ELEMENTS or len(self.stack) > MAX_XML_DEPTH:
+            raise RssExamplesError("RSS XML element/depth limit exceeded.")
+        self._charge_text(sum(len(k.encode()) + len(v.encode()) for k, v in attrs.items()))
+        if self.stack[-1] == "channel" and len(self.stack) <= 2 and not self.found_channel:
+            self.channel_depth = len(self.stack)
+            self.found_channel = True
+        if (
+            self.channel_depth is not None
+            and len(self.stack) == self.channel_depth + 1
+            and self.stack[-1] == "item"
+            and len(self.examples) < self.limit
+        ):
+            self.builder = ElementTree.TreeBuilder()
+        if self.builder is not None:
+            self.builder.start(tag, attrs)
+
+    def end(self, tag: str) -> None:
+        if self.builder is not None:
+            self.builder.end(tag)
+            if self.channel_depth is not None and len(self.stack) == self.channel_depth + 1:
+                item = self.builder.close()
+                self.builder = None
+                example = _parse_item(item, feed_url=self.feed_url)
+                if example is not None:
+                    self.examples.append(example)
+        if len(self.stack) == self.channel_depth:
+            self.channel_depth = None
+        self.stack.pop()
+
+    def _charge_text(self, size: int) -> None:
+        self.text_bytes += size
+        if self.text_bytes > MAX_XML_TEXT_BYTES:
+            raise RssExamplesError("RSS XML text limit exceeded.")
+
+    def data(self, data: str) -> None:
+        self._charge_text(len(data.encode("utf-8")))
+        if self.builder is not None:
+            self.builder.data(data)
+
+    def doctype(self, name: str, pubid: str | None, system: str | None) -> None:
+        raise RssExamplesError("RSS DTD/entity declarations are unsupported.")
+
+    def close(self) -> list[RssEpisodeExample]:
+        if not self.found_channel:
+            raise RssExamplesError("RSS feed missing channel element (expected RSS 2.0).")
+        if not self.examples:
+            raise RssExamplesError("RSS feed returned no usable episodes.")
+        return self.examples
 
 
 def fetch_rss_examples(
@@ -74,6 +157,7 @@ def fetch_rss_examples(
 ) -> list[RssEpisodeExample]:
     if limit < 1:
         raise ValueError("limit must be >= 1")
+    safe_rss_source(feed_url)
     xml_payload = _fetch_rss_xml(feed_url=feed_url, timeout_seconds=timeout_seconds)
     return parse_rss_examples(xml_payload, feed_url=feed_url, limit=limit)
 
@@ -86,27 +170,17 @@ def parse_rss_examples(
 ) -> list[RssEpisodeExample]:
     if limit < 1:
         raise ValueError("limit must be >= 1")
+    target = _ExampleTarget(feed_url=safe_rss_source(feed_url), limit=limit)
     try:
-        root = ElementTree.fromstring(xml_payload)
-    except ElementTree.ParseError as exc:
+        if len(xml_payload.encode("utf-8")) > MAX_RSS_BYTES:
+            raise RssExamplesError("RSS feed exceeds 8 MiB byte limit")
+        parser = ElementTree.XMLParser(target=target)
+        for offset in range(0, len(xml_payload), 16 * 1024):
+            parser.feed(xml_payload[offset : offset + 16 * 1024])
+        parser.close()
+        return target.examples
+    except (ElementTree.ParseError, UnicodeError) as exc:
         raise RssExamplesError("RSS feed returned invalid XML.") from exc
-
-    channel = _find_channel(root)
-    if channel is None:
-        raise RssExamplesError("RSS feed missing channel element (expected RSS 2.0).")
-
-    examples: list[RssEpisodeExample] = []
-    for item in _iter_items(channel):
-        example = _parse_item(item, feed_url=feed_url)
-        if example is None:
-            continue
-        examples.append(example)
-        if len(examples) >= limit:
-            break
-
-    if not examples:
-        raise RssExamplesError("RSS feed returned no usable episodes.")
-    return examples
 
 
 def write_rss_examples_jsonl(
@@ -172,19 +246,6 @@ async def _read_rss_body(response: httpx.Response, *, deadline: float) -> str:
         raise TimeoutError
     # Match HTTPX's text decoding while keeping the allocation bounded.
     return bytes(body).decode(response.encoding or "utf-8", errors="replace")
-
-
-def _find_channel(root: ElementTree.Element) -> ElementTree.Element | None:
-    if _strip_namespace(root.tag) == "channel":
-        return root
-    for child in root:
-        if _strip_namespace(child.tag) == "channel":
-            return child
-    return None
-
-
-def _iter_items(channel: ElementTree.Element) -> list[ElementTree.Element]:
-    return [child for child in channel if _strip_namespace(child.tag) == "item"]
 
 
 def _parse_item(item: ElementTree.Element, *, feed_url: str) -> RssEpisodeExample | None:

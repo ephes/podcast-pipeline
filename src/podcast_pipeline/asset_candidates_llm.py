@@ -10,6 +10,7 @@ import typer
 from podcast_pipeline.domain.intermediate_formats import EpisodeSummary
 from podcast_pipeline.domain.models import AssetKind, Candidate, ProvenanceRef, TextFormat
 from podcast_pipeline.drafter_runner import DrafterRunner  # noqa: TC001
+from podcast_pipeline.file_inputs import read_workspace_utf8
 from podcast_pipeline.pick_core import custom_selection_format, normalize_custom_selection_text
 from podcast_pipeline.prompting import PromptRenderer, render_asset_candidates_prompt
 from podcast_pipeline.tag_assets import TAG_ASSET_IDS, TagSettings, postprocess_tag_content, tag_few_shots
@@ -30,6 +31,9 @@ _TAG_RULES = (
     "its published tags (Assistant): match their length and style, tag this episode's content, "
     "and still answer with the JSON response schema."
 )
+
+MAX_CHAPTER_BYTES = 1024 * 1024
+MAX_CHAPTER_LINES = 200
 
 _ASSET_GUIDANCE: dict[str, str] = {
     AssetKind.description: (
@@ -187,20 +191,17 @@ def _load_workspace_context(
             reference = Path(raw_chapters)
             error = (
                 "Invalid chapters input (inputs.chapters in episode.yaml): "
-                "expected a relative regular file inside the episode workspace"
+                "expected a coherent relative regular UTF-8 file inside the episode workspace "
+                "(no symlinks; at most 1 MiB and 200 physical lines)"
             )
-            if reference.is_absolute() or ".." in reference.parts:
-                raise RuntimeError(error)
             try:
-                root = layout.root.resolve(strict=True)
-                chapters_path = (root / reference).resolve(strict=True)
-                if not chapters_path.is_relative_to(root) or not chapters_path.is_file():
-                    raise RuntimeError(error)
+                text = read_workspace_utf8(layout.root, reference, max_bytes=MAX_CHAPTER_BYTES)
+                lines = text.splitlines()
+                if len(lines) > MAX_CHAPTER_LINES:
+                    raise ValueError("Chapter line limit exceeded")
+                chapters = [line.strip() for line in lines if line.strip()]
             except (OSError, ValueError, RuntimeError) as exc:
                 raise RuntimeError(error) from exc
-            chapters = [
-                line.strip() for line in chapters_path.read_text(encoding="utf-8").splitlines() if line.strip()
-            ][:200]
 
     hosts: Sequence[str] | None = None
     raw_hosts = episode_yaml.get("hosts")

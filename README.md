@@ -101,7 +101,9 @@ Details: `docs/reference/configuration.md`.
 Generated `cms_tags`, `audio_tags` and `itunes_keywords` candidates target 6-10 specific terms and are post-filtered:
 host names, show-level constants (`Python Podcast`, `Deutsch`, ...) and a configurable `tags.exclude` list are dropped,
 and the count is capped (`tags.max`, default 12). `tags.examples` can point at a `podcast rss-examples` JSONL export so
-past episodes' keywords serve as few-shot examples. `podcast pick --web` and the dashboard merge all tag candidates
+past episodes' keywords serve as few-shot examples. Corpus files must be coherent regular UTF-8 files
+(no symlinks), at most 8 MiB, 256 KiB per line and 10,000 physical lines; ambiguous or excessive JSON
+fails as a configuration error before the agent starts. `podcast pick --web` and the dashboard merge all tag candidates
 into one pool ordered by agreement, where you toggle individual tags instead of picking a whole list (at most
 `tags.max`); tag assets never block "Done". Details: `docs/reference/configuration.md` ("Tag assets").
 
@@ -150,7 +152,9 @@ runs make no agent calls or selection changes. See `docs/how-to/review-loop.md`.
 RSS example imports stream at most 8 MiB of uncompressed input and share one whole-transfer deadline
 across connection, headers, redirects and body reads (`--timeout-seconds`, default 20 seconds).
 At most five redirects are followed without consuming intermediate bodies. Compressed feeds are refused;
-fetch, HTTP, size or deadline errors preserve the previous atomic JSONL export.
+fetch, HTTP, size or deadline errors preserve the previous atomic JSONL export. Incremental XML parsing
+also caps elements (100,000), depth (64) and text/attributes (4 MiB); DTDs are refused. Exported and
+printed RSS sources omit userinfo, queries and fragments; re-export older corpora to remove credentials.
 
 ### Dashboard drafts
 
@@ -190,7 +194,9 @@ Transcript chunks and episode summaries use `complete.json` manifests with SHA-2
 Drafting rebuilds legacy, interrupted, missing or changed sets instead of accepting a surviving prefix
 or summary JSON alone. Chunk manifests bind the source transcript and record chunker settings;
 summary manifests bind the chunk manifest and all three summary outputs. A contradictory LLM chunk ID
-fails before that result is saved or reduced. See `docs/explanation/text-pipeline.md` for recovery limits.
+fails before that result is saved or reduced. Chunk summary JSON uses atomic replacement, keeping
+the previous parseable cache on pre-publication failure. RSS example IDs now include the canonical
+credential-free feed source; regenerate old RSS corpora instead of mixing old and new IDs. See `docs/explanation/text-pipeline.md` for recovery limits.
 
 Canonical transcription publication validates the complete UTF-8 output and atomically replaces each file.
 Handled publication or metadata failures restore the previous canonical files, YAML and provenance.
@@ -282,3 +288,13 @@ acknowledgements. Native sidebar buttons, focus/caret preservation and IME-aware
 See `docs/tutorials/episode-workflow.md` and `docs/reference/configuration.md` for limits and recovery.
 The shipped picker and dashboard Chromium journeys run with `just test`; optional Node tests also exercise
 the picker's exchange/draft logic without a browser.
+
+### Summary and regeneration input limits
+
+LLM chunk sources require a coherent regular UTF-8 file of at most 256 KiB. Complete chunk and
+reduction prompts, including hosts and schemas, must fit 256 KiB of UTF-8; reduction JSON is admitted
+incrementally. Refusal keeps the current call's artifacts and makes no runner call; previously
+completed chunks remain cached. Context is never silently truncated.
+Per-asset regeneration chapters must be coherent regular workspace files without symlink components,
+at most 1 MiB and 200 physical lines. Opened file/directory identity checks reject observed swaps
+and in-place changes before starting the agent. See `docs/explanation/text-pipeline.md`.

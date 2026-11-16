@@ -379,3 +379,10 @@ agent execution retains its configured finite timeout (default fifteen minutes).
 just because the browser closes or times out. Startup failures close the bound socket and cancel/join the timer.
 Refinement failures return `refinement_failed` and a local reference; stderr records the same reference and
 exception type, without prompt content, agent output, paths, credentials or raw exception text.
+
+### Tag example file limits
+
+`tags.examples` requires a coherent regular UTF-8 file (no symlinks/FIFOs): at most 8 MiB,
+256 KiB per line and 10,000 physical lines including blanks. Duplicate JSON members,
+nonstandard/nonfinite numbers, excessive integers and nesting beyond 64 containers are refused
+with a line/category diagnostic before the agent starts. See `few-shot-dataset-jsonl.md`.

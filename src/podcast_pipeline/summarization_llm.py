@@ -8,13 +8,59 @@ import typer
 from podcast_pipeline.domain.intermediate_formats import ChunkSummary, EpisodeSummary
 from podcast_pipeline.domain.models import ProvenanceRef
 from podcast_pipeline.drafter_runner import DrafterRunner
+from podcast_pipeline.file_inputs import read_regular_utf8
 from podcast_pipeline.prompting import (
     PromptRenderer,
     render_chunk_summary_prompt,
     render_episode_summary_prompt,
 )
 from podcast_pipeline.summarization_stub import write_episode_summary_artifacts
-from podcast_pipeline.workspace_store import EpisodeWorkspaceLayout
+from podcast_pipeline.workspace_store import EpisodeWorkspaceLayout, atomic_write_text
+
+MAX_CHUNK_SOURCE_BYTES = 256 * 1024
+MAX_SUMMARIZER_PROMPT_BYTES = 256 * 1024
+
+
+class SummarizationResourceError(RuntimeError):
+    pass
+
+
+def _text_bytes(text: str) -> int:
+    if len(text) > MAX_SUMMARIZER_PROMPT_BYTES:
+        raise SummarizationResourceError("Summarizer prompt byte limit exceeded; reduce context and retry.")
+    try:
+        size = len(text.encode("utf-8"))
+    except UnicodeError as exc:
+        raise SummarizationResourceError("Summarizer context must be valid UTF-8.") from exc
+    if size > MAX_SUMMARIZER_PROMPT_BYTES:
+        raise SummarizationResourceError("Summarizer prompt byte limit exceeded; reduce context and retry.")
+    return size
+
+
+def _admit_hosts(hosts: Sequence[str] | None) -> None:
+    total = 0
+    for host in hosts or ():
+        total += _text_bytes(host) + 2
+        if total > MAX_SUMMARIZER_PROMPT_BYTES:
+            raise SummarizationResourceError("Summarizer hosts exceed prompt byte limit.")
+
+
+def _bounded_summaries_json(chunk_summaries: list[ChunkSummary]) -> str:
+    # Serialize one model at a time, charging fragments before retaining/combining them.
+    encoder = json.JSONEncoder(ensure_ascii=False, separators=(",", ":"))
+    parts = ["["]
+    size = 2
+    for index, summary in enumerate(chunk_summaries):
+        if index:
+            parts.append(",")
+            size += 1
+        for part in encoder.iterencode(summary.model_dump(mode="json")):
+            size += _text_bytes(part)
+            if size > MAX_SUMMARIZER_PROMPT_BYTES:
+                raise SummarizationResourceError("Summary reduction source exceeds prompt byte limit.")
+            parts.append(part)
+    parts.append("]")
+    return "".join(parts)
 
 
 def summarize_transcript_chunks_llm(
@@ -27,10 +73,16 @@ def summarize_transcript_chunks_llm(
 ) -> list[ChunkSummary]:
     """Summarize each transcript chunk via an LLM call."""
     summaries: list[ChunkSummary] = []
+    _admit_hosts(hosts)
 
     for chunk_id in chunk_ids:
         chunk_path = layout.transcript_chunk_text_path(chunk_id)
-        chunk_text = chunk_path.read_text(encoding="utf-8")
+        try:
+            chunk_text = read_regular_utf8(chunk_path, max_bytes=MAX_CHUNK_SOURCE_BYTES)
+        except (OSError, ValueError) as exc:
+            raise SummarizationResourceError(
+                "Unusable chunk source: regular UTF-8 byte limit or read generation."
+            ) from exc
 
         prompt = render_chunk_summary_prompt(
             renderer=renderer,
@@ -38,6 +90,7 @@ def summarize_transcript_chunks_llm(
             chunk_text=chunk_text,
             hosts=hosts,
         )
+        _text_bytes(prompt.text)
         typer.echo(f"  Summarizing chunk {chunk_id}...", err=True)
         payload = runner.run(prompt.text)
 
@@ -55,7 +108,7 @@ def summarize_transcript_chunks_llm(
         out_path = layout.chunk_summary_json_path(chunk_id)
         out_path.parent.mkdir(parents=True, exist_ok=True)
         dumped = json.dumps(summary.model_dump(mode="json"), indent=2, sort_keys=True) + "\n"
-        out_path.write_text(dumped, encoding="utf-8")
+        atomic_write_text(out_path, dumped)
 
         summaries.append(summary)
 
@@ -70,14 +123,15 @@ def reduce_chunk_summaries_to_episode_summary_llm(
     hosts: Sequence[str] | None = None,
 ) -> EpisodeSummary:
     """Reduce all chunk summaries into a single episode summary via LLM."""
-    summaries_data = [s.model_dump(mode="json") for s in chunk_summaries]
-    summaries_json = json.dumps(summaries_data, indent=2, ensure_ascii=False)
+    _admit_hosts(hosts)
+    summaries_json = _bounded_summaries_json(chunk_summaries)
 
     prompt = render_episode_summary_prompt(
         renderer=renderer,
         chunk_summaries_json=summaries_json,
         hosts=hosts,
     )
+    _text_bytes(prompt.text)
     typer.echo("  Generating episode summary...", err=True)
     payload = runner.run(prompt.text)
 
