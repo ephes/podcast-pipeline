@@ -14,6 +14,11 @@ from their own pages:
   Browsers cannot send that cross-site without a CORS preflight, which these
   servers never approve, so ``text/plain`` or form posts from other sites are
   rejected even by browsers that omit ``Origin``.
+
+Every response, rejections included, also carries ``RESPONSE_SECURITY_HEADERS``:
+other sites cannot frame the UIs (which would let them trick clicks on
+same-origin buttons such as starting a paid production), and browsers do not
+sniff content types.
 """
 
 from __future__ import annotations
@@ -23,6 +28,12 @@ from dataclasses import dataclass
 UNSAFE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 _LOOPBACK_HOSTNAMES = frozenset({"127.0.0.1", "localhost", "[::1]"})
 _SAME_ORIGIN_FETCH_SITES = frozenset({"same-origin", "none"})
+
+RESPONSE_SECURITY_HEADERS: tuple[tuple[str, str], ...] = (
+    ("X-Frame-Options", "DENY"),
+    ("Content-Security-Policy", "frame-ancestors 'none'"),
+    ("X-Content-Type-Options", "nosniff"),
+)
 
 
 @dataclass(frozen=True)

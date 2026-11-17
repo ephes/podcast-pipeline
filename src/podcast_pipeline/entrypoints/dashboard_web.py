@@ -15,16 +15,16 @@ from typing import Any, TypeVar
 import uvicorn
 from starlette.applications import Starlette
 from starlette.concurrency import run_in_threadpool
-from starlette.datastructures import Headers
+from starlette.datastructures import Headers, MutableHeaders
 from starlette.middleware import Middleware
 from starlette.requests import ClientDisconnect, Request
 from starlette.responses import HTMLResponse, JSONResponse, PlainTextResponse, Response, StreamingResponse
 from starlette.routing import Route
-from starlette.types import ASGIApp, Receive, Scope, Send
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from podcast_pipeline.asset_refine_llm import RefineRequest
 from podcast_pipeline.dashboard_context import PROGRESS_TRUNCATED, BackgroundJob, DashboardContext
-from podcast_pipeline.local_web_guard import check_request
+from podcast_pipeline.local_web_guard import RESPONSE_SECURITY_HEADERS, check_request
 
 _SHUTDOWN_TIMEOUT_SECONDS = 60 * 60  # 1 hour
 _DASHBOARD_HTML_PATH = Path(__file__).parent.parent / "static" / "dashboard.html"
@@ -72,16 +72,31 @@ def _bounded_int(value: Any, *, default: int, maximum: int) -> int:
 
 
 class _LocalRequestGuardMiddleware:
-    """Reject DNS-rebinding, cross-origin and non-JSON state-changing requests."""
+    """Reject DNS-rebinding, cross-origin and non-JSON state-changing requests.
+
+    Every HTTP response, rejections included, gets the anti-framing and no-sniff headers.
+    """
 
     def __init__(self, app: ASGIApp, *, expected_port: int | None) -> None:
         self.app = app
         self.expected_port = expected_port
 
-    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+    async def __call__(self, scope: Scope, receive: Receive, original_send: Send) -> None:
         if scope["type"] != "http":
-            await self.app(scope, receive, send)
+            await self.app(scope, receive, original_send)
             return
+
+        response_started = False
+
+        async def send(message: Message) -> None:
+            nonlocal response_started
+            if message["type"] == "http.response.start":
+                response_started = True
+                response_headers = MutableHeaders(scope=message)
+                for name, value in RESPONSE_SECURITY_HEADERS:
+                    response_headers[name] = value
+            await original_send(message)
+
         headers = Headers(scope=scope)
         rejection = check_request(
             method=scope["method"],
@@ -95,7 +110,14 @@ class _LocalRequestGuardMiddleware:
             response = JSONResponse({"error": rejection.message}, status_code=rejection.status)
             await response(scope, receive, send)
             return
-        await self.app(scope, receive, send)
+        try:
+            await self.app(scope, receive, send)
+        except Exception:
+            # Answer an unhandled error here, with the security headers, instead of in
+            # Starlette's outer error middleware; re-raise so it is still logged.
+            if not response_started:
+                await PlainTextResponse("Internal Server Error", status_code=500)(scope, receive, send)
+            raise
 
 
 def _to_text(value: Any) -> str:

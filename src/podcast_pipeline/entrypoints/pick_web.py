@@ -13,7 +13,7 @@ from uuid import UUID, uuid4
 from podcast_pipeline import asset_refine_llm
 from podcast_pipeline.asset_refine_llm import RefineRequest, build_refine_request
 from podcast_pipeline.domain.models import Candidate, EpisodeWorkspace, TextFormat
-from podcast_pipeline.local_web_guard import check_request
+from podcast_pipeline.local_web_guard import RESPONSE_SECURITY_HEADERS, check_request
 from podcast_pipeline.markdown_html import markdown_to_deterministic_html
 from podcast_pipeline.pick_core import (
     custom_selection_format,
@@ -417,6 +417,12 @@ class _PickWebHandler(BaseHTTPRequestHandler):
     def log_message(self, format: str, *args: object) -> None:  # noqa: A002
         # Suppress default stderr logging
         pass
+
+    def end_headers(self) -> None:
+        # Every response, including the base class's own error pages (send_error), forbids framing.
+        for name, value in RESPONSE_SECURITY_HEADERS:
+            self.send_header(name, value)
+        super().end_headers()
 
     def _reject_unsafe_request(self) -> bool:
         """Apply the Host/Origin/Content-Type guards; respond and return True when rejected."""

@@ -631,3 +631,68 @@ def test_pick_malformed_port_is_rejected_before_body(pick_port: int, port: str) 
         assert json.loads(response.read()) == {"error": "Forbidden host"}
     finally:
         conn.close()
+
+
+# --- anti-framing headers ----------------------------------------------------
+
+
+def _assert_not_frameable(headers: Any) -> None:
+    assert headers.get("X-Frame-Options") == "DENY"
+    assert headers.get("Content-Security-Policy") == "frame-ancestors 'none'"
+    assert headers.get("X-Content-Type-Options") == "nosniff"
+
+
+@pytest.mark.parametrize("path", ["/", "/api/status", "/api/assets", "/does-not-exist"])
+def test_dashboard_responses_forbid_framing(client: TestClient, path: str) -> None:
+    _assert_not_frameable(client.get(path).headers)
+
+
+def test_dashboard_guard_rejections_forbid_framing(ctx: DashboardContext) -> None:
+    foreign = TestClient(dashboard_web.create_dashboard_app(ctx=ctx, port=_PORT), base_url="http://evil.example")
+    response = foreign.get("/")
+    assert response.status_code == 403
+    _assert_not_frameable(response.headers)
+
+
+def _pick_response_headers(port: int, method: str, path: str, headers: dict[str, str]) -> tuple[int, Any]:
+    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+    try:
+        conn.putrequest(method, path, skip_host=True)
+        for name, value in headers.items():
+            conn.putheader(name, value)
+        conn.endheaders()
+        response = conn.getresponse()
+        response.read()
+        return response.status, response.headers
+    finally:
+        conn.close()
+
+
+@pytest.mark.parametrize(
+    ("path", "host", "status"),
+    [("/", "127.0.0.1", 200), ("/missing", "127.0.0.1", 404), ("/", "evil.example", 403)],
+)
+def test_pick_web_responses_forbid_framing(pick_port: int, path: str, host: str, status: int) -> None:
+    got, headers = _pick_response_headers(pick_port, "GET", path, {"Host": f"{host}:{pick_port}"})
+    assert got == status
+    _assert_not_frameable(headers)
+
+
+def test_dashboard_unhandled_error_response_forbids_framing(
+    ctx: DashboardContext, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def broken() -> object:
+        raise RuntimeError("storage failure")
+
+    monkeypatch.setattr(ctx, "get_episode_json", broken)
+    app = dashboard_web.create_dashboard_app(ctx=ctx, port=_PORT)
+    with TestClient(app, base_url=_BASE, raise_server_exceptions=False) as erroring:
+        response = erroring.get("/api/episode")
+    assert response.status_code == 500
+    _assert_not_frameable(response.headers)
+
+
+def test_pick_web_base_class_error_pages_forbid_framing(pick_port: int) -> None:
+    status, headers = _pick_response_headers(pick_port, "PATCH", "/", {"Host": f"127.0.0.1:{pick_port}"})
+    assert status == 501
+    _assert_not_frameable(headers)

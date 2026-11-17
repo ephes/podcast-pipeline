@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- Security: the `podcast` CLI no longer prints local variables in crash reports, which exposed the Auphonic
+  API key or password and the CMS API token; Auphonic credential reprs hide the secrets.
+
+- Security: dashboard and picker responses forbid framing (`X-Frame-Options: DENY`,
+  `Content-Security-Policy: frame-ancestors 'none'`) and content sniffing, so other sites cannot clickjack the UIs.
+
+- Update development-only lock entries with known advisories: filelock 4.0.7 -> 4.2.11, virtualenv
+  21.14.1 -> 21.15.8 and soupsieve 2.9 -> 4.1.1 (Python 3.11.0-3.11.4 still resolve soupsieve 2.10,
+  which keeps some advisories); distlib 0.4.0 -> 0.4.4 and packaging 25.0 -> 26.3 move with them.
+
 - Preserve RSS HTML entity syntax and mixed-XML leading text so quoted markup stays text;
   the shared CMS example normalizer retains entity syntax too.
 
