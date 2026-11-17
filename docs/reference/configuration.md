@@ -455,3 +455,32 @@ candidate writes. The summary file itself retains the tighter 1 MiB ceiling.
 `draft-candidates --candidates N` supports **1–10** variants per asset (default 3). The direct
 `generate_draft_candidates` API checks the same integer range, rejecting booleans and invalid config
 values before any rendering/storage work. At admitted counts the variant IDs and content remain deterministic.
+
+### RSS HTML comments
+
+RSS example HTML removes complete `<!-- ... -->` comments with a forward-only
+scan. Repeated openers in an unterminated comment do not trigger repeated suffix
+searches; an unterminated final comment discards the rest of that HTML value.
+Text outside comments is retained and XML/feed limits are unchanged.
+
+### RSS description extraction
+
+Descriptions may contain plain HTML text/CDATA or mixed XML content. Mixed-content
+serialization retains the leading text, child order and each child's trailing text
+exactly once, including namespaced children.
+
+Content tag preference takes precedence over document order: `encoded` before
+`description`, `summary` before `subtitle`, and `pubDate`, `published`, `updated`,
+then `date`. Empty values fall back; repeated elements of the same tag retain
+document order. Namespaces continue to match by local name.
+
+XML decoding happens once. Childless RSS content is interpreted as the HTML string
+carried by XML escaping or CDATA; mixed-content XML escapes its leading text just
+like its child text/tails. HTML normalization retains named/numeric entities in
+text and attributes (`&lt;script&gt;` remains literal text, `&amp;` remains an entity).
+It normalizes whitespace without a second global entity decode. Existing example
+exports with decoded markup should be regenerated from the feed.
+
+CMS example descriptions and shownotes use this same HTML normalizer and retain
+entity syntax too; `&nbsp;` stays encoded instead of being replaced with a regular
+space. Regenerate older CMS exports to restore any previously decoded literal markup.

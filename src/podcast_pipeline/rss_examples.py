@@ -61,7 +61,6 @@ class RssEpisodeExample:
         }
 
 
-_COMMENT_RE = re.compile(r"<!--.*?-->", re.DOTALL)
 _INLINE_SPACE_RE = re.compile(r"[ \t]+")
 _BLANK_LINES_RE = re.compile(r"\n{3,}")
 
@@ -279,31 +278,34 @@ def _split_keywords(value: str | None) -> tuple[str, ...]:
 
 
 def _extract_first_text(item: ElementTree.Element, tags: Sequence[str]) -> str | None:
-    for child in item:
-        if _strip_namespace(child.tag) in tags:
-            text = "".join(child.itertext()).strip()
-            if text:
-                return text
+    for tag in tags:
+        for child in item:
+            if _strip_namespace(child.tag) == tag:
+                text = "".join(child.itertext()).strip()
+                if text:
+                    return text
     return None
 
 
 def _extract_first_html(item: ElementTree.Element, tags: Sequence[str]) -> str | None:
-    for child in item:
-        if _strip_namespace(child.tag) in tags:
-            html_value = _element_inner_xml(child).strip()
-            if html_value:
-                return html_value
+    for tag in tags:
+        for child in item:
+            if _strip_namespace(child.tag) == tag:
+                html_value = _element_inner_xml(child).strip()
+                if html_value:
+                    return html_value
     return None
 
 
 def _element_inner_xml(element: ElementTree.Element) -> str:
     parts: list[str] = []
     if element.text:
-        parts.append(element.text)
+        # With XML children, leading text belongs to the XML text layer, just
+        # like tails already escaped by tostring(). Childless RSS fields carry
+        # an HTML string (XML-escaped or CDATA), decoded exactly once by XMLParser.
+        parts.append(html.escape(element.text, quote=False) if len(element) else element.text)
     for child in element:
         parts.append(ElementTree.tostring(child, encoding="unicode", method="xml"))
-        if child.tail:
-            parts.append(child.tail)
     return "".join(parts)
 
 
@@ -322,10 +324,28 @@ def normalize_text(value: str) -> str:
 
 
 def normalize_html(value: str) -> str:
-    text = html.unescape(value)
-    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    # XML decoding is already complete. HTML entities must remain text/attribute
+    # syntax; decoding them here could turn quoted examples into active markup.
+    text = value.replace("\r\n", "\n").replace("\r", "\n")
     text = text.replace("\xa0", " ")
-    text = _COMMENT_RE.sub("", text)
+    text = _remove_html_comments(text)
     text = _INLINE_SPACE_RE.sub(" ", text)
     text = _BLANK_LINES_RE.sub("\n\n", text)
     return text.strip()
+
+
+def _remove_html_comments(text: str) -> str:
+    """Scan each comment once; an unterminated opener owns the remaining suffix."""
+    parts = []
+    pos = 0
+    while True:
+        start = text.find("<!--", pos)
+        if start < 0:
+            parts.append(text[pos:])
+            break
+        parts.append(text[pos:start])
+        end = text.find("-->", start + 4)
+        if end < 0:
+            break
+        pos = end + 3
+    return "".join(parts)

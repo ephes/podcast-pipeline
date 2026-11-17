@@ -102,3 +102,41 @@ API errors show the trusted method, endpoint, HTTP status and allowlisted error/
 only the destination origin (no userinfo, path, query or fragment) and are never followed. Response bodies and raw
 server messages are omitted, including revision-conflict payloads; conflicts still explain checking Wagtail before
 retrying. Checkpoint recovery instructions omit remote edit URLs too.
+
+## Chapter precision
+
+CMS chapter text retains fractional seconds to django-cast's microsecond precision
+(`HH:MM:SS.ffffff Title`); whole seconds keep `HH:MM:SS Title`. Starts are rounded
+to the nearest microsecond (ties to even). A sequence that collides at that precision
+is refused locally rather than uploading duplicate times.
+
+The optional consumer contract check invokes the real `ChapterMarksField` and
+`ChapterMarkForm` in a separate supported `django-cast/develop` checkout (no database
+or HTTP requests). In that checkout run `uv sync --no-dev --group test`, then here run:
+
+```bash
+DJANGO_CAST_CHECKOUT=/absolute/path/to/django-cast uv run pytest tests/test_cms_cast_consumer.py
+```
+
+This was checked against develop `3fc7b9bac2180937e9f5b0ea10ff94d8ee1913f5`.
+
+Numeric chapter starts are seconds; strings accept plain ASCII seconds
+(`SS[.fraction]`, e.g. `"90"`), `MM:SS[.fraction]` or `HH:MM:SS[.fraction]`, with
+unsigned integer hours/minutes and minutes/seconds below 60. Signs, exponents,
+underscores and non-ASCII digits are refused. All starts must be finite, nonnegative and below 24 hours both before and after
+rounding. YAML overrides and workspace chapters follow the same strictly increasing
+sequence rule; duplicate, decreasing and unrepresentable times fail plan construction
+before HTTP. Inputs are never sorted or repaired.
+
+## Host text boundaries
+
+Host linking uses Python's HTML tokenizer and source positions. It inserts a link
+only in the first eligible text mention, preserving attribute quoting, entities and
+all other source markup. Existing anchors, comments, script/style, template, head,
+title and textarea contents are excluded; an existing anchor to the host URL
+suppresses another link regardless of attribute case or quoting. Incomplete tokens
+or malformed declarations leave the input unchanged. Self-closing syntax on an
+anchor or excluded nonvoid element (for example `<script/>`) also leaves the input
+unchanged because the tokenizer and browser disagree about its text boundaries.
+Each host pass feeds the HTML
+once as a complete buffer, without repeatedly retrying growing incomplete tokens.

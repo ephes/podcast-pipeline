@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+- Preserve RSS HTML entity syntax and mixed-XML leading text so quoted markup stays text;
+  the shared CMS example normalizer retains entity syntax too.
+
+- Honor declared RSS content, summary and publication tag priorities before document order.
+
+- Retain each RSS mixed-content child tail exactly once during example extraction.
+
+- Remove RSS HTML comments with linear search work, discarding unterminated comment suffixes.
+
+- Tokenize CMS host-link HTML without changing attributes, comments or script/style contents;
+  leave ambiguous self-closing anchor/script and other excluded nonvoid elements unchanged.
+
+- Validate CMS chapter clocks (plain ASCII seconds or MM:SS/HH:MM:SS), increasing starts and the TimeField
+  day range locally before HTTP.
+
+- Preserve fractional CMS chapter starts at microsecond precision; refuse rounding collisions.
+
 - Disambiguate canonically equivalent Unicode and case-folded Auphonic output names before
   staging, retaining spelling and order with distinct suffixes. Validate publication names
   before moving originals so filename aliases cannot overwrite rollback backups.

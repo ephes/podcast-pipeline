@@ -12,6 +12,7 @@ import math
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -359,13 +360,22 @@ def _output_basename(episode_yaml: Mapping[str, Any]) -> str | None:
 
 
 def format_chaptermarks(chapters: Sequence[tuple[float, str]]) -> str:
-    """django-cast's ``chaptermarks`` field: one ``HH:MM:SS Title`` line per chapter."""
+    """django-cast chapter text, rounded to its TimeField's microsecond precision."""
     lines = []
-    for start, title in chapters:
-        total = int(start)
-        hours, rest = divmod(total, 3600)
+    previous = -1
+    for idx, (start, title) in enumerate(chapters, start=1):
+        start = _chapter_seconds(start, idx=idx)
+        total = round(start * 1_000_000)
+        if total >= 86_400_000_000:
+            raise CmsConfigError(f"CMS chapter[{idx}].start must be before 24:00:00 at microsecond precision.")
+        if total <= previous:
+            raise CmsConfigError("CMS chapter starts must increase at microsecond precision.")
+        previous = total
+        whole, micros = divmod(total, 1_000_000)
+        hours, rest = divmod(whole, 3600)
         minutes, seconds = divmod(rest, 60)
-        lines.append(f"{hours:02d}:{minutes:02d}:{seconds:02d} {' '.join(title.split())}")
+        fraction = f".{micros:06d}" if micros else ""
+        lines.append(f"{hours:02d}:{minutes:02d}:{seconds:02d}{fraction} {' '.join(title.split())}")
     return "\n".join(lines)
 
 
@@ -400,24 +410,33 @@ def _chapter_seconds(value: object, *, idx: int) -> float:
     if isinstance(value, bool) or value is None:
         raise CmsConfigError(message)
     if isinstance(value, (int, float)):
-        seconds = float(value)
+        try:
+            seconds = float(value)
+        except OverflowError as exc:
+            raise CmsConfigError(message) from exc
     elif isinstance(value, str):
         seconds = _parse_clock(value.strip(), message=message)
     else:
         raise CmsConfigError(message)
-    if not math.isfinite(seconds) or seconds < 0:
+    if not math.isfinite(seconds) or not 0 <= seconds < 86400:
         raise CmsConfigError(message)
     return seconds
 
 
 def _parse_clock(text: str, *, message: str) -> float:
-    parts = text.split(":")
-    if not 1 <= len(parts) <= 3:
+    if ":" not in text:
+        # Plain ASCII seconds only: float() would also accept "1_0", "1e3",
+        # signs and non-ASCII digits.
+        if not re.fullmatch(r"[0-9]+(?:\.[0-9]+)?", text):
+            raise CmsConfigError(message)
+        return float(text)
+    # Only the final seconds component may be fractional. No signs or overflow
+    # components: do not silently repair a malformed clock by summing it.
+    if not re.fullmatch(r"(?:[0-9]{1,2}:)?[0-9]{1,2}:[0-9]{1,2}(?:\.[0-9]+)?", text):
         raise CmsConfigError(message)
-    try:
-        numbers = [float(part) for part in parts]
-    except ValueError as exc:
-        raise CmsConfigError(message) from exc
+    numbers = [float(part) for part in text.split(":")]
+    if any(number >= 60 for number in numbers[-2:]):
+        raise CmsConfigError(message)
     seconds = 0.0
     for number in numbers:
         seconds = seconds * 60 + number
@@ -431,42 +450,91 @@ def _episode_hosts(episode_yaml: Mapping[str, Any]) -> list[str] | None:
     return [host.strip() for host in hosts if isinstance(host, str) and host.strip()]
 
 
-_TAG_RE = re.compile(r"<[^>]*>")
+class _HostTextParser(HTMLParser):
+    """Record eligible source spans without reserializing or decoding markup."""
+
+    _HIDDEN = frozenset({"script", "style", "template", "head", "title", "textarea"})
+
+    def __init__(self, source: str) -> None:
+        super().__init__(convert_charrefs=False)
+        self.source = source
+        self.line_offsets = [0, *(match.end() for match in re.finditer("\n", source))]
+        self.spans: list[tuple[int, int]] = []
+        self.hrefs: set[str] = set()
+        self.ambiguous_self_closing = False
+        self.depths = dict.fromkeys(self._HIDDEN | {"a"}, 0)
+
+    def source_offset(self) -> int:
+        line, column = self.getpos()
+        return self.line_offsets[line - 1] + column
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        self._record_href(tag, attrs)
+        if tag in self.depths:
+            self.depths[tag] += 1
+
+    def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        # HTML browsers ignore the slash on these nonvoid tags; HTMLParser does
+        # not. Keep ambiguous source unchanged instead of trusting text spans.
+        if tag in self.depths:
+            self.ambiguous_self_closing = True
+        self._record_href(tag, attrs)
+
+    def _record_href(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag == "a":
+            self.hrefs.update(value for key, value in attrs if key == "href" and value is not None)
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag in self.depths:
+            self.depths[tag] = max(0, self.depths[tag] - 1)
+
+    def handle_data(self, data: str) -> None:
+        if any(self.depths.values()):
+            return
+        start = self.source_offset()
+        end = start + len(data)
+        if self.spans and self.spans[-1][1] == start:
+            self.spans[-1] = (self.spans[-1][0], end)
+        else:
+            self.spans.append((start, end))
+
+    def handle_entityref(self, name: str) -> None:
+        self._entity_text("&" + name)
+
+    def handle_charref(self, name: str) -> None:
+        self._entity_text("&#" + name)
+
+    def _entity_text(self, token: str) -> None:
+        if self.source.startswith(token + ";", self.source_offset()):
+            token += ";"
+        self.handle_data(token)
 
 
 def link_hosts(html_text: str, *, hosts: Sequence[str] | None, host_links: Mapping[str, str]) -> str:
-    """Link the first unlinked mention of each host to their profile from ``cms.host_links``.
+    """Link the first eligible text mention, preserving source markup exactly.
 
-    Only hosts of this episode (``hosts`` in ``episode.yaml``; all configured hosts when it is
-    unset) are linked. A host whose URL already appears in the HTML, or whose name only occurs
-    inside existing links, is left alone.
+    Existing anchors, comments and script/style/template text are excluded. A host
+    whose URL already occurs in an anchor is left alone. Incomplete HTML is kept
+    unchanged; feeding one complete buffer avoids repeated incomplete-token scans.
     """
     names = list(host_links) if hosts is None else [name for name in hosts if name in host_links]
     for name in names:
-        url = host_links[name]
-        if f'href="{html.escape(url)}"' in html_text or f'href="{url}"' in html_text:
-            continue
-        html_text = _link_first_mention(html_text, name=name, url=url)
+        html_text = _link_first_mention(html_text, name=name, url=host_links[name])
     return html_text
 
 
 def _link_first_mention(html_text: str, *, name: str, url: str) -> str:
+    parser = _HostTextParser(html_text)
+    try:
+        parser.feed(html_text)
+    except AssertionError:  # malformed declarations on supported Python versions
+        return html_text
+    # Do not close(): HTMLParser would reinterpret an unfinished token as text.
+    if parser.ambiguous_self_closing or parser.source_offset() != len(html_text) or url in parser.hrefs:
+        return html_text
     pattern = re.compile(rf"(?<!\w){re.escape(html.escape(name, quote=False))}(?!\w)")
-    anchor_depth = 0
-    pos = 0
-    for tag in _TAG_RE.finditer(html_text):
-        if anchor_depth == 0:
-            linked = _link_in_text(html_text, pos, tag.start(), pattern=pattern, url=url)
-            if linked is not None:
-                return linked
-        tag_text = tag.group(0).lower()
-        if re.match(r"<a[\s>]", tag_text):
-            anchor_depth += 1
-        elif tag_text.startswith("</a"):
-            anchor_depth = max(0, anchor_depth - 1)
-        pos = tag.end()
-    if anchor_depth == 0:
-        linked = _link_in_text(html_text, pos, len(html_text), pattern=pattern, url=url)
+    for start, end in parser.spans:
+        linked = _link_in_text(html_text, start, end, pattern=pattern, url=url)
         if linked is not None:
             return linked
     return html_text

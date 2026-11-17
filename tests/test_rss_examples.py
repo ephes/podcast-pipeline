@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import SupportsIndex
 
 import pytest
 
@@ -9,6 +10,7 @@ from podcast_pipeline.few_shot_selector import FewShotExampleRecord
 from podcast_pipeline.rss_examples import (
     RssEpisodeExample,
     RssExamplesError,
+    _remove_html_comments,
     normalize_html,
     parse_rss_examples,
     write_rss_examples_jsonl,
@@ -46,7 +48,7 @@ def test_parse_rss_examples_skips_incomplete_items() -> None:
 
     assert len(examples) == 2
     assert examples[0].title == "Episode 1"
-    assert examples[0].description_html == "<p>Hello world</p>"
+    assert examples[0].description_html == "<p>Hello&nbsp;world</p>"
     assert examples[0].summary == "Short summary"
     assert examples[0].feed_url == "https://example.com/feed"
     assert examples[1].title == "Episode 2"
@@ -75,7 +77,7 @@ def test_parse_rss_examples_invalid_xml_raises() -> None:
 
 def test_normalize_html_collapses_noise() -> None:
     raw = "One&nbsp;two<!--c-->\n\n\nThree"
-    assert normalize_html(raw) == "One two\n\nThree"
+    assert normalize_html(raw) == "One&nbsp;two\n\nThree"
 
 
 def test_write_rss_examples_jsonl_writes_records(tmp_path: Path) -> None:
@@ -119,3 +121,165 @@ def test_parse_rss_examples_reads_itunes_keywords() -> None:
     assert examples[0].keywords == ("python", "python3.13", "pypy", "jit")
     record = FewShotExampleRecord.from_value(examples[0].to_record())
     assert record.keywords == ("python", "python3.13", "pypy", "jit")
+
+
+@pytest.mark.parametrize("repeat", [1, 2000, 4000, 8000])
+def test_unterminated_html_comments_discard_the_remaining_comment(repeat: int) -> None:
+    assert normalize_html("<p>Keep</p>" + "<!--" * repeat + "hidden") == "<p>Keep</p>"
+
+
+def test_multiple_html_comments_preserve_surrounding_text() -> None:
+    assert normalize_html("before<!--one-->between<!--two-->after") == "beforebetweenafter"
+
+
+class _CountedSearchText(str):
+    work: int = 0
+
+    def find(self, sub: str, start: SupportsIndex | None = 0, end: SupportsIndex | None = None) -> int:
+        begin, stop, _ = slice(start, end).indices(len(self))
+        result = super().find(sub, start, end)
+        self.work += (result + len(sub) if result >= 0 else stop) - begin
+        return result
+
+
+@pytest.mark.parametrize("count", [1000, 2000, 4000, 8000])
+@pytest.mark.parametrize("unit", ["<!--", "<!--ok-->"])
+def test_comment_search_work_is_linear(count: int, unit: str) -> None:
+    text = _CountedSearchText("before" + unit * count + "after")
+    _remove_html_comments(text)
+    assert text.work <= 2 * len(text)
+
+
+def test_comment_scanner_preserves_escaped_delimiters() -> None:
+    text = "&lt;!-- literal --&gt;<!--real comment-->text"
+    assert _remove_html_comments(text) == "&lt;!-- literal --&gt;text"
+
+
+@pytest.mark.parametrize(
+    ("description", "expected"),
+    [
+        ("before<p>inside</p>after", "before<p>inside</p>after"),
+        ("start<b>bold</b>middle<i>italic</i>end", "start<b>bold</b>middle<i>italic</i>end"),
+        ("plain text", "plain text"),
+        ("<![CDATA[<p>CDATA</p>tail]]>", "<p>CDATA</p>tail"),
+    ],
+)
+def test_rss_mixed_content_tails_appear_once(description: str, expected: str) -> None:
+    xml = f"<rss><channel><item><title>Episode</title><description>{description}</description></item></channel></rss>"
+    example = parse_rss_examples(xml, feed_url="https://feed.example/", limit=1)[0]
+    assert example.description_html == expected
+
+
+def test_rss_namespaced_child_tail_appears_once() -> None:
+    from xml.etree import ElementTree
+
+    xml = """<rss xmlns:x="urn:example"><channel><item><title>Episode</title>
+    <description>before<x:p>inside</x:p>after</description></item></channel></rss>"""
+    example = parse_rss_examples(xml, feed_url="https://feed.example/", limit=1)[0]
+    result = ElementTree.fromstring("<description>" + example.description_html + "</description>")
+    assert result.text == "before"
+    assert result[0].tag == "{urn:example}p"
+    assert result[0].text == "inside"
+    assert result[0].tail == "after"
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+def test_rss_declared_content_preferences_override_document_order(reverse: bool) -> None:
+    fields = [
+        "<description>Short description</description>",
+        "<content:encoded><![CDATA[<p>Full content</p>]]></content:encoded>",
+        "<itunes:subtitle>Subtitle</itunes:subtitle>",
+        "<summary>Preferred summary</summary>",
+        "<date>Other date</date>",
+        "<updated>Updated</updated>",
+        "<published>Published</published>",
+        "<pubDate>Preferred publication</pubDate>",
+    ]
+    if reverse:
+        fields.reverse()
+    xml = (
+        '<rss xmlns:content="urn:content" xmlns:itunes="urn:itunes"><channel><item><title>Episode</title>'
+        + "".join(fields)
+        + "</item></channel></rss>"
+    )
+    example = parse_rss_examples(xml, feed_url="https://feed.example/", limit=1)[0]
+    assert example.description_html == "<p>Full content</p>"
+    assert example.summary == "Preferred summary"
+    assert example.published == "Preferred publication"
+
+
+@pytest.mark.parametrize(
+    ("fields", "description", "summary"),
+    [
+        (
+            "<description>Fallback</description><encoded> </encoded><summary> </summary><subtitle>Sub</subtitle>",
+            "Fallback",
+            "Sub",
+        ),
+        (
+            "<description>Fallback</description><encoded/><encoded>First</encoded><encoded>Second</encoded>"
+            "<subtitle>Sub</subtitle><summary/><summary>First summary</summary><summary>Second summary</summary>",
+            "First",
+            "First summary",
+        ),
+    ],
+)
+def test_rss_preferences_fall_back_and_keep_same_tag_order(fields: str, description: str, summary: str) -> None:
+    xml = "<rss><channel><item><title>Episode</title>" + fields + "</item></channel></rss>"
+    example = parse_rss_examples(xml, feed_url="https://feed.example/", limit=1)[0]
+    assert example.description_html == description
+    assert example.summary == summary
+
+
+@pytest.mark.parametrize(
+    "description",
+    [
+        "<![CDATA[<p>&lt;script&gt;quoted&lt;/script&gt; &amp; &copy;</p>]]>",
+        "&lt;p&gt;&amp;lt;script&amp;gt;quoted&amp;lt;/script&amp;gt; &amp;amp; &amp;copy;&lt;/p&gt;",
+        "<p>&lt;script&gt;quoted&lt;/script&gt; &amp; &#169;</p>",
+    ],
+    ids=["cdata-html", "xml-escaped-html", "xml-children"],
+)
+def test_rss_entities_do_not_create_html_elements(description: str) -> None:
+    from html.parser import HTMLParser
+
+    class Structure(HTMLParser):
+        def __init__(self) -> None:
+            super().__init__()
+            self.tags: list[str] = []
+            self.text: list[str] = []
+
+        def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+            self.tags.append(tag)
+
+        def handle_data(self, data: str) -> None:
+            self.text.append(data)
+
+    xml = f"<rss><channel><item><title>Episode</title><description>{description}</description></item></channel></rss>"
+    example = parse_rss_examples(xml, feed_url="https://feed.example/", limit=1)[0]
+    parsed = Structure()
+    parsed.feed(example.description_html)
+    parsed.close()
+    assert parsed.tags == ["p"]
+    assert "".join(parsed.text) == "<script>quoted</script> & ©"
+
+
+def test_rss_mixed_content_leading_text_stays_text() -> None:
+    xml = """<rss><channel><item><title>Episode</title><description>
+    &lt;script&gt;literal&lt;/script&gt; &amp; <p>inside</p>tail &lt;tag&gt;
+    </description></item></channel></rss>"""
+    example = parse_rss_examples(xml, feed_url="https://feed.example/", limit=1)[0]
+    assert example.description_html == "&lt;script&gt;literal&lt;/script&gt; &amp; <p>inside</p>tail &lt;tag&gt;"
+
+
+def test_normalize_html_keeps_entities_in_text_and_attributes() -> None:
+    source = '<p title="&quot; &lt;tag&gt; &amp;">&lt;!--literal--&gt; &amp; &nbsp; &#60;code&#62;</p>'
+    assert normalize_html(source + "<!--real-->") == source
+
+
+def test_rss_xml_escaped_ampersand_remains_literal() -> None:
+    xml = (
+        "<rss><channel><item><title>Episode</title><description><p>&amp;copy;</p></description></item></channel></rss>"
+    )
+    example = parse_rss_examples(xml, feed_url="https://feed.example/", limit=1)[0]
+    assert example.description_html == "<p>&amp;copy;</p>"
