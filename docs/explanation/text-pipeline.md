@@ -225,7 +225,8 @@ then decides whether it needs rebuilding. Staging directories (`.chunks-*` witho
 never promoted. Complete empty generations can also be recovered.
 
 Multiple backups, damaged files or a changed/missing source raise `ChunkRecoveryError` and retain
-all evidence. Inspect the manifests, hashes and canonical transcript; deliberately move unrelated
+all evidence (`podcast draft` prints it as `Error: ...` and exits with code 1, as it does for
+`ChunkerResourceError`). Inspect the manifests, hashes and canonical transcript; deliberately move unrelated
 backups out of the `.chunks-previous-*` namespace, restore the intended source/backup, then retry.
 Do not delete backups just to suppress an ambiguous outcome. An existing canonical directory remains
 authoritative; this rule does not replace it with an older backup. The deterministic dry-run golden
