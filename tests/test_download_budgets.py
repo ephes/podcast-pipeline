@@ -224,7 +224,7 @@ def test_unicode_output_names_publish_distinct_files(tmp_path: Path) -> None:
     assert len(list(tmp_path.iterdir())) == 4
 
 
-@pytest.mark.parametrize("fail_move", range(2, 9))
+@pytest.mark.parametrize("fail_move", range(1, 13))
 def test_unicode_output_publication_failure_restores_every_original(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fail_move: int
 ) -> None:
