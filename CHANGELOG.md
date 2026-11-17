@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Tokenize CMS host-link HTML without changing attributes, comments or script/style contents.
+
 - Validate CMS chapter clocks, increasing starts and the TimeField day range locally before HTTP.
 
 - Preserve fractional CMS chapter starts at microsecond precision; refuse rounding collisions.

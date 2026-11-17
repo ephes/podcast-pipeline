@@ -126,3 +126,13 @@ Numeric chapter starts are seconds; string clocks accept `MM:SS[.fraction]` or
 rounding. YAML overrides and workspace chapters follow the same strictly increasing
 sequence rule; duplicate, decreasing and unrepresentable times fail plan construction
 before HTTP. Inputs are never sorted or repaired.
+
+## Host text boundaries
+
+Host linking uses Python's HTML tokenizer and source positions. It inserts a link
+only in the first eligible text mention, preserving attribute quoting, entities and
+all other source markup. Existing anchors, comments, script/style, template, head,
+title and textarea contents are excluded; an existing anchor to the host URL
+suppresses another link regardless of attribute case or quoting. Incomplete tokens
+or malformed declarations leave the input unchanged. Each host pass feeds the HTML
+once as a complete buffer, without repeatedly retrying growing incomplete tokens.
