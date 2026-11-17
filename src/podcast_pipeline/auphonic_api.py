@@ -10,6 +10,7 @@ import re
 import shutil
 import tempfile
 import time
+import unicodedata
 import zlib
 from collections.abc import AsyncIterable, Callable, Mapping, Sequence
 from contextlib import ExitStack
@@ -489,15 +490,15 @@ class AuphonicClient:
     async def _stage_outputs(self, outputs: Sequence[AuphonicOutputFile], incoming: Path) -> list[str]:
         assert self._transport is None or isinstance(self._transport, httpx.AsyncBaseTransport)
         used: set[str] = set()
-        filenames: list[str] = []
+        filenames = [_unique_filename(output.filename, used, idx) for idx, output in enumerate(outputs, start=1)]
+        _validate_output_filenames(filenames)
         async with httpx.AsyncClient(
             timeout=min(self._timeout_seconds, self._download_timeout_seconds),
             transport=self._transport,
             event_hooks={"request": [self._authorize_async]},
             headers={"Accept-Encoding": "identity"},
         ) as client:
-            for idx, output in enumerate(outputs, start=1):
-                filename = _unique_filename(output.filename, used, idx)
+            for output, filename in zip(outputs, filenames, strict=True):
                 await _download_file(
                     client,
                     output.url,
@@ -505,7 +506,6 @@ class AuphonicClient:
                     max_bytes=self._download_max_bytes,
                     timeout_seconds=self._download_timeout_seconds,
                 )
-                filenames.append(filename)
         return filenames
 
 
@@ -1083,20 +1083,36 @@ def _filename_from_url(url: str) -> str | None:
     return name or None
 
 
+def _filename_identity(name: str) -> str:
+    # Treat canonical Unicode spellings and case variants as aliases on every OS.
+    return unicodedata.normalize("NFC", unicodedata.normalize("NFC", name).casefold())
+
+
+def _validate_output_filenames(filenames: Sequence[str]) -> None:
+    identities: set[str] = set()
+    for name in filenames:
+        identity = _filename_identity(name)
+        if name in {"", ".", ".."} or Path(name).name != name or identity in identities:
+            raise AuphonicApiError(
+                "Invalid output publication plan: filenames must be distinct single path components"
+            )
+        identities.add(identity)
+
+
 def _unique_filename(filename: str, used: set[str], idx: int) -> str:
     name = Path(filename).name
     if name in {"", ".", ".."}:
         name = f"output_{idx}"
-    if name.casefold() not in used:
-        used.add(name.casefold())
+    if _filename_identity(name) not in used:
+        used.add(_filename_identity(name))
         return name
     stem = Path(name).stem
     suffix = Path(name).suffix
     counter = 2
     while True:
         candidate = f"{stem}_{counter}{suffix}"
-        if candidate.casefold() not in used:
-            used.add(candidate.casefold())
+        if _filename_identity(candidate) not in used:
+            used.add(_filename_identity(candidate))
             return candidate
         counter += 1
 
@@ -1143,8 +1159,10 @@ async def _download_file(
 
 
 def _check_download_response(response: httpx.Response, max_bytes: int, filename: str) -> None:
-    if response.status_code >= 400:
+    if response.status_code != 200:
         raise AuphonicApiError(f"Failed to download {filename} (status {response.status_code})")
+    if "Content-Range" in response.headers:
+        raise AuphonicApiError(f"Failed to download {filename}: unexpected Content-Range")
     if response.headers.get("Content-Encoding", "identity").lower() != "identity":
         raise AuphonicApiError(f"Failed to download {filename}: unsupported Content-Encoding")
     length = response.headers.get("Content-Length", "")
@@ -1181,6 +1199,8 @@ async def _atomic_write_stream(path: Path, chunks: AsyncIterable[bytes], *, max_
             os.fsync(tmp.fileno())
         if time.monotonic() >= deadline:
             raise TimeoutError
+        if total == 0:
+            raise AuphonicApiError(f"Failed to download {path.name}: empty output")
         os.replace(tmp_path, path)
     finally:
         if tmp_path is not None:
@@ -1191,6 +1211,7 @@ async def _atomic_write_stream(path: Path, chunks: AsyncIterable[bytes], *, max_
 
 
 def _publish_outputs(incoming: Path, output_dir: Path, filenames: Sequence[str]) -> None:
+    _validate_output_filenames(filenames)
     backup = incoming.parent / "previous"
     backup.mkdir()
     published: list[str] = []
