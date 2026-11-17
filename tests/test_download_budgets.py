@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
+from unicodedata import normalize
 
 import httpx
 import pytest
@@ -14,6 +15,60 @@ OUTPUTS = [
     auphonic_api.AuphonicOutputFile(f"https://cdn.test/{name}?signature=fictional-private", name)
     for name in ["a.mp3", "b.mp3"]
 ]
+
+
+@pytest.mark.parametrize(
+    "status,headers",
+    [
+        (206, {"Content-Range": "bytes 0-2/100"}),
+        (206, {}),
+        (204, {}),
+        (201, {}),
+        (304, {}),
+        (200, {"Content-Range": "bytes 0-2/100"}),
+        (200, {"Content-Range": ""}),
+    ],
+)
+def test_incomplete_response_refused_before_body_preserves_set(
+    tmp_path: Path, status: int, headers: dict[str, str]
+) -> None:
+    stream = Stream(Clock())
+    for name in ["a.mp3", "b.mp3", "notes.txt"]:
+        (tmp_path / name).write_bytes(name.encode())
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert "range" not in request.headers
+        assert request.headers["Accept-Encoding"] == "identity"
+        if request.url.path == "/a.mp3":
+            return httpx.Response(200, content=b"complete first output")
+        return httpx.Response(status, headers=headers, stream=stream)
+
+    with auphonic_api.AuphonicClient(CREDS, transport=httpx.MockTransport(handler)) as client:
+        with pytest.raises(auphonic_api.AuphonicApiError, match="status|Content-Range") as error:
+            client.download_outputs(OUTPUTS, tmp_path)
+    assert "signature" not in str(error.value)
+    assert stream.count == 0 and stream.closed
+    assert {p.name: p.read_bytes() for p in tmp_path.iterdir()} == {
+        name: name.encode() for name in ["a.mp3", "b.mp3", "notes.txt"]
+    }
+
+
+@pytest.mark.parametrize("headers", [{}, {"Content-Length": "0"}])
+def test_empty_output_preserves_previous_set(tmp_path: Path, headers: dict[str, str]) -> None:
+    for output in OUTPUTS:
+        (tmp_path / output.filename).write_bytes(output.filename.encode())
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/a.mp3":
+            return httpx.Response(200, content=b"complete first output")
+        return httpx.Response(200, headers=headers, stream=httpx.ByteStream(b""))
+
+    with auphonic_api.AuphonicClient(CREDS, transport=httpx.MockTransport(handler)) as client:
+        with pytest.raises(auphonic_api.AuphonicApiError, match="empty output"):
+            client.download_outputs(OUTPUTS, tmp_path)
+    assert {p.name: p.read_bytes() for p in tmp_path.iterdir()} == {
+        output.filename: output.filename.encode() for output in OUTPUTS
+    }
 
 
 @pytest.mark.parametrize("slow", [False, True])
@@ -148,6 +203,76 @@ def test_complete_set_success_with_explicit_budgets(tmp_path: Path) -> None:
         "b.mp3": b"/b.mp3",
         "notes.txt": b"keep",
     }
+
+
+UNICODE_NAMES = ["é.mp3", "e\u0301.mp3", "É_2.mp3", "é_3.mp3"]
+UNICODE_TARGETS = ["é.mp3", "e\u0301_2.mp3", "É_2_2.mp3", "é_3.mp3"]
+UNICODE_OUTPUTS = [
+    auphonic_api.AuphonicOutputFile(f"https://cdn.test/{idx}", name) for idx, name in enumerate(UNICODE_NAMES)
+]
+
+
+def test_unicode_output_names_publish_distinct_files(tmp_path: Path) -> None:
+    for idx, name in enumerate(UNICODE_TARGETS):
+        (tmp_path / name).write_bytes(f"old-{idx}".encode())
+    with auphonic_api.AuphonicClient(
+        CREDS, transport=httpx.MockTransport(lambda r: httpx.Response(200, content=r.url.path.encode()))
+    ) as client:
+        paths = client.download_outputs(UNICODE_OUTPUTS, tmp_path)
+    assert paths == tuple(tmp_path / name for name in UNICODE_TARGETS)
+    assert [path.read_bytes() for path in paths] == [f"/{idx}".encode() for idx in range(4)]
+    assert len(list(tmp_path.iterdir())) == 4
+
+
+@pytest.mark.parametrize("fail_move", range(1, 13))
+def test_unicode_output_publication_failure_restores_every_original(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fail_move: int
+) -> None:
+    for idx, name in enumerate(UNICODE_TARGETS):
+        (tmp_path / name).write_bytes(f"old-{idx}".encode())
+    (tmp_path / "notes.txt").write_bytes(b"unrelated")
+    before = {normalize("NFC", p.name): p.read_bytes() for p in tmp_path.iterdir()}
+    original = auphonic_api.os.replace
+    moves = 0
+    injected = False
+
+    def replace(source: Path, dest: Path) -> None:
+        nonlocal moves, injected
+        if source.parent.name == "incoming" or source.parent == tmp_path:
+            moves += 1
+            if moves == fail_move:
+                injected = True
+                raise OSError("synthetic Unicode publication failure")
+        original(source, dest)
+
+    monkeypatch.setattr(auphonic_api.os, "replace", replace)
+    with auphonic_api.AuphonicClient(
+        CREDS, transport=httpx.MockTransport(lambda r: httpx.Response(200, content=r.url.path.encode()))
+    ) as client:
+        with pytest.raises(auphonic_api.AuphonicApiError, match="synthetic Unicode publication failure"):
+            client.download_outputs(UNICODE_OUTPUTS, tmp_path)
+    assert injected
+    assert {normalize("NFC", p.name): p.read_bytes() for p in tmp_path.iterdir()} == before
+
+
+@pytest.mark.parametrize("names", [["é.mp3", "e\u0301.mp3"], ["é.mp3", "É.mp3"], ["../outside.mp3"], ["."]])
+def test_invalid_publication_plan_refused_before_any_move(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, names: list[str]
+) -> None:
+    incoming = tmp_path / "incoming"
+    incoming.mkdir()
+    output = tmp_path / "outputs"
+    output.mkdir()
+    (output / "é.mp3").write_bytes(b"original")
+
+    def replace(source: Path, dest: Path) -> None:
+        pytest.fail("invalid publication plan must be refused before moving files")
+
+    monkeypatch.setattr(auphonic_api.os, "replace", replace)
+    with pytest.raises(auphonic_api.AuphonicApiError, match="publication plan"):
+        auphonic_api._publish_outputs(incoming, output, names)
+    assert (output / "é.mp3").read_bytes() == b"original"
+    assert not (tmp_path / "previous").exists()
 
 
 def test_redirect_body_is_not_consumed(tmp_path: Path) -> None:

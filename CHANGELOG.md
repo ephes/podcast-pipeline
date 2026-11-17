@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Disambiguate canonically equivalent Unicode and case-folded Auphonic output names before
+  staging, retaining spelling and order with distinct suffixes. Validate publication names
+  before moving originals so filename aliases cannot overwrite rollback backups.
+
+- Require complete, nonempty Auphonic downloads: HTTP 200 without Content-Range and with
+  identity encoding. Refused partial or empty outputs preserve the previous output set.
+
 - Return committed chunk metadata when old-backup retirement fails; warn with its retained path
   instead of reporting a failed publication or rolling back the accepted generation.
   Ingesting a new transcript retires such stale backups together with the canonical set, so they

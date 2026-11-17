@@ -268,10 +268,17 @@ and `PODCAST_PIPELINE_DOWNLOAD_TIMEOUT_SECONDS` (finite positive seconds) before
 `podcast produce`; invalid values fail before requests or paid starts. These values are
 validated when constructing a client, so invalid values also block `podcast auphonic-cleanup --delete` (listing still works). Library callers can
 instead set `AuphonicClient(download_max_bytes=..., download_timeout_seconds=...)`.
-The byte cap is enforced even without Content-Length. Only identity Content-Encoding is
-accepted; signed download URLs are omitted from download error messages.
+The byte cap is enforced even without Content-Length. Final responses must be HTTP 200,
+without a Content-Range header, with identity Content-Encoding and a nonempty body.
+Unsolicited partial responses (including HTTP 206), other statuses and empty outputs fail
+without replacing the previous output set. Signed download URLs are omitted from download error messages.
 
 All requested outputs download into a private staging directory inside `auphonic/outputs`.
+Before downloads start, filenames are planned in response order using Unicode canonical
+normalization (NFC) and case folding to detect aliases on all platforms. Original spelling
+is retained; collisions get `_2`, `_3`, etc. before the extension, checking each suffix
+against the whole plan built so far. For example, `é.mp3` and `é.mp3` become `é.mp3` and
+`é_2.mp3`. The plan is revalidated before any existing destination or backup is moved.
 Only after the entire set succeeds are affected filenames replaced. A download or publication
 failure preserves the previous set and leaves unrelated files alone. Publication uses
 rollback for runtime failures, rather than a crash-atomic multi-file filesystem transaction;
