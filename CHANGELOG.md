@@ -7,8 +7,8 @@
   Ingesting a new transcript retires such stale backups together with the canonical set, so they
   are never mistaken for an interrupted swap of the new source.
 
-- Report chunk recovery and chunking-limit refusals from `podcast draft` as `Error: ...` with exit
-  code 1 instead of a traceback.
+- Report chunk recovery, chunking-limit and source-changed-during-staging refusals from `podcast draft`
+  as `Error: ...` with exit code 1 instead of a traceback.
 
 - Recover a unique validated retained chunk generation after process death between directory renames,
   before new staging; refuse ambiguous or damaged backups and preserve all recovery evidence.

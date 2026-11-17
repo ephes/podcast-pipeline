@@ -197,7 +197,7 @@ A handled publication error restores the previous directory. Discovery rejects l
 missing or changed members and sets whose source no longer matches `transcript/transcript.txt`.
 Publication and discovery share the existing stable workspace-directory lock with state/YAML writers.
 Staging happens outside the lock; the source is read again under the lock before swapping. Changed
-source refuses publication and preserves the current set. Swap, rollback and old-set retirement stay
+source refuses publication with `ChunkSourceChangedError` (a `ValueError`) and preserves the current set. Swap, rollback and old-set retirement stay
 under that lock, so one writer cannot restore over another writer's committed generation and discovery
 cannot inspect the inter-rename gap. Transcript ingestion uses the same lock for invalidation and swap.
 `EpisodeWorkspaceStore.publication_lock()` exposes this boundary for other artifact readers; do not
@@ -226,7 +226,7 @@ never promoted. Complete empty generations can also be recovered.
 
 Multiple backups, damaged files or a changed/missing source raise `ChunkRecoveryError` and retain
 all evidence (`podcast draft` prints it as `Error: ...` and exits with code 1, as it does for
-`ChunkerResourceError`). Inspect the manifests, hashes and canonical transcript; deliberately move unrelated
+`ChunkerResourceError` and `ChunkSourceChangedError`). Inspect the manifests, hashes and canonical transcript; deliberately move unrelated
 backups out of the `.chunks-previous-*` namespace, restore the intended source/backup, then retry.
 Do not delete backups just to suppress an ambiguous outcome. An existing canonical directory remains
 authoritative; this rule does not replace it with an older backup. The deterministic dry-run golden

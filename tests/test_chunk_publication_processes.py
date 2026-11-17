@@ -83,7 +83,7 @@ def test_source_changed_during_staging_cannot_replace_current(tmp_path: Path, mo
         return result
 
     monkeypatch.setattr(Path, "write_text", change)
-    with pytest.raises(ValueError, match="Transcript changed"):
+    with pytest.raises(chunker.ChunkSourceChangedError, match="Transcript changed"):
         chunker.write_transcript_chunks(layout=layout, transcript_path=source, config=chunker.ChunkerConfig())
     assert {p.name: p.read_bytes() for p in layout.transcript_chunks_dir.iterdir()} == before
 

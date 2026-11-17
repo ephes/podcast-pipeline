@@ -68,6 +68,10 @@ class ChunkRecoveryError(RuntimeError):
     """Retained generations require explicit operator reconciliation."""
 
 
+class ChunkSourceChangedError(ValueError):
+    """The transcript changed while chunks were staged; the current set was kept."""
+
+
 @dataclass(frozen=True)
 class ChunkerLimits:
     source_bytes: int = 8 * 1024 * 1024
@@ -278,7 +282,7 @@ def write_transcript_chunks(
         with EpisodeWorkspaceStore(layout.root).publication_lock():
             _recover_chunks(layout, limits)
             if _read_source(transcript_path, limits).encode("utf-8") != transcript_bytes:
-                raise ValueError("Transcript changed while staging chunks; retry with the current source")
+                raise ChunkSourceChangedError("Transcript changed while staging chunks; retry with the current source")
             _publish_chunks(staged, destination)
     return metas
 
