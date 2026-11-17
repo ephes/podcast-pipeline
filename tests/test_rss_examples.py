@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import SupportsIndex
 
 import pytest
 
@@ -9,6 +10,7 @@ from podcast_pipeline.few_shot_selector import FewShotExampleRecord
 from podcast_pipeline.rss_examples import (
     RssEpisodeExample,
     RssExamplesError,
+    _remove_html_comments,
     normalize_html,
     parse_rss_examples,
     write_rss_examples_jsonl,
@@ -119,3 +121,35 @@ def test_parse_rss_examples_reads_itunes_keywords() -> None:
     assert examples[0].keywords == ("python", "python3.13", "pypy", "jit")
     record = FewShotExampleRecord.from_value(examples[0].to_record())
     assert record.keywords == ("python", "python3.13", "pypy", "jit")
+
+
+@pytest.mark.parametrize("repeat", [1, 2000, 4000, 8000])
+def test_unterminated_html_comments_discard_the_remaining_comment(repeat: int) -> None:
+    assert normalize_html("<p>Keep</p>" + "<!--" * repeat + "hidden") == "<p>Keep</p>"
+
+
+def test_multiple_html_comments_preserve_surrounding_text() -> None:
+    assert normalize_html("before<!--one-->between<!--two-->after") == "beforebetweenafter"
+
+
+class _CountedSearchText(str):
+    work: int = 0
+
+    def find(self, sub: str, start: SupportsIndex | None = 0, end: SupportsIndex | None = None) -> int:
+        begin, stop, _ = slice(start, end).indices(len(self))
+        result = super().find(sub, start, end)
+        self.work += (result + len(sub) if result >= 0 else stop) - begin
+        return result
+
+
+@pytest.mark.parametrize("count", [1000, 2000, 4000, 8000])
+@pytest.mark.parametrize("unit", ["<!--", "<!--ok-->"])
+def test_comment_search_work_is_linear(count: int, unit: str) -> None:
+    text = _CountedSearchText("before" + unit * count + "after")
+    _remove_html_comments(text)
+    assert text.work <= 2 * len(text)
+
+
+def test_comment_scanner_preserves_escaped_delimiters() -> None:
+    text = "&lt;!-- literal --&gt;<!--real comment-->text"
+    assert _remove_html_comments(text) == "&lt;!-- literal --&gt;text"

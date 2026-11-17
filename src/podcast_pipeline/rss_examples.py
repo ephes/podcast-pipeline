@@ -61,7 +61,6 @@ class RssEpisodeExample:
         }
 
 
-_COMMENT_RE = re.compile(r"<!--.*?-->", re.DOTALL)
 _INLINE_SPACE_RE = re.compile(r"[ \t]+")
 _BLANK_LINES_RE = re.compile(r"\n{3,}")
 
@@ -325,7 +324,24 @@ def normalize_html(value: str) -> str:
     text = html.unescape(value)
     text = text.replace("\r\n", "\n").replace("\r", "\n")
     text = text.replace("\xa0", " ")
-    text = _COMMENT_RE.sub("", text)
+    text = _remove_html_comments(text)
     text = _INLINE_SPACE_RE.sub(" ", text)
     text = _BLANK_LINES_RE.sub("\n\n", text)
     return text.strip()
+
+
+def _remove_html_comments(text: str) -> str:
+    """Scan each comment once; an unterminated opener owns the remaining suffix."""
+    parts = []
+    pos = 0
+    while True:
+        start = text.find("<!--", pos)
+        if start < 0:
+            parts.append(text[pos:])
+            break
+        parts.append(text[pos:start])
+        end = text.find("-->", start + 4)
+        if end < 0:
+            break
+        pos = end + 3
+    return "".join(parts)

@@ -455,3 +455,10 @@ candidate writes. The summary file itself retains the tighter 1 MiB ceiling.
 `draft-candidates --candidates N` supports **1–10** variants per asset (default 3). The direct
 `generate_draft_candidates` API checks the same integer range, rejecting booleans and invalid config
 values before any rendering/storage work. At admitted counts the variant IDs and content remain deterministic.
+
+### RSS HTML comments
+
+RSS example HTML removes complete `<!-- ... -->` comments with a forward-only
+scan. Repeated openers in an unterminated comment do not trigger repeated suffix
+searches; an unterminated final comment discards the rest of that HTML value.
+Text outside comments is retained and XML/feed limits are unchanged.
