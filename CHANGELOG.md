@@ -4,6 +4,8 @@
 
 - Return committed chunk metadata when old-backup retirement fails; warn with its retained path
   instead of reporting a failed publication or rolling back the accepted generation.
+  Ingesting a new transcript retires such stale backups together with the canonical set, so they
+  are never mistaken for an interrupted swap of the new source.
 
 - Recover a unique validated retained chunk generation after process death between directory renames,
   before new staging; refuse ambiguous or damaged backups and preserve all recovery evidence.

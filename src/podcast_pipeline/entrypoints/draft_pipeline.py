@@ -93,6 +93,17 @@ def _clear_stale_artifacts(store: EpisodeWorkspaceStore) -> None:
 
 def _clear_stale_artifacts_unlocked(store: EpisodeWorkspaceStore) -> None:
     chunks_dir = store.layout.transcript_chunks_dir
+    # Retained chunk backups were built from the transcript being invalidated; left behind
+    # they would be mistaken for an interrupted swap once the canonical set is removed.
+    # Retire them first so a removal failure leaves the canonical set and transcript intact.
+    backups = sorted(chunks_dir.parent.glob(".chunks-previous-*")) if chunks_dir.parent.is_dir() else []
+    for backup in backups:
+        if backup.is_dir() and not backup.is_symlink():
+            shutil.rmtree(backup)
+        else:
+            backup.unlink()
+    if backups:
+        typer.echo("Cleared stale chunk backups", err=True)
     if chunks_dir.exists():
         shutil.rmtree(chunks_dir)
         typer.echo("Cleared stale chunks", err=True)

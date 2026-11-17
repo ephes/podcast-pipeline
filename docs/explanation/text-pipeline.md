@@ -238,6 +238,10 @@ because old-directory cleanup warned. Later publishers retire only their own bac
 retained evidence, stop draft/transcription writers, verify the canonical set with
 `discover_complete_chunk_ids(layout, config=requested_config)`, and inspect/move or remove only
 the named old backup under `publication_lock()` (discovery must run outside that lock).
+Ingesting a new transcript (`podcast draft --transcript`) retires every `.chunks-previous-*`
+backup under the same lock, before it removes the canonical set and summaries: those backups were
+built from the replaced source and could otherwise be mistaken for an interrupted swap. If that
+removal fails, ingestion stops before the canonical set or transcript changes.
 Keep ambiguous evidence for reconciliation if the canonical directory is absent. A cleanup warning
 does not roll back the committed set; prepublication and swap failures still fail and preserve or
 restore the previous set.
