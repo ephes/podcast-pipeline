@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Preserve fractional CMS chapter starts at microsecond precision; refuse rounding collisions.
+
 - Disambiguate canonically equivalent Unicode and case-folded Auphonic output names before
   staging, retaining spelling and order with distinct suffixes. Validate publication names
   before moving originals so filename aliases cannot overwrite rollback backups.

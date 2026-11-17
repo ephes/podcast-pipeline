@@ -359,13 +359,19 @@ def _output_basename(episode_yaml: Mapping[str, Any]) -> str | None:
 
 
 def format_chaptermarks(chapters: Sequence[tuple[float, str]]) -> str:
-    """django-cast's ``chaptermarks`` field: one ``HH:MM:SS Title`` line per chapter."""
+    """django-cast chapter text, rounded to its TimeField's microsecond precision."""
     lines = []
+    previous = -1
     for start, title in chapters:
-        total = int(start)
-        hours, rest = divmod(total, 3600)
+        total = round(start * 1_000_000)
+        if total <= previous:
+            raise CmsConfigError("CMS chapter starts must increase at microsecond precision.")
+        previous = total
+        whole, micros = divmod(total, 1_000_000)
+        hours, rest = divmod(whole, 3600)
         minutes, seconds = divmod(rest, 60)
-        lines.append(f"{hours:02d}:{minutes:02d}:{seconds:02d} {' '.join(title.split())}")
+        fraction = f".{micros:06d}" if micros else ""
+        lines.append(f"{hours:02d}:{minutes:02d}:{seconds:02d}{fraction} {' '.join(title.split())}")
     return "\n".join(lines)
 
 

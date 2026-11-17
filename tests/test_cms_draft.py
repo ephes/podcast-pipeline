@@ -372,7 +372,7 @@ def test_plan_builds_episode_payload_with_audio_block_and_shownotes(
     assert plan.audio.form_fields() == {
         "title": "Was ist neu in Python 3.15?",
         "subtitle": "Untertitel fürs Audio",
-        "chaptermarks": "00:00:00 Begrüßung\n00:00:43 Python 3.15\n01:03:24 Picks",
+        "chaptermarks": "00:00:00 Begrüßung\n00:00:43.600000 Python 3.15\n01:03:24 Picks",
         "collection": "1",
         "transcript_diarization_mode": "enabled",
     }
@@ -521,7 +521,7 @@ def test_creates_draft_uploads_one_file_and_lists_manual_steps_in_order(
             "fields": {
                 "title": "Was ist neu in Python 3.15?",
                 "subtitle": "Untertitel fürs Audio",
-                "chaptermarks": "00:00:00 Begrüßung\n00:00:43 Python 3.15\n01:03:24 Picks",
+                "chaptermarks": "00:00:00 Begrüßung\n00:00:43.600000 Python 3.15\n01:03:24 Picks",
                 "collection": "1",
             },
             "mode": "inherit",
