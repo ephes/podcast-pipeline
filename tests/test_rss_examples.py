@@ -48,7 +48,7 @@ def test_parse_rss_examples_skips_incomplete_items() -> None:
 
     assert len(examples) == 2
     assert examples[0].title == "Episode 1"
-    assert examples[0].description_html == "<p>Hello world</p>"
+    assert examples[0].description_html == "<p>Hello&nbsp;world</p>"
     assert examples[0].summary == "Short summary"
     assert examples[0].feed_url == "https://example.com/feed"
     assert examples[1].title == "Episode 2"
@@ -77,7 +77,7 @@ def test_parse_rss_examples_invalid_xml_raises() -> None:
 
 def test_normalize_html_collapses_noise() -> None:
     raw = "One&nbsp;two<!--c-->\n\n\nThree"
-    assert normalize_html(raw) == "One two\n\nThree"
+    assert normalize_html(raw) == "One&nbsp;two\n\nThree"
 
 
 def test_write_rss_examples_jsonl_writes_records(tmp_path: Path) -> None:
@@ -229,3 +229,57 @@ def test_rss_preferences_fall_back_and_keep_same_tag_order(fields: str, descript
     example = parse_rss_examples(xml, feed_url="https://feed.example/", limit=1)[0]
     assert example.description_html == description
     assert example.summary == summary
+
+
+@pytest.mark.parametrize(
+    "description",
+    [
+        "<![CDATA[<p>&lt;script&gt;quoted&lt;/script&gt; &amp; &copy;</p>]]>",
+        "&lt;p&gt;&amp;lt;script&amp;gt;quoted&amp;lt;/script&amp;gt; &amp;amp; &amp;copy;&lt;/p&gt;",
+        "<p>&lt;script&gt;quoted&lt;/script&gt; &amp; &#169;</p>",
+    ],
+    ids=["cdata-html", "xml-escaped-html", "xml-children"],
+)
+def test_rss_entities_do_not_create_html_elements(description: str) -> None:
+    from html.parser import HTMLParser
+
+    class Structure(HTMLParser):
+        def __init__(self) -> None:
+            super().__init__()
+            self.tags: list[str] = []
+            self.text: list[str] = []
+
+        def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+            self.tags.append(tag)
+
+        def handle_data(self, data: str) -> None:
+            self.text.append(data)
+
+    xml = f"<rss><channel><item><title>Episode</title><description>{description}</description></item></channel></rss>"
+    example = parse_rss_examples(xml, feed_url="https://feed.example/", limit=1)[0]
+    parsed = Structure()
+    parsed.feed(example.description_html)
+    parsed.close()
+    assert parsed.tags == ["p"]
+    assert "".join(parsed.text) == "<script>quoted</script> & ©"
+
+
+def test_rss_mixed_content_leading_text_stays_text() -> None:
+    xml = """<rss><channel><item><title>Episode</title><description>
+    &lt;script&gt;literal&lt;/script&gt; &amp; <p>inside</p>tail &lt;tag&gt;
+    </description></item></channel></rss>"""
+    example = parse_rss_examples(xml, feed_url="https://feed.example/", limit=1)[0]
+    assert example.description_html == "&lt;script&gt;literal&lt;/script&gt; &amp; <p>inside</p>tail &lt;tag&gt;"
+
+
+def test_normalize_html_keeps_entities_in_text_and_attributes() -> None:
+    source = '<p title="&quot; &lt;tag&gt; &amp;">&lt;!--literal--&gt; &amp; &nbsp; &#60;code&#62;</p>'
+    assert normalize_html(source + "<!--real-->") == source
+
+
+def test_rss_xml_escaped_ampersand_remains_literal() -> None:
+    xml = (
+        "<rss><channel><item><title>Episode</title><description><p>&amp;copy;</p></description></item></channel></rss>"
+    )
+    example = parse_rss_examples(xml, feed_url="https://feed.example/", limit=1)[0]
+    assert example.description_html == "<p>&amp;copy;</p>"

@@ -300,7 +300,10 @@ def _extract_first_html(item: ElementTree.Element, tags: Sequence[str]) -> str |
 def _element_inner_xml(element: ElementTree.Element) -> str:
     parts: list[str] = []
     if element.text:
-        parts.append(element.text)
+        # With XML children, leading text belongs to the XML text layer, just
+        # like tails already escaped by tostring(). Childless RSS fields carry
+        # an HTML string (XML-escaped or CDATA), decoded exactly once by XMLParser.
+        parts.append(html.escape(element.text, quote=False) if len(element) else element.text)
     for child in element:
         parts.append(ElementTree.tostring(child, encoding="unicode", method="xml"))
     return "".join(parts)
@@ -321,8 +324,9 @@ def normalize_text(value: str) -> str:
 
 
 def normalize_html(value: str) -> str:
-    text = html.unescape(value)
-    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    # XML decoding is already complete. HTML entities must remain text/attribute
+    # syntax; decoding them here could turn quoted examples into active markup.
+    text = value.replace("\r\n", "\n").replace("\r", "\n")
     text = text.replace("\xa0", " ")
     text = _remove_html_comments(text)
     text = _INLINE_SPACE_RE.sub(" ", text)

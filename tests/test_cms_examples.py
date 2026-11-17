@@ -46,7 +46,7 @@ def test_parse_cms_examples_normalizes_and_falls_back_to_meta() -> None:
 
     first = examples[0]
     assert first.title == "Episode 1"
-    assert first.description_html == "<p>Hello world</p>"
+    assert first.description_html == "<p>Hello&nbsp;world</p>"
     assert first.shownotes_html is None
     assert first.tags == ("AI", "Tech")
     assert first.summary == "Short summary"
@@ -108,7 +108,7 @@ def test_parse_cms_examples_supports_dot_notation_fields() -> None:
 
     assert len(examples) == 1
     example = examples[0]
-    assert example.description_html == "<p>Dot desc</p>"
+    assert example.description_html == "<p>Dot&nbsp;desc</p>"
     assert example.shownotes_html is None
     assert example.summary == "Dot summary"
     assert example.link == "https://example.com/primary"
@@ -314,3 +314,14 @@ def test_unparseable_public_link_is_dropped_not_fatal() -> None:
     )
     assert example.link is None
     assert example.to_record()["link"] is None
+
+
+def test_cms_html_examples_share_entity_preservation() -> None:
+    literal = '<p title="&quot;">&lt;script&gt;example&lt;/script&gt; &amp;</p>'
+    (example,) = parse_cms_examples(
+        [{"title": "Episode", "description": literal, "shownotes": {"html": literal}}],
+        api_url="https://cms.example/api",
+        limit=1,
+    )
+    assert example.description_html == literal
+    assert example.shownotes_html == literal

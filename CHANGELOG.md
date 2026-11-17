@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Preserve RSS HTML entity syntax and mixed-XML leading text so quoted markup stays text;
+  the shared CMS example normalizer retains entity syntax too.
+
 - Honor declared RSS content, summary and publication tag priorities before document order.
 
 - Retain each RSS mixed-content child tail exactly once during example extraction.
