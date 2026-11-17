@@ -153,3 +153,31 @@ def test_comment_search_work_is_linear(count: int, unit: str) -> None:
 def test_comment_scanner_preserves_escaped_delimiters() -> None:
     text = "&lt;!-- literal --&gt;<!--real comment-->text"
     assert _remove_html_comments(text) == "&lt;!-- literal --&gt;text"
+
+
+@pytest.mark.parametrize(
+    ("description", "expected"),
+    [
+        ("before<p>inside</p>after", "before<p>inside</p>after"),
+        ("start<b>bold</b>middle<i>italic</i>end", "start<b>bold</b>middle<i>italic</i>end"),
+        ("plain text", "plain text"),
+        ("<![CDATA[<p>CDATA</p>tail]]>", "<p>CDATA</p>tail"),
+    ],
+)
+def test_rss_mixed_content_tails_appear_once(description: str, expected: str) -> None:
+    xml = f"<rss><channel><item><title>Episode</title><description>{description}</description></item></channel></rss>"
+    example = parse_rss_examples(xml, feed_url="https://feed.example/", limit=1)[0]
+    assert example.description_html == expected
+
+
+def test_rss_namespaced_child_tail_appears_once() -> None:
+    from xml.etree import ElementTree
+
+    xml = """<rss xmlns:x="urn:example"><channel><item><title>Episode</title>
+    <description>before<x:p>inside</x:p>after</description></item></channel></rss>"""
+    example = parse_rss_examples(xml, feed_url="https://feed.example/", limit=1)[0]
+    result = ElementTree.fromstring("<description>" + example.description_html + "</description>")
+    assert result.text == "before"
+    assert result[0].tag == "{urn:example}p"
+    assert result[0].text == "inside"
+    assert result[0].tail == "after"

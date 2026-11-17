@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Retain each RSS mixed-content child tail exactly once during example extraction.
+
 - Remove RSS HTML comments with linear search work, discarding unterminated comment suffixes.
 
 - Tokenize CMS host-link HTML without changing attributes, comments or script/style contents.

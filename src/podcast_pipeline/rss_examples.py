@@ -301,8 +301,6 @@ def _element_inner_xml(element: ElementTree.Element) -> str:
         parts.append(element.text)
     for child in element:
         parts.append(ElementTree.tostring(child, encoding="unicode", method="xml"))
-        if child.tail:
-            parts.append(child.tail)
     return "".join(parts)
 
 

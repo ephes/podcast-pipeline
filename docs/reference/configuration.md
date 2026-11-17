@@ -462,3 +462,9 @@ RSS example HTML removes complete `<!-- ... -->` comments with a forward-only
 scan. Repeated openers in an unterminated comment do not trigger repeated suffix
 searches; an unterminated final comment discards the rest of that HTML value.
 Text outside comments is retained and XML/feed limits are unchanged.
+
+### RSS description extraction
+
+Descriptions may contain plain HTML text/CDATA or mixed XML content. Mixed-content
+serialization retains the leading text, child order and each child's trailing text
+exactly once, including namespaced children.
