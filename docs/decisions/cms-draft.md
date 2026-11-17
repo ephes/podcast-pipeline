@@ -134,5 +134,8 @@ only in the first eligible text mention, preserving attribute quoting, entities 
 all other source markup. Existing anchors, comments, script/style, template, head,
 title and textarea contents are excluded; an existing anchor to the host URL
 suppresses another link regardless of attribute case or quoting. Incomplete tokens
-or malformed declarations leave the input unchanged. Each host pass feeds the HTML
+or malformed declarations leave the input unchanged. Self-closing syntax on an
+anchor or excluded nonvoid element (for example `<script/>`) also leaves the input
+unchanged because the tokenizer and browser disagree about its text boundaries.
+Each host pass feeds the HTML
 once as a complete buffer, without repeatedly retrying growing incomplete tokens.

@@ -460,6 +460,7 @@ class _HostTextParser(HTMLParser):
         self.line_offsets = [0, *(match.end() for match in re.finditer("\n", source))]
         self.spans: list[tuple[int, int]] = []
         self.hrefs: set[str] = set()
+        self.ambiguous_self_closing = False
         self.depths = dict.fromkeys(self._HIDDEN | {"a"}, 0)
 
     def source_offset(self) -> int:
@@ -472,6 +473,10 @@ class _HostTextParser(HTMLParser):
             self.depths[tag] += 1
 
     def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        # HTML browsers ignore the slash on these nonvoid tags; HTMLParser does
+        # not. Keep ambiguous source unchanged instead of trusting text spans.
+        if tag in self.depths:
+            self.ambiguous_self_closing = True
         self._record_href(tag, attrs)
 
     def _record_href(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
@@ -524,7 +529,7 @@ def _link_first_mention(html_text: str, *, name: str, url: str) -> str:
     except AssertionError:  # malformed declarations on supported Python versions
         return html_text
     # Do not close(): HTMLParser would reinterpret an unfinished token as text.
-    if parser.source_offset() != len(html_text) or url in parser.hrefs:
+    if parser.ambiguous_self_closing or parser.source_offset() != len(html_text) or url in parser.hrefs:
         return html_text
     pattern = re.compile(rf"(?<!\w){re.escape(html.escape(name, quote=False))}(?!\w)")
     for start, end in parser.spans:

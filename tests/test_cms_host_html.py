@@ -42,3 +42,9 @@ def test_escaped_host_and_unrelated_entities_keep_source_spelling() -> None:
         '<p><a href="https://profiles.example/alice?a=1&amp;b=2">Alice &amp; Bob</a>, '
         "then Alice &amp; Bob. &copy; 2026</p>"
     )
+
+
+@pytest.mark.parametrize("tag", ["script", "style", "a", "template"])
+def test_self_closing_nonvoid_tags_are_left_unchanged(tag: str) -> None:
+    source = f"<p>Alice</p><{tag}/>Alice</{tag}><p>Alice</p>"
+    assert link_hosts(source, hosts=None, host_links={"Alice": URL}) == source

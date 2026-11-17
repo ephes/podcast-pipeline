@@ -11,7 +11,8 @@
 
 - Remove RSS HTML comments with linear search work, discarding unterminated comment suffixes.
 
-- Tokenize CMS host-link HTML without changing attributes, comments or script/style contents.
+- Tokenize CMS host-link HTML without changing attributes, comments or script/style contents;
+  leave ambiguous self-closing anchor/script and other excluded nonvoid elements unchanged.
 
 - Validate CMS chapter clocks, increasing starts and the TimeField day range locally before HTTP.
 
