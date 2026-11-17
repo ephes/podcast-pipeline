@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Honor declared RSS content, summary and publication tag priorities before document order.
+
 - Retain each RSS mixed-content child tail exactly once during example extraction.
 
 - Remove RSS HTML comments with linear search work, discarding unterminated comment suffixes.

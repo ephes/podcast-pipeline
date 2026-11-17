@@ -278,20 +278,22 @@ def _split_keywords(value: str | None) -> tuple[str, ...]:
 
 
 def _extract_first_text(item: ElementTree.Element, tags: Sequence[str]) -> str | None:
-    for child in item:
-        if _strip_namespace(child.tag) in tags:
-            text = "".join(child.itertext()).strip()
-            if text:
-                return text
+    for tag in tags:
+        for child in item:
+            if _strip_namespace(child.tag) == tag:
+                text = "".join(child.itertext()).strip()
+                if text:
+                    return text
     return None
 
 
 def _extract_first_html(item: ElementTree.Element, tags: Sequence[str]) -> str | None:
-    for child in item:
-        if _strip_namespace(child.tag) in tags:
-            html_value = _element_inner_xml(child).strip()
-            if html_value:
-                return html_value
+    for tag in tags:
+        for child in item:
+            if _strip_namespace(child.tag) == tag:
+                html_value = _element_inner_xml(child).strip()
+                if html_value:
+                    return html_value
     return None
 
 

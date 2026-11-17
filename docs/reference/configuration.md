@@ -468,3 +468,8 @@ Text outside comments is retained and XML/feed limits are unchanged.
 Descriptions may contain plain HTML text/CDATA or mixed XML content. Mixed-content
 serialization retains the leading text, child order and each child's trailing text
 exactly once, including namespaced children.
+
+Content tag preference takes precedence over document order: `encoded` before
+`description`, `summary` before `subtitle`, and `pubDate`, `published`, `updated`,
+then `date`. Empty values fall back; repeated elements of the same tag retain
+document order. Namespaces continue to match by local name.

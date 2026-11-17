@@ -181,3 +181,51 @@ def test_rss_namespaced_child_tail_appears_once() -> None:
     assert result[0].tag == "{urn:example}p"
     assert result[0].text == "inside"
     assert result[0].tail == "after"
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+def test_rss_declared_content_preferences_override_document_order(reverse: bool) -> None:
+    fields = [
+        "<description>Short description</description>",
+        "<content:encoded><![CDATA[<p>Full content</p>]]></content:encoded>",
+        "<itunes:subtitle>Subtitle</itunes:subtitle>",
+        "<summary>Preferred summary</summary>",
+        "<date>Other date</date>",
+        "<updated>Updated</updated>",
+        "<published>Published</published>",
+        "<pubDate>Preferred publication</pubDate>",
+    ]
+    if reverse:
+        fields.reverse()
+    xml = (
+        '<rss xmlns:content="urn:content" xmlns:itunes="urn:itunes"><channel><item><title>Episode</title>'
+        + "".join(fields)
+        + "</item></channel></rss>"
+    )
+    example = parse_rss_examples(xml, feed_url="https://feed.example/", limit=1)[0]
+    assert example.description_html == "<p>Full content</p>"
+    assert example.summary == "Preferred summary"
+    assert example.published == "Preferred publication"
+
+
+@pytest.mark.parametrize(
+    ("fields", "description", "summary"),
+    [
+        (
+            "<description>Fallback</description><encoded> </encoded><summary> </summary><subtitle>Sub</subtitle>",
+            "Fallback",
+            "Sub",
+        ),
+        (
+            "<description>Fallback</description><encoded/><encoded>First</encoded><encoded>Second</encoded>"
+            "<subtitle>Sub</subtitle><summary/><summary>First summary</summary><summary>Second summary</summary>",
+            "First",
+            "First summary",
+        ),
+    ],
+)
+def test_rss_preferences_fall_back_and_keep_same_tag_order(fields: str, description: str, summary: str) -> None:
+    xml = "<rss><channel><item><title>Episode</title>" + fields + "</item></channel></rss>"
+    example = parse_rss_examples(xml, feed_url="https://feed.example/", limit=1)[0]
+    assert example.description_html == description
+    assert example.summary == summary
