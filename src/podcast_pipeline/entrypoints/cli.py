@@ -6,7 +6,8 @@ import typer
 
 from podcast_pipeline.asset_candidates_stub import MAX_CANDIDATES_PER_ASSET
 
-app = typer.Typer(add_completion=False)
+# Crash reports never list local variables: they can hold API keys and tokens.
+app = typer.Typer(add_completion=False, pretty_exceptions_show_locals=False)
 
 
 @app.command()

@@ -14,7 +14,7 @@ import unicodedata
 import zlib
 from collections.abc import AsyncIterable, Callable, Mapping, Sequence
 from contextlib import ExitStack
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote, urlparse
@@ -79,9 +79,9 @@ class AuphonicCredentials:
     """Either an API key (sent as a Bearer token) or a username and password (HTTP Basic)."""
 
     base_url: str
-    api_key: str | None = None
+    api_key: str | None = field(default=None, repr=False)
     username: str | None = None
-    password: str | None = None
+    password: str | None = field(default=None, repr=False)
 
 
 @dataclass(frozen=True)

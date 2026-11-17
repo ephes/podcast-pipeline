@@ -284,7 +284,8 @@ Notes:
 - Credentials: `AUPHONIC_API_KEY` (an API key from your Auphonic account settings, sent as a Bearer token), or
   `AUPHONIC_USER` and `AUPHONIC_PASSWORD` (HTTP Basic). The API key wins when both are set. `AUPHONIC_BASE_URL`
   overrides the API base URL. Credentials are only sent to that URL's origin, never to output download hosts on
-  other origins.
+  other origins. Crash reports of the `podcast` CLI do not list local variables, so an unexpected error does not
+  print the Auphonic key or password, or the CMS API token, to the terminal.
 - The preset must be an Auphonic multitrack preset (created in Auphonic's multitrack mode). Single-track presets, such
   as a mono preset built for one pre-mixed file, do not apply to multitrack productions. Before creating a production,
   `produce` reads the preset and stops on a type mismatch, so nothing is created or paid for.
@@ -533,6 +534,8 @@ Auphonic production):
   UI's own origin and `Sec-Fetch-Site`, when sent, must be `same-origin` or `none` (otherwise `403`).
 - State-changing requests must send `Content-Type: application/json` (otherwise `415`), including body-less `DELETE`s.
   Scripts calling the API directly (for example with `curl`) need `-H 'Content-Type: application/json'`.
+- Every response sends `X-Frame-Options: DENY`, `Content-Security-Policy: frame-ancestors 'none'` and
+  `X-Content-Type-Options: nosniff`, so other sites cannot embed the UI in a frame and trick clicks on its buttons.
 
 The standalone picker reads authoritative selections and refreshed candidate membership whenever it loads
 assets. Custom drafts survive these refreshes and asset switches in the current page. A save acknowledges
