@@ -362,8 +362,11 @@ def format_chaptermarks(chapters: Sequence[tuple[float, str]]) -> str:
     """django-cast chapter text, rounded to its TimeField's microsecond precision."""
     lines = []
     previous = -1
-    for start, title in chapters:
+    for idx, (start, title) in enumerate(chapters, start=1):
+        start = _chapter_seconds(start, idx=idx)
         total = round(start * 1_000_000)
+        if total >= 86_400_000_000:
+            raise CmsConfigError(f"CMS chapter[{idx}].start must be before 24:00:00 at microsecond precision.")
         if total <= previous:
             raise CmsConfigError("CMS chapter starts must increase at microsecond precision.")
         previous = total
@@ -406,24 +409,32 @@ def _chapter_seconds(value: object, *, idx: int) -> float:
     if isinstance(value, bool) or value is None:
         raise CmsConfigError(message)
     if isinstance(value, (int, float)):
-        seconds = float(value)
+        try:
+            seconds = float(value)
+        except OverflowError as exc:
+            raise CmsConfigError(message) from exc
     elif isinstance(value, str):
         seconds = _parse_clock(value.strip(), message=message)
     else:
         raise CmsConfigError(message)
-    if not math.isfinite(seconds) or seconds < 0:
+    if not math.isfinite(seconds) or not 0 <= seconds < 86400:
         raise CmsConfigError(message)
     return seconds
 
 
 def _parse_clock(text: str, *, message: str) -> float:
-    parts = text.split(":")
-    if not 1 <= len(parts) <= 3:
+    if ":" not in text:
+        try:
+            return float(text)
+        except ValueError as exc:
+            raise CmsConfigError(message) from exc
+    # Only the final seconds component may be fractional. No signs or overflow
+    # components: do not silently repair a malformed clock by summing it.
+    if not re.fullmatch(r"(?:[0-9]{1,2}:)?[0-9]{1,2}:[0-9]{1,2}(?:\.[0-9]+)?", text):
         raise CmsConfigError(message)
-    try:
-        numbers = [float(part) for part in parts]
-    except ValueError as exc:
-        raise CmsConfigError(message) from exc
+    numbers = [float(part) for part in text.split(":")]
+    if any(number >= 60 for number in numbers[-2:]):
+        raise CmsConfigError(message)
     seconds = 0.0
     for number in numbers:
         seconds = seconds * 60 + number

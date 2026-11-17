@@ -1006,3 +1006,41 @@ def test_diarization_patch_is_verified(
     out = capsys.readouterr().out
     assert "the editor API did not store it; Audio 83 reports 'inherit'" in out
     assert fake.calls("POST", "/api/editor/episodes/141/transcript/") == []
+
+
+@pytest.mark.parametrize(
+    "starts",
+    [
+        ["01:-30"],
+        ["00:90"],
+        ["01:60:00"],
+        ["1.5:00"],
+        ["+01:00"],
+        ["24:00:00"],
+        [86400],
+        [86399.9999999],
+        [10**400],
+        [float("inf")],
+        [float("nan")],
+        [True],
+        [1, 1],
+        [2, 1],
+        [0.0000001, 0.0000002],
+    ],
+)
+def test_invalid_cms_chapters_stop_before_http(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake: FakeCast, starts: list[Any]
+) -> None:
+    workspace = _workspace(tmp_path)
+    _config(tmp_path, monkeypatch)
+    _set_episode_yaml(workspace, auphonic={"chapters": [{"start": start, "title": "Chapter"} for start in starts]})
+    with pytest.raises(typer.BadParameter, match="chapter"):
+        _run(workspace)
+    assert fake.requests == []
+
+
+@pytest.mark.parametrize("start", [90, "90", "01:30", "00:01:30", "00:01:30.000000"])
+def test_cms_chapter_input_forms_share_seconds(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, start: Any) -> None:
+    workspace = _workspace(tmp_path)
+    _set_episode_yaml(workspace, auphonic={"chapters": [{"start": start, "title": "Chapter"}]})
+    assert _plan(tmp_path, monkeypatch, workspace).audio.chaptermarks == "00:01:30 Chapter"

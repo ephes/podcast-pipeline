@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Validate CMS chapter clocks, increasing starts and the TimeField day range locally before HTTP.
+
 - Preserve fractional CMS chapter starts at microsecond precision; refuse rounding collisions.
 
 - Disambiguate canonically equivalent Unicode and case-folded Auphonic output names before

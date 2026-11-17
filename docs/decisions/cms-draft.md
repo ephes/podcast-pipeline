@@ -119,3 +119,10 @@ DJANGO_CAST_CHECKOUT=/absolute/path/to/django-cast uv run pytest tests/test_cms_
 ```
 
 This was checked against develop `3fc7b9bac2180937e9f5b0ea10ff94d8ee1913f5`.
+
+Numeric chapter starts are seconds; string clocks accept `MM:SS[.fraction]` or
+`HH:MM:SS[.fraction]`, with unsigned integer hours/minutes and minutes/seconds below
+60. All starts must be finite, nonnegative and below 24 hours both before and after
+rounding. YAML overrides and workspace chapters follow the same strictly increasing
+sequence rule; duplicate, decreasing and unrepresentable times fail plan construction
+before HTTP. Inputs are never sorted or repaired.
