@@ -117,3 +117,66 @@ def test_cli_draft_rejects_invalid_timeout_before_launch(
     assert "timeout" in result.output.lower()
     assert not launched
     assert not (tmp_path / "workspace").exists()
+
+
+def test_cli_draft_reports_ambiguous_chunk_backups_without_traceback(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from podcast_pipeline.transcript_chunker import ChunkRecoveryError
+    from podcast_pipeline.workspace_store import EpisodeWorkspaceStore
+
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("agents:\n  drafter:\n    command: 'false'\n", encoding="utf-8")
+    monkeypatch.setenv("PODCAST_PIPELINE_CONFIG", str(config_path))
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    store = EpisodeWorkspaceStore(workspace)
+    store.write_episode_yaml({"episode_id": "ep"})
+    transcript_dir = store.layout.transcript_dir
+    transcript_dir.mkdir(parents=True)
+    (transcript_dir / "transcript.txt").write_text("one two three\n", encoding="utf-8")
+    for name in (".chunks-previous-a", ".chunks-previous-b"):
+        (transcript_dir / name).mkdir()
+
+    result = CliRunner().invoke(app, ["draft", "--workspace", str(workspace)])
+
+    assert result.exit_code == 1
+    assert "Error: Ambiguous chunk backups" in result.output
+    assert not isinstance(result.exception, ChunkRecoveryError)
+    assert (transcript_dir / ".chunks-previous-a").is_dir()
+    assert (transcript_dir / ".chunks-previous-b").is_dir()
+
+
+def test_cli_draft_reports_transcript_change_during_staging_without_traceback(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from podcast_pipeline import transcript_chunker
+    from podcast_pipeline.workspace_store import EpisodeWorkspaceStore
+
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("agents:\n  drafter:\n    command: 'false'\n", encoding="utf-8")
+    monkeypatch.setenv("PODCAST_PIPELINE_CONFIG", str(config_path))
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    store = EpisodeWorkspaceStore(workspace)
+    store.write_episode_yaml({"episode_id": "ep"})
+    source = store.layout.transcript_dir / "transcript.txt"
+    source.parent.mkdir(parents=True)
+    source.write_text("one two three\n", encoding="utf-8")
+    write = Path.write_text
+
+    def change(path: Path, text: str, *args: object, **kwargs: object) -> int:
+        result = write(path, text, *args, **kwargs)  # type: ignore[arg-type]
+        if path.name == "complete.json":
+            write(source, "changed after staging\n", encoding="utf-8")
+        return result
+
+    monkeypatch.setattr(Path, "write_text", change)
+    result = CliRunner().invoke(app, ["draft", "--workspace", str(workspace)])
+
+    assert result.exit_code == 1
+    assert "Error: Transcript changed while staging chunks" in result.output
+    assert not isinstance(result.exception, transcript_chunker.ChunkSourceChangedError)
+    assert not store.layout.transcript_chunks_dir.exists()

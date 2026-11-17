@@ -403,7 +403,7 @@ def test_transcript_success_invalidates_before_publication(tmp_path: Path, monke
     destination.chmod(0o640)
     source = tmp_path / "source.txt"
     source.write_bytes(b"new transcript\n")
-    original_clear = draft_pipeline._clear_stale_artifacts
+    original_clear = draft_pipeline._clear_stale_artifacts_unlocked
     called = False
 
     def verify_clear(store: EpisodeWorkspaceStore) -> None:
@@ -412,7 +412,7 @@ def test_transcript_success_invalidates_before_publication(tmp_path: Path, monke
         assert destination.read_bytes() == before[destination]
         original_clear(store)
 
-    monkeypatch.setattr(draft_pipeline, "_clear_stale_artifacts", verify_clear)
+    monkeypatch.setattr(draft_pipeline, "_clear_stale_artifacts_unlocked", verify_clear)
     draft_pipeline._ingest_transcript(store=store, transcript=source)
     assert called
     assert destination.read_bytes() == b"new transcript\n"

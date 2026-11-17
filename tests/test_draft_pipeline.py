@@ -431,3 +431,43 @@ def test_run_draft_pipeline_dry_run_persists_hosts(
     store = EpisodeWorkspaceStore(workspace)
     episode_yaml = store.read_episode_yaml()
     assert episode_yaml["hosts"] == ["Jochen", "Dominik"]
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [{}, {"max_tokens": 9}, {"overlap_tokens": 1}, {"boundary_lookback_tokens": 0}, {"min_tokens": 5}],
+)
+def test_requested_chunk_configuration_controls_summary_reuse(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, changes: dict[str, int]
+) -> None:
+    import podcast_pipeline.drafter_runner as dr_mod
+
+    store = _make_workspace(tmp_path)
+    transcript = store.layout.transcript_dir / "transcript.txt"
+    transcript.parent.mkdir()
+    transcript.write_text("one two three four five six seven eight nine ten eleven twelve")
+    original = dict(max_tokens=10, overlap_tokens=2, boundary_lookback_tokens=2, min_tokens=4)
+    write_transcript_chunks(layout=store.layout, transcript_path=transcript, config=ChunkerConfig(**original))
+    write_episode_summary_artifacts(
+        layout=store.layout, episode_summary=EpisodeSummary(summary_markdown="STALE", key_points=["STALE"])
+    )
+    fake = _FakeRunner()
+    monkeypatch.setattr(dr_mod, "DrafterCliRunner", lambda **kwargs: fake)
+    requested = ChunkerConfig(**(original | changes))
+    run_draft_pipeline(
+        dry_run=False,
+        workspace=tmp_path,
+        episode_id="test",
+        transcript=None,
+        chapters=None,
+        candidates_per_asset=1,
+        chunker_config=requested,
+        summarizer_config=StubSummarizerConfig(),
+    )
+    summaries = [prompt for prompt in fake.prompts if "Transcript chunk:" in prompt]
+    assert bool(summaries) == bool(changes)
+    candidate_prompts = [prompt for prompt in fake.prompts if "Asset type:" in prompt]
+    assert candidate_prompts
+    assert all(("STALE" not in prompt) == bool(changes) for prompt in candidate_prompts)
+    manifest = json.loads((store.layout.transcript_chunks_dir / "complete.json").read_text())
+    assert manifest["config"] == original | changes

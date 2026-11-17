@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -16,6 +17,18 @@ from podcast_pipeline.workspace_store import EpisodeWorkspaceLayout
 
 def _tokens(text: str) -> list[str]:
     return re.findall(r"\S+", text)
+
+
+@pytest.mark.parametrize("field", ["max_tokens", "overlap_tokens", "boundary_lookback_tokens", "min_tokens"])
+@pytest.mark.parametrize("value", [True, False, 1.5, float("nan"), float("inf"), "2"])
+def test_chunker_requires_exact_integers(field: str, value: Any) -> None:
+    with pytest.raises(ValueError, match=rf"^{field} must be an integer$"):
+        ChunkerConfig(**{field: value})
+
+
+def test_chunker_accepts_integer_boundaries_and_optional_minimum() -> None:
+    assert ChunkerConfig(max_tokens=1, overlap_tokens=0, boundary_lookback_tokens=0).effective_min_tokens == 1
+    assert ChunkerConfig(max_tokens=2, overlap_tokens=1, min_tokens=2).effective_min_tokens == 2
 
 
 def test_chunker_returns_no_chunks_for_whitespace_only_input() -> None:

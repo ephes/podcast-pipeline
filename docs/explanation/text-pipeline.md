@@ -23,6 +23,8 @@ Chunking is implemented in `podcast_pipeline.transcript_chunker` and writes a `.
 - Tokenization: whitespace-delimited tokens matched by `\S+`.
 - Chunk IDs: start at 1 and increment per chunk.
 - Default config: `ChunkerConfig(max_tokens=1200, overlap_tokens=200, boundary_lookback_tokens=200, min_tokens=None)`.
+- All four settings require actual integers (booleans, floats and nonfinite numbers are refused before processing).
+  Only `min_tokens` may be `None`; existing positive-size and overlap range relationships still apply.
 - Effective minimum size: when `min_tokens` is `None`, `effective_min_tokens` is 60 percent of `max_tokens`.
 - Boundary selection:
   - Prefer paragraph boundaries (`\n\n`), then sentence boundaries (`.`/`!`/`?` followed by whitespace), then line boundaries (`\n`).
@@ -36,6 +38,14 @@ Chunk outputs live under `transcript/chunks/`:
 
 - Text: `chunk_0001.txt`
 - Metadata: `chunk_0001.json` containing `chunk_id` and `text_relpath` (time fields are not populated yet)
+
+`ChunkerLimits` defaults to 8 MiB of coherent regular UTF-8 source, 500,000 whitespace tokens,
+4096 chunks and 32 MiB of aggregate UTF-8 chunk text (including overlap and added newlines).
+Token and output capacity is charged before retaining each token/chunk. A refusal raises
+`ChunkerResourceError` before any staging or publication, preserving the last completed set.
+Discovery uses the same envelope, plus 2 MiB for the manifest and 4096 bytes per metadata file;
+an excessive cache is not reused. Programmatic callers may supply smaller `limits` to chunking,
+writing and discovery. Reduce source size or overlap before retrying a refused transcript.
 
 ## LLM-backed summaries
 
@@ -185,6 +195,14 @@ and a `files` map of text/metadata basenames to SHA-256 digests. Chunks are writ
 directory, then the previous directory is moved aside and the completed directory renamed into place.
 A handled publication error restores the previous directory. Discovery rejects legacy prefixes,
 missing or changed members and sets whose source no longer matches `transcript/transcript.txt`.
+Publication and discovery share the existing stable workspace-directory lock with state/YAML writers.
+Staging happens outside the lock; the source is read again under the lock before swapping. Changed
+source refuses publication with `ChunkSourceChangedError` (a `ValueError`) and preserves the current set. Swap, rollback and old-set retirement stay
+under that lock, so one writer cannot restore over another writer's committed generation and discovery
+cannot inspect the inter-rename gap. Transcript ingestion uses the same lock for invalidation and swap.
+`EpisodeWorkspaceStore.publication_lock()` exposes this boundary for other artifact readers; do not
+reacquire it or call state/YAML writers inside it. Discovery returns a snapshot, not a lease across
+later agent calls; this does not serialize entire draft jobs or exclude manual filesystem edits.
 
 `summaries/episode/complete.json` version 1 records `chunks_sha256` (the chunk manifest digest)
 and `files` digests for JSON, Markdown and HTML. All outputs are rendered before publication;
@@ -198,10 +216,39 @@ flush, sync, replacement and catchable interruption failures before replacement 
 chunk cache bytes intact and remove the temporary file. Retry can regenerate that chunk; a surviving
 chunk alone still does not certify a complete episode summary generation.
 
-These are local recovery boundaries, not multi-file atomic transactions or cross-process scheduling.
-Process death between renames can leave an incomplete generation (and sibling staging/backup files);
-completion validation prevents its reuse, and a retry rebuilds it. The deterministic dry-run golden
-fixture includes both manifests; new failure fixtures use invented transcript and summary text.
+These are local recovery boundaries, not multi-file atomic transactions or cross-process draft scheduling.
+If process death between directory renames leaves `transcript/chunks` absent, discovery and writers
+recover under the workspace lock, before attempting new staging. Exactly one `.chunks-previous-*`
+directory must remain, with a complete, bounded manifest/file set matching the canonical transcript.
+Its recorded configuration is validated but need not match the new request; normal reuse admission
+then decides whether it needs rebuilding. Staging directories (`.chunks-*` without `previous-`) are
+never promoted. Complete empty generations can also be recovered.
 
-Changing chunker settings alone does not invalidate an existing complete set; re-ingest the transcript
-to deliberately rebuild with different settings. The manifest records the settings used for provenance.
+Multiple backups, damaged files or a changed/missing source raise `ChunkRecoveryError` and retain
+all evidence (`podcast draft` prints it as `Error: ...` and exits with code 1, as it does for
+`ChunkerResourceError` and `ChunkSourceChangedError`). Inspect the manifests, hashes and canonical transcript; deliberately move unrelated
+backups out of the `.chunks-previous-*` namespace, restore the intended source/backup, then retry.
+Do not delete backups just to suppress an ambiguous outcome. An existing canonical directory remains
+authoritative; this rule does not replace it with an older backup. The deterministic dry-run golden
+fixture includes both manifests; failure fixtures use invented transcript and summary text.
+
+Installing the completed directory is the commit point. An `OSError` retiring its old backup
+afterward emits one warning naming the retained path and returns the new generation's metadata
+successfully. Discovery continues to identify the new canonical set; do not retry paid work just
+because old-directory cleanup warned. Later publishers retire only their own backups. To clean
+retained evidence, stop draft/transcription writers, verify the canonical set with
+`discover_complete_chunk_ids(layout, config=requested_config)`, and inspect/move or remove only
+the named old backup under `publication_lock()` (discovery must run outside that lock).
+Ingesting a new transcript (`podcast draft --transcript`) retires every `.chunks-previous-*`
+backup under the same lock, before it removes the canonical set and summaries: those backups were
+built from the replaced source and could otherwise be mistaken for an interrupted swap. If that
+removal fails, ingestion stops before the canonical set or transcript changes.
+Keep ambiguous evidence for reconciliation if the canonical directory is absent. A cleanup warning
+does not roll back the committed set; prepublication and swap failures still fail and preserve or
+restore the previous set.
+
+Draft reuse requires all four requested chunker settings to match the manifest's validated configuration,
+as well as a supported version and source identity. Changing any setting rebuilds the chunks through
+the complete-set publication path. The changed manifest digest invalidates the episode summary;
+all chunk summaries and the episode summary are regenerated before candidate calls, so no summary
+from the incompatible configuration reaches drafting. Unchanged configurations reuse completed summaries.

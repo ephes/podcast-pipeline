@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+- Return committed chunk metadata when old-backup retirement fails; warn with its retained path
+  instead of reporting a failed publication or rolling back the accepted generation.
+  Ingesting a new transcript retires such stale backups together with the canonical set, so they
+  are never mistaken for an interrupted swap of the new source.
+
+- Report chunk recovery, chunking-limit and source-changed-during-staging refusals from `podcast draft`
+  as `Error: ...` with exit code 1 instead of a traceback.
+
+- Recover a unique validated retained chunk generation after process death between directory renames,
+  before new staging; refuse ambiguous or damaged backups and preserve all recovery evidence.
+
+- Serialize chunk publication, rollback, discovery and transcript invalidation on the stable workspace
+  lock; stage outside it and revalidate source before swapping complete generations.
+
+- Bind draft cache reuse to all requested chunker settings and regenerate incompatible summaries
+  before candidate generation; unchanged completed generations remain reusable.
+
+- Bound chunk source bytes, tokens, chunk count and aggregate overlap output before retention or writes;
+  apply compatible limits to cache discovery and preserve completed chunks on refusal.
+
+- Require exact integer chunker settings before processing; reject booleans, floats and nonfinite values.
+
 - Reject malformed local dashboard/picker Host ports before body reads: require one to five ASCII
   decimal digits in 1..65535, with the existing 403 response instead of parser exceptions.
 

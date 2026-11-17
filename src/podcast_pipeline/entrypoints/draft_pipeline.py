@@ -30,8 +30,8 @@ def _copy_chapters_into_workspace(*, workspace: Path, chapters: Path) -> None:
         episode_yaml["inputs"] = inputs
 
 
-def _discover_chunk_ids(store: EpisodeWorkspaceStore) -> list[int]:
-    return discover_complete_chunk_ids(store.layout)
+def _discover_chunk_ids(store: EpisodeWorkspaceStore, config: ChunkerConfig | None = None) -> list[int]:
+    return discover_complete_chunk_ids(store.layout, config=config)
 
 
 def _load_chapters_lines(store: EpisodeWorkspaceStore) -> list[str]:
@@ -87,7 +87,23 @@ def _open_or_create_workspace(
 
 def _clear_stale_artifacts(store: EpisodeWorkspaceStore) -> None:
     """Remove existing chunks and summaries so they are rebuilt from a new transcript."""
+    with store.publication_lock():
+        _clear_stale_artifacts_unlocked(store)
+
+
+def _clear_stale_artifacts_unlocked(store: EpisodeWorkspaceStore) -> None:
     chunks_dir = store.layout.transcript_chunks_dir
+    # Retained chunk backups were built from the transcript being invalidated; left behind
+    # they would be mistaken for an interrupted swap once the canonical set is removed.
+    # Retire them first so a removal failure leaves the canonical set and transcript intact.
+    backups = sorted(chunks_dir.parent.glob(".chunks-previous-*")) if chunks_dir.parent.is_dir() else []
+    for backup in backups:
+        if backup.is_dir() and not backup.is_symlink():
+            shutil.rmtree(backup)
+        else:
+            backup.unlink()
+    if backups:
+        typer.echo("Cleared stale chunk backups", err=True)
     if chunks_dir.exists():
         shutil.rmtree(chunks_dir)
         typer.echo("Cleared stale chunks", err=True)
@@ -125,8 +141,9 @@ def _ingest_transcript(*, store: EpisodeWorkspaceStore, transcript: Path) -> Non
                 os.fsync(target.fileno())
             if transcript_dest.exists():
                 shutil.copymode(transcript_dest, staged)
-            _clear_stale_artifacts(store)
-            os.replace(staged, transcript_dest)
+            with store.publication_lock():
+                _clear_stale_artifacts_unlocked(store)
+                os.replace(staged, transcript_dest)
         finally:
             staged.unlink(missing_ok=True)
 
@@ -181,7 +198,7 @@ def _run_llm_pipeline(
     )
 
     # Discover or create chunks
-    chunk_ids = _discover_chunk_ids(store)
+    chunk_ids = _discover_chunk_ids(store, chunker_config)
     if not chunk_ids:
         transcript_path = store.layout.transcript_dir / "transcript.txt"
         if not transcript_path.exists():
