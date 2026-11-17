@@ -425,10 +425,11 @@ def _chapter_seconds(value: object, *, idx: int) -> float:
 
 def _parse_clock(text: str, *, message: str) -> float:
     if ":" not in text:
-        try:
-            return float(text)
-        except ValueError as exc:
-            raise CmsConfigError(message) from exc
+        # Plain ASCII seconds only: float() would also accept "1_0", "1e3",
+        # signs and non-ASCII digits.
+        if not re.fullmatch(r"[0-9]+(?:\.[0-9]+)?", text):
+            raise CmsConfigError(message)
+        return float(text)
     # Only the final seconds component may be fractional. No signs or overflow
     # components: do not silently repair a malformed clock by summing it.
     if not re.fullmatch(r"(?:[0-9]{1,2}:)?[0-9]{1,2}:[0-9]{1,2}(?:\.[0-9]+)?", text):

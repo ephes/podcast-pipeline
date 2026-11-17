@@ -14,7 +14,8 @@
 - Tokenize CMS host-link HTML without changing attributes, comments or script/style contents;
   leave ambiguous self-closing anchor/script and other excluded nonvoid elements unchanged.
 
-- Validate CMS chapter clocks, increasing starts and the TimeField day range locally before HTTP.
+- Validate CMS chapter clocks (plain ASCII seconds or MM:SS/HH:MM:SS), increasing starts and the TimeField
+  day range locally before HTTP.
 
 - Preserve fractional CMS chapter starts at microsecond precision; refuse rounding collisions.
 
