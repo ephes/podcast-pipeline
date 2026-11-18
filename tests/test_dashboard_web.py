@@ -19,6 +19,7 @@ from podcast_pipeline.domain.models import Candidate, TextFormat
 from podcast_pipeline.entrypoints.dashboard_web import create_dashboard_app
 from podcast_pipeline.pick_core import has_manual_selection_provenance
 from podcast_pipeline.workspace_store import EpisodeWorkspaceStore
+from tests.session_support import SESSION_TOKEN, launch_target
 
 
 def _setup_workspace(tmp_path: Path) -> EpisodeWorkspaceStore:
@@ -48,7 +49,7 @@ def _start_dashboard_server(ctx: DashboardContext) -> tuple[uvicorn.Server, sock
         if server is not None:
             server.should_exit = True
 
-    app = create_dashboard_app(ctx=ctx, on_done=request_shutdown)
+    app = create_dashboard_app(ctx=ctx, on_done=request_shutdown, session_token=SESSION_TOKEN)
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.bind(("127.0.0.1", 0))
     sock.listen(128)
@@ -927,7 +928,7 @@ def test_run_dashboard_opens_browser(
     _setup_workspace(tmp_path)
 
     opened_urls: list[str] = []
-    monkeypatch.setattr("webbrowser.open", lambda url: opened_urls.append(url))
+    monkeypatch.setattr("webbrowser.open", lambda launch_uri: opened_urls.append(launch_target(launch_uri)))
 
     from podcast_pipeline.entrypoints import dashboard_web
 

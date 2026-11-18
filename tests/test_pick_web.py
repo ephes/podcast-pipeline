@@ -4,6 +4,7 @@ import json
 import threading
 import urllib.error
 import urllib.request
+import webbrowser
 from collections.abc import Generator
 from functools import partial
 from http.server import HTTPServer, ThreadingHTTPServer
@@ -17,8 +18,10 @@ from podcast_pipeline import asset_refine_llm
 from podcast_pipeline.asset_refine_llm import RefineRequest, parse_refined_candidate
 from podcast_pipeline.domain.models import Candidate, EpisodeWorkspace, TextFormat
 from podcast_pipeline.entrypoints.pick_web import _PickWebHandler, _ServerContext
+from podcast_pipeline.local_web_guard import SESSION_HEADER
 from podcast_pipeline.pick_core import has_manual_selection_provenance
 from podcast_pipeline.workspace_store import EpisodeWorkspaceStore
+from tests.session_support import SESSION_TOKEN, launch_target
 
 
 def _setup_workspace(tmp_path: Path) -> tuple[EpisodeWorkspaceStore, dict[str, list[Candidate]]]:
@@ -56,6 +59,7 @@ def pick_server(
         store=store,
         candidates_by_asset=candidates_by_asset,
         workspace_state=workspace_state,
+        session_token=SESSION_TOKEN,
     )
 
     handler = partial(_PickWebHandler, ctx)
@@ -195,9 +199,11 @@ def test_run_pick_web_opens_browser(tmp_path: Path, monkeypatch: pytest.MonkeyPa
     opened_urls: list[str] = []
     from podcast_pipeline.entrypoints import pick_web
 
-    def open_browser(url: str) -> None:
+    def open_browser(launch_uri: str) -> None:
+        url = launch_target(launch_uri)
         opened_urls.append(url)
-        threading.Thread(target=lambda: _post_json(f"{url}api/done", {})).start()
+        base, _, query = url.partition("?token=")
+        threading.Thread(target=lambda: _post_json(f"{base}api/done", {}, session_token=query)).start()
 
     monkeypatch.setattr("webbrowser.open", open_browser)
 
@@ -294,7 +300,8 @@ def test_post_api_select_without_content_length(
     host, port = base_url.replace("http://", "").split(":")
     sock = socket.create_connection((host, int(port)))
     sock.sendall(
-        f"POST /api/select HTTP/1.1\r\nHost: {host}:{port}\r\nContent-Type: application/json\r\n\r\n".encode()
+        f"POST /api/select HTTP/1.1\r\nHost: {host}:{port}\r\nContent-Type: application/json\r\n"
+        f"{SESSION_HEADER}: {SESSION_TOKEN}\r\n\r\n".encode()
     )
     resp = sock.recv(4096).decode()
     sock.close()
@@ -324,6 +331,7 @@ def pick_server_with_tags(
         store=store,
         candidates_by_asset=candidates_by_asset,
         workspace_state=EpisodeWorkspace(episode_id="test_ep", root_dir="."),
+        session_token=SESSION_TOKEN,
     )
     server = HTTPServer(("127.0.0.1", 0), partial(_PickWebHandler, ctx))
     base_url = f"http://127.0.0.1:{int(server.server_address[1])}"
@@ -426,11 +434,14 @@ def test_pick_html_serializes_tag_saves(pick_server_with_tags: _PickServerTuple)
     assert "compute(asset.selected_tags || [])" in body
 
 
-def _post_json(url: str, payload: object) -> tuple[int, dict[str, object]]:
+def _post_json(url: str, payload: object, *, session_token: str | None = None) -> tuple[int, dict[str, object]]:
+    headers = {"Content-Type": "application/json"}
+    if session_token is not None:
+        headers[SESSION_HEADER] = session_token
     req = urllib.request.Request(
         url,
         data=json.dumps(payload).encode("utf-8"),
-        headers={"Content-Type": "application/json"},
+        headers=headers,
         method="POST",
     )
     try:
@@ -506,6 +517,7 @@ def test_post_api_select_custom_validates_slug(tmp_path: Path) -> None:
         store=store,
         candidates_by_asset={"slug": [slug_candidate]},
         workspace_state=EpisodeWorkspace(episode_id="test_ep", root_dir="."),
+        session_token=SESSION_TOKEN,
     )
 
     error = ctx.select_custom_text("slug", "Python 3.15", None)
@@ -744,6 +756,7 @@ def test_body_framing_refused(pick_server: _PickServerTuple, framing: str) -> No
     with socket.create_connection(("127.0.0.1", server.server_port), timeout=2) as sock:
         sock.sendall(
             f"POST /api/select HTTP/1.0\r\nHost: 127.0.0.1:{server.server_port}\r\n"
+            f"{SESSION_HEADER}: {SESSION_TOKEN}\r\n"
             f"Content-Type: application/json\r\n{headers[framing]}\r\n\r\n".encode()
             + body
         )
@@ -766,6 +779,7 @@ def test_handler_capacity_and_absolute_deadline(tmp_path: Path, monkeypatch: pyt
         store=store,
         candidates_by_asset=candidates,
         workspace_state=EpisodeWorkspace(episode_id="test_ep", root_dir="."),
+        session_token=SESSION_TOKEN,
     )
     server = server_class(("127.0.0.1", 0), partial(_PickWebHandler, ctx))
     thread = threading.Thread(target=server.serve_forever)
@@ -819,6 +833,7 @@ def test_assets_refresh_external_selection_and_candidates(pick_server: _PickServ
         store=EpisodeWorkspaceStore(ctx.store.layout.root),
         candidates_by_asset=candidates,
         workspace_state=ctx.workspace_state,
+        session_token=SESSION_TOKEN,
     )
     assert other.select_candidate("description", str(candidates["description"][1].candidate_id)) is None
     added = Candidate(asset_id="description", content="New external candidate")
@@ -865,7 +880,7 @@ def test_startup_failure_closes_server(tmp_path: Path, monkeypatch: pytest.Monke
     monkeypatch.setattr(pick_web, "_PickHTTPServer", capture, raising=False)
     monkeypatch.setattr(pick_web, "ThreadingHTTPServer", capture)
     if failure == "browser":
-        monkeypatch.setattr(pick_web.webbrowser, "open", fail)
+        monkeypatch.setattr(webbrowser, "open", fail)
     else:
         monkeypatch.setattr(pick_web.threading.Timer, "start", fail)
     with pytest.raises(RuntimeError, match="synthetic startup failure"):
@@ -954,8 +969,8 @@ def test_server_timeout_drains_handler_before_cli_returns(tmp_path: Path, monkey
         closing.set()
         original_close(self)
 
-    def browser(url: str) -> None:
-        urls.append(url)
+    def browser(launch_uri: str) -> None:
+        urls.append(launch_target(launch_uri))
         opened.set()
 
     candidate = Candidate(asset_id="description", content="Settled after timeout")
@@ -967,7 +982,7 @@ def test_server_timeout_drains_handler_before_cli_returns(tmp_path: Path, monkey
 
     monkeypatch.setattr(pick_web._PickHTTPServer, "__init__", capture)
     monkeypatch.setattr(pick_web._PickHTTPServer, "server_close", close)
-    monkeypatch.setattr(pick_web.webbrowser, "open", browser)
+    monkeypatch.setattr(webbrowser, "open", browser)
     monkeypatch.setattr(asset_refine_llm, "refine_asset_text", refine)
 
     def run() -> None:
@@ -984,7 +999,11 @@ def test_server_timeout_drains_handler_before_cli_returns(tmp_path: Path, monkey
         assert opened.wait(5)
         client = threading.Thread(
             target=lambda: statuses.append(
-                _post_json(f"{urls[0]}api/refine", {"asset_id": "description", "instruction": "x", "text": "y"})[0]
+                _post_json(
+                    f"{urls[0].partition('?')[0]}api/refine",
+                    {"asset_id": "description", "instruction": "x", "text": "y"},
+                    session_token=urls[0].partition("?token=")[2],
+                )[0]
             )
         )
         client.start()
@@ -1015,6 +1034,7 @@ def test_body_deadline_is_absolute_during_trickle(
     with socket.create_connection(("127.0.0.1", server.server_port), timeout=1) as sock:
         sock.sendall(
             f"POST /api/select HTTP/1.0\r\nHost: 127.0.0.1:{server.server_port}\r\n"
+            f"{SESSION_HEADER}: {SESSION_TOKEN}\r\n"
             "Content-Type: application/json\r\nContent-Length: 1000\r\n\r\n".encode()
         )
 

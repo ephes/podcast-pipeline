@@ -15,6 +15,7 @@ from podcast_pipeline.entrypoints.pick_web import _ServerContext
 from podcast_pipeline.review_loop_engine import ProtocolWrite
 from podcast_pipeline.review_loop_orchestrator import _write_protocol_files, run_review_loop_orchestrator
 from podcast_pipeline.workspace_store import EpisodeWorkspaceStore
+from tests.session_support import SESSION_TOKEN
 
 
 def test_protocol_serialization_precedes_all_mutation(tmp_path: Path) -> None:
@@ -230,6 +231,7 @@ def test_pick_format_switch_keeps_selection_metadata_consistent(
         store=store,
         candidates_by_asset={"description": [old, new]},
         workspace_state=EpisodeWorkspace(episode_id="ep_001", root_dir="."),
+        session_token=SESSION_TOKEN,
     )
     assert ctx.select_candidate("description", str(old.candidate_id)) is None
     state_before = store.layout.state_json.read_bytes()

@@ -7,7 +7,6 @@ import math
 import socket
 import sys
 import threading
-import webbrowser
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any, TypeVar
@@ -24,7 +23,17 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from podcast_pipeline.asset_refine_llm import RefineRequest
 from podcast_pipeline.dashboard_context import PROGRESS_TRUNCATED, BackgroundJob, DashboardContext
-from podcast_pipeline.local_web_guard import RESPONSE_SECURITY_HEADERS, check_request
+from podcast_pipeline.local_web_guard import (
+    RESPONSE_SECURITY_HEADERS,
+    SESSION_BOOTSTRAP_PAGE,
+    SESSION_HEADER,
+    check_request,
+    check_session,
+    new_session_token,
+    open_in_browser,
+    session_bootstrap_cookie,
+    session_url,
+)
 
 _SHUTDOWN_TIMEOUT_SECONDS = 60 * 60  # 1 hour
 _DASHBOARD_HTML_PATH = Path(__file__).parent.parent / "static" / "dashboard.html"
@@ -72,14 +81,16 @@ def _bounded_int(value: Any, *, default: int, maximum: int) -> int:
 
 
 class _LocalRequestGuardMiddleware:
-    """Reject DNS-rebinding, cross-origin and non-JSON state-changing requests.
+    """Reject DNS-rebinding, cross-origin, non-JSON state-changing and token-less requests.
 
+    The opening ``GET /?token=...`` request sets the session cookie and forwards to ``/``.
     Every HTTP response, rejections included, gets the anti-framing and no-sniff headers.
     """
 
-    def __init__(self, app: ASGIApp, *, expected_port: int | None) -> None:
+    def __init__(self, app: ASGIApp, *, expected_port: int | None, session_token: str) -> None:
         self.app = app
         self.expected_port = expected_port
+        self.session_token = session_token
 
     async def __call__(self, scope: Scope, receive: Receive, original_send: Send) -> None:
         if scope["type"] != "http":
@@ -106,6 +117,27 @@ class _LocalRequestGuardMiddleware:
             content_type=headers.get("content-type"),
             expected_port=self.expected_port,
         )
+        if rejection is None:
+            set_cookie = session_bootstrap_cookie(
+                method=scope["method"],
+                path=scope["path"],
+                query_string=scope.get("query_string", b"").decode("latin-1"),
+                token=self.session_token,
+                port=self.expected_port,
+            )
+            if set_cookie is not None:
+                bootstrap = HTMLResponse(
+                    SESSION_BOOTSTRAP_PAGE,
+                    headers={"Set-Cookie": set_cookie, "Cache-Control": "no-store"},
+                )
+                await bootstrap(scope, receive, send)
+                return
+            rejection = check_session(
+                token=self.session_token,
+                cookie_header=headers.get("cookie"),
+                header_token=headers.get(SESSION_HEADER),
+                port=self.expected_port,
+            )
         if rejection is not None:
             response = JSONResponse({"error": rejection.message}, status_code=rejection.status)
             await response(scope, receive, send)
@@ -594,11 +626,14 @@ def create_dashboard_app(
     ctx: DashboardContext,
     on_done: Callable[[], None] | None = None,
     port: int | None = None,
+    session_token: str,
 ) -> Starlette:
     """Build the dashboard app.
 
     ``port`` is the port the server listens on; when given, requests whose
-    ``Host`` header names another port are rejected.
+    ``Host`` header names another port are rejected. ``session_token`` is this
+    run's secret: requests need its cookie (set by ``GET /?token=...``) or the
+    ``X-Session-Token`` header.
     """
     api = _DashboardApi(ctx=ctx, on_done=on_done)
 
@@ -639,7 +674,7 @@ def create_dashboard_app(
 
     return Starlette(
         routes=routes,
-        middleware=[Middleware(_LocalRequestGuardMiddleware, expected_port=port)],
+        middleware=[Middleware(_LocalRequestGuardMiddleware, expected_port=port, session_token=session_token)],
     )
 
 
@@ -662,7 +697,8 @@ def run_dashboard(*, workspace: Path) -> None:
         sock.listen(128)
         host = str(sock.getsockname()[0])
         port = int(sock.getsockname()[1])
-        url = f"http://{host}:{port}/"
+        session_token = new_session_token()
+        url = session_url(f"http://{host}:{port}/", session_token)
 
         holder: dict[str, uvicorn.Server] = {}
 
@@ -671,7 +707,7 @@ def run_dashboard(*, workspace: Path) -> None:
             if server is not None:
                 server.should_exit = True
 
-        app = create_dashboard_app(ctx=ctx, on_done=request_shutdown, port=port)
+        app = create_dashboard_app(ctx=ctx, on_done=request_shutdown, port=port, session_token=session_token)
         config = uvicorn.Config(
             app=app,
             host=host,
@@ -686,11 +722,10 @@ def run_dashboard(*, workspace: Path) -> None:
         shutdown_timer.daemon = True
         shutdown_timer.start()
 
-        print(f"Dashboard: {url}", file=sys.stderr)
-        webbrowser.open(url)
-
         try:
-            _run_uvicorn_server(server, sock)
+            print(f"Dashboard: {url}", file=sys.stderr)
+            with open_in_browser(url):
+                _run_uvicorn_server(server, sock)
         finally:
             shutdown_timer.cancel()
 

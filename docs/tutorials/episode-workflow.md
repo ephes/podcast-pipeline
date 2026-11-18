@@ -283,7 +283,8 @@ Notes:
 
 - Credentials: `AUPHONIC_API_KEY` (an API key from your Auphonic account settings, sent as a Bearer token), or
   `AUPHONIC_USER` and `AUPHONIC_PASSWORD` (HTTP Basic). The API key wins when both are set. `AUPHONIC_BASE_URL`
-  overrides the API base URL. Credentials are only sent to that URL's origin, never to output download hosts on
+  overrides the API base URL; it must be an `https://` URL with a host and valid port and without credentials, `?` or `#`
+  (otherwise `produce` stops before any request), so the key or password never travels in cleartext. Credentials are only sent to that URL's origin, never to output download hosts on
   other origins. Crash reports of the `podcast` CLI do not list local variables, so an unexpected error does not
   print the Auphonic key or password, or the CMS API token, to the terminal.
 - The preset must be an Auphonic multitrack preset (created in Auphonic's multitrack mode). Single-track presets, such
@@ -530,12 +531,29 @@ Auphonic production):
 
 - The `Host` header must be `127.0.0.1`, `localhost` or `[::1]` with the server's own port; anything else gets `403`.
   This also blocks DNS-rebinding attacks.
+- Every request needs this run's session token. Each start draws a new random token for
+  `http://127.0.0.1:<port>/?token=<token>` and prints that URL to the terminal. The URL never goes into a
+  command-line argument that other users could list. When Python's `webbrowser` module selects its macOS
+  `osascript` controller (which controller it picks depends on the platform, the Python version and `$BROWSER`),
+  that controller receives the URL on stdin. In every other case, and if that controller fails, the UI tries to
+  open a private launch file (mode `0600` in a temporary directory) that forwards to the URL. If no browser
+  opens, the UI keeps running and says so on the terminal: open the printed URL yourself. The launch file is
+  removed when the UI closes; a run that is killed (for example with `SIGTERM`) can leave it behind, but its
+  token stopped working with that server. The first request sets an `HttpOnly`, `SameSite=Strict` cookie and
+  forwards to `http://127.0.0.1:<port>/`. Requests without that cookie or the token header get `403`, so a local
+  program or another user that does not know the token cannot read or drive the UI.
+  Limits: the token is visible in the terminal output, and the browser also sends the cookie to other services on
+  `127.0.0.1` that it visits (cookies are not port-specific), so such a service could learn the token of a running
+  UI. The token is new for every run and dies when the UI closes.
+  If the UI shows the `403` message, or you opened it through `localhost`, open the printed URL again.
+  Scripts send the token as a header: `curl -H 'X-Session-Token: <token>' http://127.0.0.1:<port>/api/status`.
 - State-changing requests (`POST`, `PUT`, `PATCH`, `DELETE`) must be same-origin: an `Origin` header must equal the
   UI's own origin and `Sec-Fetch-Site`, when sent, must be `same-origin` or `none` (otherwise `403`).
 - State-changing requests must send `Content-Type: application/json` (otherwise `415`), including body-less `DELETE`s.
   Scripts calling the API directly (for example with `curl`) need `-H 'Content-Type: application/json'`.
-- Every response sends `X-Frame-Options: DENY`, `Content-Security-Policy: frame-ancestors 'none'` and
-  `X-Content-Type-Options: nosniff`, so other sites cannot embed the UI in a frame and trick clicks on its buttons.
+- Every response sends `X-Frame-Options: DENY`, `Content-Security-Policy: frame-ancestors 'none'`,
+  `X-Content-Type-Options: nosniff` and `Referrer-Policy: no-referrer`, so other sites cannot embed the UI in a
+  frame and trick clicks on its buttons.
 
 The standalone picker reads authoritative selections and refreshed candidate membership whenever it loads
 assets. Custom drafts survive these refreshes and asset switches in the current page. A save acknowledges

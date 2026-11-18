@@ -27,6 +27,7 @@ from podcast_pipeline.entrypoints.pick_web import _PickWebHandler, _ServerContex
 from podcast_pipeline.local_web_guard import check_request
 from podcast_pipeline.transcript_chunker import ChunkerConfig, write_transcript_chunks
 from podcast_pipeline.workspace_store import EpisodeWorkspaceStore
+from tests.session_support import SESSION_HEADERS, SESSION_TOKEN
 
 _PORT = 8765
 _BASE = f"http://127.0.0.1:{_PORT}"
@@ -45,7 +46,11 @@ def ctx(tmp_path: Path) -> DashboardContext:
 
 @pytest.fixture()
 def client(ctx: DashboardContext) -> TestClient:
-    return TestClient(dashboard_web.create_dashboard_app(ctx=ctx, port=_PORT), base_url=_BASE)
+    return TestClient(
+        dashboard_web.create_dashboard_app(ctx=ctx, port=_PORT, session_token=SESSION_TOKEN),
+        base_url=_BASE,
+        headers=SESSION_HEADERS,
+    )
 
 
 @pytest.fixture()
@@ -133,8 +138,9 @@ def test_cross_site_fetch_metadata_is_rejected(client: TestClient, ctx: Dashboar
 
 def test_foreign_host_is_rejected_for_reads_and_writes(ctx: DashboardContext) -> None:
     rebinding = TestClient(
-        dashboard_web.create_dashboard_app(ctx=ctx, port=_PORT),
+        dashboard_web.create_dashboard_app(ctx=ctx, port=_PORT, session_token=SESSION_TOKEN),
         base_url=f"http://attacker.example:{_PORT}",
+        headers=SESSION_HEADERS,
     )
     assert rebinding.get("/api/episode").status_code == 403
     assert rebinding.post("/api/produce", json={}).status_code == 403
@@ -142,7 +148,11 @@ def test_foreign_host_is_rejected_for_reads_and_writes(ctx: DashboardContext) ->
 
 
 def test_wrong_port_host_is_rejected(ctx: DashboardContext) -> None:
-    other = TestClient(dashboard_web.create_dashboard_app(ctx=ctx, port=_PORT), base_url="http://127.0.0.1:1")
+    other = TestClient(
+        dashboard_web.create_dashboard_app(ctx=ctx, port=_PORT, session_token=SESSION_TOKEN),
+        base_url="http://127.0.0.1:1",
+        headers=SESSION_HEADERS,
+    )
     assert other.get("/api/episode").status_code == 403
 
 
@@ -226,12 +236,12 @@ def test_regenerate_single_flight_is_per_asset(client: TestClient, no_job_thread
 
 
 def test_concurrent_produce_posts_start_one_job(ctx: DashboardContext, no_job_threads: list[Any]) -> None:
-    app = dashboard_web.create_dashboard_app(ctx=ctx, port=_PORT)
+    app = dashboard_web.create_dashboard_app(ctx=ctx, port=_PORT, session_token=SESSION_TOKEN)
     statuses: list[int] = []
     barrier = threading.Barrier(8)
 
     def post() -> None:
-        with TestClient(app, base_url=_BASE) as c:
+        with TestClient(app, base_url=_BASE, headers=SESSION_HEADERS) as c:
             barrier.wait()
             statuses.append(c.post("/api/produce", json={}).status_code)
 
@@ -371,7 +381,11 @@ def test_stale_dashboard_state_does_not_drop_production_uuid(
     candidate = Candidate(asset_id="description", content="# Description\n\nText.")
     store.write_candidate(candidate)
     ctx = DashboardContext(workspace=tmp_path)
-    client = TestClient(dashboard_web.create_dashboard_app(ctx=ctx, port=_PORT), base_url=_BASE)
+    client = TestClient(
+        dashboard_web.create_dashboard_app(ctx=ctx, port=_PORT, session_token=SESSION_TOKEN),
+        base_url=_BASE,
+        headers=SESSION_HEADERS,
+    )
     assert client.get("/api/status").status_code == 200  # caches workspace state without a UUID
 
     def wait_times_out(self: _FakeAuphonicClient, uuid: str, **_kwargs: object) -> _FakeProduction:
@@ -432,6 +446,7 @@ def pick_port(tmp_path: Path) -> Generator[int, None, None]:
         store=store,
         candidates_by_asset={},
         workspace_state=EpisodeWorkspace(episode_id="ep1", root_dir="."),
+        session_token=SESSION_TOKEN,
     )
     server = HTTPServer(("127.0.0.1", 0), partial(_PickWebHandler, ctx))
     thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -445,7 +460,7 @@ def _pick_request(port: int, method: str, path: str, headers: dict[str, str], bo
     conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
     try:
         conn.putrequest(method, path, skip_host=True)
-        for name, value in headers.items():
+        for name, value in {**SESSION_HEADERS, **headers}.items():
             conn.putheader(name, value)
         if body is not None:
             conn.putheader("Content-Length", str(len(body)))
@@ -505,7 +520,11 @@ def test_stale_dashboard_state_does_not_roll_back_restarted_production_uuid(
     candidate = Candidate(asset_id="description", content="# Description\n\nText.")
     store.write_candidate(candidate)
     ctx = DashboardContext(workspace=tmp_path)
-    client = TestClient(dashboard_web.create_dashboard_app(ctx=ctx, port=_PORT), base_url=_BASE)
+    client = TestClient(
+        dashboard_web.create_dashboard_app(ctx=ctx, port=_PORT, session_token=SESSION_TOKEN),
+        base_url=_BASE,
+        headers=SESSION_HEADERS,
+    )
     assert client.get("/api/status").status_code == 200  # caches state with old-prod
 
     produce.run_produce(workspace=tmp_path, dry_run=False, restart=True)
@@ -541,7 +560,11 @@ def test_timed_out_summarize_job_fails_and_frees_the_stage(tmp_path: Path, monke
     monkeypatch.setenv("PODCAST_PIPELINE_AGENT_TIMEOUT", "0.3")
 
     ctx = DashboardContext(workspace=workspace)
-    client = TestClient(dashboard_web.create_dashboard_app(ctx=ctx, port=_PORT), base_url=_BASE)
+    client = TestClient(
+        dashboard_web.create_dashboard_app(ctx=ctx, port=_PORT, session_token=SESSION_TOKEN),
+        base_url=_BASE,
+        headers=SESSION_HEADERS,
+    )
 
     first = client.post("/api/draft/summarize", json={})
     assert first.status_code == 200
@@ -648,7 +671,11 @@ def test_dashboard_responses_forbid_framing(client: TestClient, path: str) -> No
 
 
 def test_dashboard_guard_rejections_forbid_framing(ctx: DashboardContext) -> None:
-    foreign = TestClient(dashboard_web.create_dashboard_app(ctx=ctx, port=_PORT), base_url="http://evil.example")
+    foreign = TestClient(
+        dashboard_web.create_dashboard_app(ctx=ctx, port=_PORT, session_token=SESSION_TOKEN),
+        base_url="http://evil.example",
+        headers=SESSION_HEADERS,
+    )
     response = foreign.get("/")
     assert response.status_code == 403
     _assert_not_frameable(response.headers)
@@ -658,7 +685,7 @@ def _pick_response_headers(port: int, method: str, path: str, headers: dict[str,
     conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
     try:
         conn.putrequest(method, path, skip_host=True)
-        for name, value in headers.items():
+        for name, value in {**SESSION_HEADERS, **headers}.items():
             conn.putheader(name, value)
         conn.endheaders()
         response = conn.getresponse()
@@ -685,14 +712,15 @@ def test_dashboard_unhandled_error_response_forbids_framing(
         raise RuntimeError("storage failure")
 
     monkeypatch.setattr(ctx, "get_episode_json", broken)
-    app = dashboard_web.create_dashboard_app(ctx=ctx, port=_PORT)
-    with TestClient(app, base_url=_BASE, raise_server_exceptions=False) as erroring:
+    app = dashboard_web.create_dashboard_app(ctx=ctx, port=_PORT, session_token=SESSION_TOKEN)
+    with TestClient(app, base_url=_BASE, raise_server_exceptions=False, headers=SESSION_HEADERS) as erroring:
         response = erroring.get("/api/episode")
     assert response.status_code == 500
     _assert_not_frameable(response.headers)
 
 
 def test_pick_web_base_class_error_pages_forbid_framing(pick_port: int) -> None:
-    status, headers = _pick_response_headers(pick_port, "PATCH", "/", {"Host": f"127.0.0.1:{pick_port}"})
+    headers = {"Host": f"127.0.0.1:{pick_port}", "Origin": f"http://127.0.0.1:{pick_port}", **_JSON}
+    status, headers = _pick_response_headers(pick_port, "PATCH", "/", headers)
     assert status == 501
     _assert_not_frameable(headers)

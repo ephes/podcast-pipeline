@@ -9,6 +9,7 @@ from podcast_pipeline.dashboard_context import DashboardContext
 from podcast_pipeline.domain.models import Candidate
 from podcast_pipeline.entrypoints import dashboard_web
 from podcast_pipeline.workspace_store import EpisodeWorkspaceStore
+from tests.session_support import SESSION_HEADERS, SESSION_TOKEN
 
 
 @pytest.mark.parametrize(
@@ -55,7 +56,9 @@ def test_conflicting_jobs_are_rejected_before_worker_start(
 
     monkeypatch.setattr(dashboard_web, "_start_daemon_thread", start)
     with TestClient(
-        dashboard_web.create_dashboard_app(ctx=ctx, port=8765), base_url="http://127.0.0.1:8765"
+        dashboard_web.create_dashboard_app(ctx=ctx, port=8765, session_token=SESSION_TOKEN),
+        base_url="http://127.0.0.1:8765",
+        headers=SESSION_HEADERS,
     ) as client:
         try:
             initial = client.post(first, json=body)
@@ -90,7 +93,9 @@ def test_different_assets_remain_independent(tmp_path: Path, monkeypatch: pytest
     starts = []
     monkeypatch.setattr(dashboard_web, "_start_daemon_thread", lambda *args: starts.append(args))
     with TestClient(
-        dashboard_web.create_dashboard_app(ctx=ctx, port=8765), base_url="http://127.0.0.1:8765"
+        dashboard_web.create_dashboard_app(ctx=ctx, port=8765, session_token=SESSION_TOKEN),
+        base_url="http://127.0.0.1:8765",
+        headers=SESSION_HEADERS,
     ) as client:
         assert client.post("/api/review", json={"asset_id": "description"}).status_code == 200
         assert client.post("/api/assets/shownotes/regenerate", json={}).status_code == 200
@@ -106,7 +111,9 @@ def test_empty_review_asset_is_rejected_before_admission(
     starts: list[Any] = []
     monkeypatch.setattr(dashboard_web, "_start_daemon_thread", lambda *args: starts.append(args))
     with TestClient(
-        dashboard_web.create_dashboard_app(ctx=ctx, port=8765), base_url="http://127.0.0.1:8765"
+        dashboard_web.create_dashboard_app(ctx=ctx, port=8765, session_token=SESSION_TOKEN),
+        base_url="http://127.0.0.1:8765",
+        headers=SESSION_HEADERS,
     ) as client:
         assert client.post("/api/review", json={"asset_id": asset_id}).status_code == 400
     assert not starts and not ctx.jobs

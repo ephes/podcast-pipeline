@@ -4,7 +4,6 @@ import json
 import socket
 import sys
 import threading
-import webbrowser
 from functools import partial
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -13,7 +12,17 @@ from uuid import UUID, uuid4
 from podcast_pipeline import asset_refine_llm
 from podcast_pipeline.asset_refine_llm import RefineRequest, build_refine_request
 from podcast_pipeline.domain.models import Candidate, EpisodeWorkspace, TextFormat
-from podcast_pipeline.local_web_guard import RESPONSE_SECURITY_HEADERS, check_request
+from podcast_pipeline.local_web_guard import (
+    RESPONSE_SECURITY_HEADERS,
+    SESSION_BOOTSTRAP_PAGE,
+    SESSION_HEADER,
+    check_request,
+    check_session,
+    new_session_token,
+    open_in_browser,
+    session_bootstrap_cookie,
+    session_url,
+)
 from podcast_pipeline.markdown_html import markdown_to_deterministic_html
 from podcast_pipeline.pick_core import (
     custom_selection_format,
@@ -125,11 +134,13 @@ def run_pick_web(*, workspace: Path, asset_id: str | None) -> None:
         raise SystemExit(1)
 
     workspace_state = load_workspace(store)
+    session_token = new_session_token()
 
     ctx = _ServerContext(
         store=store,
         candidates_by_asset=candidates_by_asset,
         workspace_state=workspace_state,
+        session_token=session_token,
         asset_id=asset_id,
     )
 
@@ -138,7 +149,7 @@ def run_pick_web(*, workspace: Path, asset_id: str | None) -> None:
     server = _PickHTTPServer(("127.0.0.1", 0), handler)
     host = str(server.server_address[0])
     port = int(server.server_address[1])
-    url = f"http://{host}:{port}/"
+    url = session_url(f"http://{host}:{port}/", session_token)
 
     shutdown_timer: threading.Timer | None = None
     try:
@@ -148,10 +159,10 @@ def run_pick_web(*, workspace: Path, asset_id: str | None) -> None:
         shutdown_timer.daemon = True
         shutdown_timer.start()
         print(f"Pick UI: {url}", file=sys.stderr)
-        webbrowser.open(url)
-        server.timeout = 0.1
-        while not server.stop_requested.is_set():
-            server.handle_request()
+        with open_in_browser(url):
+            server.timeout = 0.1
+            while not server.stop_requested.is_set():
+                server.handle_request()
     finally:
         with ctx.lock:
             ctx.closing = True
@@ -195,8 +206,10 @@ class _ServerContext:
         store: EpisodeWorkspaceStore,
         candidates_by_asset: dict[str, list[Candidate]],
         workspace_state: EpisodeWorkspace,
+        session_token: str,
         asset_id: str | None = None,
     ) -> None:
+        self.session_token = session_token
         self.asset_filter = asset_id
         self.store = store
         self.candidates_by_asset = candidates_by_asset
@@ -424,26 +437,65 @@ class _PickWebHandler(BaseHTTPRequestHandler):
             self.send_header(name, value)
         super().end_headers()
 
+    def parse_request(self) -> bool:
+        """Parse the request line and headers, then apply the guards before any method dispatch."""
+        if not super().parse_request():
+            return False
+        return not self._reject_unsafe_request()
+
     def _reject_unsafe_request(self) -> bool:
-        """Apply the Host/Origin/Content-Type guards; respond and return True when rejected."""
+        """Apply the Host/Origin/Content-Type and session guards; respond and return True when handled.
+
+        The opening ``GET /?token=...`` request is answered here with the session
+        cookie and a page that forwards to ``/``.
+        """
         address = self.server.server_address
+        port = int(address[1]) if isinstance(address, tuple) else None
         rejection = check_request(
             method=self.command,
             host=self.headers.get("Host"),
             origin=self.headers.get("Origin"),
             sec_fetch_site=self.headers.get("Sec-Fetch-Site"),
             content_type=self.headers.get("Content-Type"),
-            expected_port=int(address[1]) if isinstance(address, tuple) else None,
+            expected_port=port,
         )
+        if rejection is None:
+            path, _, query = self.path.partition("?")
+            set_cookie = session_bootstrap_cookie(
+                method=self.command,
+                path=path,
+                query_string=query,
+                token=self.ctx.session_token,
+                port=port,
+            )
+            if set_cookie is not None:
+                self._send_session_bootstrap(set_cookie)
+                return True
+            rejection = check_session(
+                token=self.ctx.session_token,
+                cookie_header=self.headers.get("Cookie"),
+                header_token=self.headers.get(SESSION_HEADER),
+                port=port,
+            )
         if rejection is None:
             return False
         self.close_connection = True
         self._respond(rejection.status, "application/json", json.dumps({"error": rejection.message}).encode())
         return True
 
+    def _send_session_bootstrap(self, set_cookie: str) -> None:
+        try:
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Set-Cookie", set_cookie)
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(len(SESSION_BOOTSTRAP_PAGE)))
+            self.end_headers()
+            self.wfile.write(SESSION_BOOTSTRAP_PAGE)
+        except (BrokenPipeError, ConnectionResetError):
+            self.close_connection = True
+
     def do_GET(self) -> None:
-        if self._reject_unsafe_request():
-            return
         if self.path == "/":
             self._serve_html()
         elif self.path == "/api/assets":
@@ -452,8 +504,6 @@ class _PickWebHandler(BaseHTTPRequestHandler):
             self._respond(404, "text/plain", b"Not found")
 
     def do_POST(self) -> None:
-        if self._reject_unsafe_request():
-            return
         if self.path == "/api/select":
             self._handle_select()
         elif self.path == "/api/tags":
@@ -710,7 +760,8 @@ class _PickWebHandler(BaseHTTPRequestHandler):
             self.send_header("Content-Type", content_type)
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
-            self.wfile.write(body)
+            if self.command != "HEAD":
+                self.wfile.write(body)
         except (BrokenPipeError, ConnectionResetError):
             self.close_connection = True  # The caller may have timed out; work still settles.
 

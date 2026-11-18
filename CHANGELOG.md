@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- Security: the dashboard and `podcast pick --web` require a random per-run session token. The browser receives
+  `/?token=...` without a process argument (Python's macOS `osascript` controller, when selected, reads it on
+  stdin; otherwise the UI tries a private `0600` launch file that forwards to it). If no browser opens, the UI
+  keeps serving and asks you to open the printed URL. The server sets an `HttpOnly`,
+  `SameSite=Strict` cookie and forwards to `/`. Requests without the cookie or an `X-Session-Token` header get
+  `403`, in the picker for every HTTP method. Responses also send `Referrer-Policy: no-referrer`.
+
+- Security: `AUPHONIC_BASE_URL` must be an `https://` URL with a host and valid port and without credentials,
+  `?` or `#`;
+  `produce` refuses other values before sending the Auphonic API key or password. An empty value uses the default.
+
 - Security: the `podcast` CLI no longer prints local variables in crash reports, which exposed the Auphonic
   API key or password and the CMS API token; Auphonic credential reprs hide the secrets.
 

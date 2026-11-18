@@ -75,8 +75,9 @@ and `docs/decisions/cms-draft.md`.
 ## Local web UIs
 
 `podcast dashboard` and `podcast pick --web` listen on `127.0.0.1` only and reject requests from other origins or
-hostnames, and state-changing requests without `Content-Type: application/json`. Their responses forbid framing
-by other sites. Dashboard jobs such as Auphonic
+hostnames, and state-changing requests without `Content-Type: application/json`. Each run uses a new random
+session token: the browser receives the URL without a process argument, and the printed
+`http://127.0.0.1:<port>/?token=...` URL works too; requests without the token get `403`. Their responses forbid framing by other sites. Dashboard jobs such as Auphonic
 production run single-flight per episode. Details: `docs/tutorials/episode-workflow.md` ("Local web UIs").
 
 ## Custom selected text

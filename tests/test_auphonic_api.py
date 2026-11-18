@@ -1314,3 +1314,53 @@ def test_polling_rejects_invalid_status_without_mutation(status: object) -> None
 @pytest.mark.parametrize("status", [42, "42", 999, "999"])
 def test_unknown_numeric_status_never_uses_done_label(status: object) -> None:
     assert _classify_status(status, "Done") == "running"
+
+
+@pytest.mark.parametrize(
+    "base_url",
+    [
+        "http://auphonic.com/api",
+        "HTTP://auphonic.com/api",
+        "ftp://auphonic.com/api",
+        "auphonic.com/api",
+        "https://",
+        "https:///api",
+        "https://user:synthetic-pw@auphonic.com/api",
+        "https://auphonic.com/api?x=1",
+        "https://auphonic.com/api#frag",
+        "https://auphonic.com/api?",
+        "https://auphonic.com/api#",
+        "https://auphonic.com:secret-port/api",
+        "https://auphonic.com:99999/api",
+        "https://[::1/api",
+        "https://auphonic.com:44\t3/api",
+        "https://auphonic.com/a pi",
+        "https://auphonic.com/\x7fapi",
+    ],
+)
+def test_load_credentials_refuses_non_https_base_url(monkeypatch: pytest.MonkeyPatch, base_url: str) -> None:
+    for name in ("AUPHONIC_USER", "AUPHONIC_USERNAME", "AUPHONIC_PASSWORD"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("AUPHONIC_API_KEY", "k1")
+    monkeypatch.setenv("AUPHONIC_BASE_URL", base_url)
+    with pytest.raises(AuphonicApiError, match="AUPHONIC_BASE_URL must be an https:// URL") as error:
+        auphonic_api.load_auphonic_credentials()
+    assert "synthetic-pw" not in str(error.value)
+    assert "secret-port" not in str(error.value)
+    assert "k1" not in str(error.value)
+
+
+@pytest.mark.parametrize(
+    "base_url", ["https://auphonic.com/api", "HTTPS://auphonic.test:8443/api/", "https://[::1]/api"]
+)
+def test_load_credentials_accepts_https_base_url(monkeypatch: pytest.MonkeyPatch, base_url: str) -> None:
+    monkeypatch.setenv("AUPHONIC_API_KEY", "k1")
+    monkeypatch.setenv("AUPHONIC_BASE_URL", base_url)
+    assert auphonic_api.load_auphonic_credentials() == AuphonicCredentials(base_url=base_url, api_key="k1")
+
+
+@pytest.mark.parametrize("value", ["", "   "])
+def test_empty_base_url_falls_back_to_default(monkeypatch: pytest.MonkeyPatch, value: str) -> None:
+    monkeypatch.setenv("AUPHONIC_API_KEY", "k1")
+    monkeypatch.setenv("AUPHONIC_BASE_URL", value)
+    assert auphonic_api.load_auphonic_credentials().base_url == "https://auphonic.com/api"

@@ -14,6 +14,7 @@ from starlette.testclient import TestClient
 
 from podcast_pipeline import dashboard_context as context
 from podcast_pipeline.entrypoints import dashboard_web as web
+from tests.session_support import SESSION_HEADERS, SESSION_TOKEN
 
 
 @pytest.fixture
@@ -85,7 +86,11 @@ def test_progress_byte_and_entry_caps(ctx: context.DashboardContext, monkeypatch
     assert sum(len(line.encode()) for line in job.progress) <= 64
     assert job.progress_bytes <= 64
     assert job.progress_start >= 20
-    with TestClient(web.create_dashboard_app(ctx=ctx), base_url="http://127.0.0.1") as client:
+    with TestClient(
+        web.create_dashboard_app(ctx=ctx, session_token=SESSION_TOKEN),
+        base_url="http://127.0.0.1",
+        headers=SESSION_HEADERS,
+    ) as client:
         result = client.get(f"/api/jobs/{job.job_id}").json()
     assert result["progress"][0] == context.PROGRESS_TRUNCATED
 
@@ -141,7 +146,11 @@ def test_sse_live_and_reconnect_after_eviction(
         assert '"message": "second"' not in remaining
 
     asyncio.run(exercise())
-    with TestClient(web.create_dashboard_app(ctx=ctx), base_url="http://127.0.0.1") as client:
+    with TestClient(
+        web.create_dashboard_app(ctx=ctx, session_token=SESSION_TOKEN),
+        base_url="http://127.0.0.1",
+        headers=SESSION_HEADERS,
+    ) as client:
         response = client.get(f"/api/jobs/{job.job_id}/stream", headers={"Last-Event-ID": "3"})
     assert "id: 4\n" in response.text
     assert "id: 3\n" not in response.text
@@ -161,8 +170,9 @@ def test_streamed_json_size_limit(ctx: context.DashboardContext, length: str | N
         if length is not None:
             headers["Content-Length"] = length
         async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=web.create_dashboard_app(ctx=ctx)),
+            transport=httpx.ASGITransport(app=web.create_dashboard_app(ctx=ctx, session_token=SESSION_TOKEN)),
             base_url="http://127.0.0.1",
+            headers=SESSION_HEADERS,
         ) as client:
             response = await client.post("/api/transcribe", content=body(), headers=headers)
         assert response.status_code == 413
@@ -179,7 +189,11 @@ def test_streamed_json_size_limit(ctx: context.DashboardContext, length: str | N
     ids=["invalid-utf8", "too-deep", "trailing"],
 )
 def test_invalid_json_is_controlled(ctx: context.DashboardContext, body: bytes) -> None:
-    with TestClient(web.create_dashboard_app(ctx=ctx), base_url="http://127.0.0.1") as client:
+    with TestClient(
+        web.create_dashboard_app(ctx=ctx, session_token=SESSION_TOKEN),
+        base_url="http://127.0.0.1",
+        headers=SESSION_HEADERS,
+    ) as client:
         response = client.post("/api/transcribe", content=body, headers={"Content-Type": "application/json"})
     assert response.status_code == 400
     assert not ctx.jobs
@@ -195,8 +209,9 @@ def test_guard_precedes_body_consumption(ctx: context.DashboardContext) -> None:
 
     async def exercise() -> None:
         async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=web.create_dashboard_app(ctx=ctx)),
+            transport=httpx.ASGITransport(app=web.create_dashboard_app(ctx=ctx, session_token=SESSION_TOKEN)),
             base_url="http://foreign.test",
+            headers=SESSION_HEADERS,
         ) as client:
             response = await client.post(
                 "/api/transcribe", content=body(), headers={"Content-Type": "application/json"}
@@ -230,7 +245,11 @@ def test_ambiguous_json_never_dispatches(
     monkeypatch.setattr(web, "_start_daemon_thread", lambda *args: dispatched.append(args))
     monkeypatch.setattr(ctx, "select_candidate", lambda *args: dispatched.append(args))
     monkeypatch.setattr(ctx, "update_episode", lambda *args: dispatched.append(args))
-    with TestClient(web.create_dashboard_app(ctx=ctx), base_url="http://127.0.0.1") as client:
+    with TestClient(
+        web.create_dashboard_app(ctx=ctx, session_token=SESSION_TOKEN),
+        base_url="http://127.0.0.1",
+        headers=SESSION_HEADERS,
+    ) as client:
         response = client.post(path, content=body, headers={"Content-Type": "application/json"})
     assert response.status_code == 400
     assert response.json() == {"error": "Invalid JSON"}
@@ -240,7 +259,11 @@ def test_ambiguous_json_never_dispatches(
 
 
 def test_ordinary_json_still_updates_episode(ctx: context.DashboardContext) -> None:
-    with TestClient(web.create_dashboard_app(ctx=ctx), base_url="http://127.0.0.1") as client:
+    with TestClient(
+        web.create_dashboard_app(ctx=ctx, session_token=SESSION_TOKEN),
+        base_url="http://127.0.0.1",
+        headers=SESSION_HEADERS,
+    ) as client:
         response = client.post("/api/episode", json={"episode_id": "synthetic", "editorial_notes": {"a": "ä"}})
         assert response.status_code == 200
         assert client.get("/api/episode").json()["editorial_notes"] == {"a": "ä"}
@@ -336,7 +359,7 @@ def test_dashboard_malformed_port_is_rejected_before_body(ctx: context.Dashboard
         sent.append(message)
 
     async def exercise() -> None:
-        app = web.create_dashboard_app(ctx=ctx)
+        app = web.create_dashboard_app(ctx=ctx, session_token=SESSION_TOKEN)
         await app(
             {
                 "type": "http",

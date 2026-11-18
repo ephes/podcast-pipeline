@@ -17,7 +17,7 @@ from contextlib import ExitStack
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
-from urllib.parse import quote, urlparse
+from urllib.parse import quote, urlparse, urlsplit
 
 import httpx
 
@@ -115,8 +115,42 @@ class AuphonicProduction:
 _INPUT_KEYS = frozenset({"is_multitrack", "multi_input_files", "input_file", "input_files"})
 
 
+DEFAULT_AUPHONIC_BASE_URL = "https://auphonic.com/api"
+
+
+def _validate_auphonic_base_url(base_url: str) -> None:
+    """Refuse base URLs that would send the API key or password unencrypted.
+
+    The value is not echoed: a URL with embedded credentials would print them.
+    """
+    try:
+        parsed = urlsplit(base_url)
+        _ = parsed.port  # raises ValueError for a malformed or out-of-range port
+        httpx.URL(base_url)  # the client's own parser must accept it too
+        valid = (
+            # urlsplit silently drops tabs and newlines, which httpx refuses later.
+            not any(char.isspace() or not char.isprintable() for char in base_url)
+            and parsed.scheme == "https"
+            and bool(parsed.hostname)
+            and parsed.username is None
+            and parsed.password is None
+            # Endpoint paths are appended to the base URL, so even an empty query or fragment breaks them.
+            and "?" not in base_url
+            and "#" not in base_url
+        )
+    except (ValueError, httpx.InvalidURL):
+        valid = False
+    if not valid:
+        raise AuphonicApiError(
+            "AUPHONIC_BASE_URL must be an https:// URL with a host and valid port and without credentials, "
+            "query or fragment; "
+            "Auphonic credentials are never sent over plain HTTP."
+        )
+
+
 def load_auphonic_credentials() -> AuphonicCredentials:
-    base_url = os.environ.get("AUPHONIC_BASE_URL", "https://auphonic.com/api")
+    base_url = (os.environ.get("AUPHONIC_BASE_URL") or "").strip() or DEFAULT_AUPHONIC_BASE_URL
+    _validate_auphonic_base_url(base_url)
     api_key = (os.environ.get("AUPHONIC_API_KEY") or "").strip()
     if api_key:
         return AuphonicCredentials(base_url=base_url, api_key=api_key)

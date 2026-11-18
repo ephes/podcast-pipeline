@@ -16,6 +16,7 @@ from podcast_pipeline.pick_core import (
     write_selected_tags,
 )
 from podcast_pipeline.workspace_store import EpisodeWorkspaceStore
+from tests.session_support import SESSION_TOKEN
 
 
 def _custom_process(root: str, asset: str, barrier: Any) -> None:
@@ -82,7 +83,10 @@ def test_dashboard_and_pick_candidate_writes_preserve_stale_other_assets(tmp_pat
         store.write_candidate(values[0])
     dashboard = DashboardContext(workspace=tmp_path)
     pick = _ServerContext(
-        store=EpisodeWorkspaceStore(tmp_path), candidates_by_asset=candidates, workspace_state=load_workspace(store)
+        store=EpisodeWorkspaceStore(tmp_path),
+        candidates_by_asset=candidates,
+        workspace_state=load_workspace(store),
+        session_token=SESSION_TOKEN,
     )
     dashboard._ensure_workspace_state()
     assert dashboard.select_custom_text("title_detail", "Custom title", None) is None
@@ -130,7 +134,12 @@ def test_same_asset_artifacts_and_metadata_share_lock(tmp_path: Path, monkeypatc
         Candidate(asset_id="title_detail", format=TextFormat.plain, content=text) for text in ["First", "Second"]
     ]
     contexts = [
-        _ServerContext(store=store, candidates_by_asset={"title_detail": candidates}, workspace_state=initial)
+        _ServerContext(
+            store=store,
+            candidates_by_asset={"title_detail": candidates},
+            workspace_state=initial,
+            session_token=SESSION_TOKEN,
+        )
         for store in stores
     ]
     published, release, second_done = threading.Event(), threading.Event(), threading.Event()
@@ -178,6 +187,7 @@ def test_stale_dashboard_delete_preserves_newer_selections(tmp_path: Path) -> No
         store=EpisodeWorkspaceStore(tmp_path),
         candidates_by_asset={"description": candidates},
         workspace_state=store.read_state(),
+        session_token=SESSION_TOKEN,
     )
     assert other.select_candidate("description", str(candidates[1].candidate_id)) is None
     save_custom_selection(

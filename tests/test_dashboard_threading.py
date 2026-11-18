@@ -13,6 +13,7 @@ import pytest
 
 from podcast_pipeline.dashboard_context import DashboardContext
 from podcast_pipeline.entrypoints import dashboard_web as web
+from tests.session_support import SESSION_HEADERS, SESSION_TOKEN
 
 
 @pytest.mark.parametrize(
@@ -39,8 +40,11 @@ def test_slow_storage_allows_other_requests(
 
     async def exercise() -> None:
         async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=web.create_dashboard_app(ctx=ctx, on_done=shutdown.set)),
+            transport=httpx.ASGITransport(
+                app=web.create_dashboard_app(ctx=ctx, on_done=shutdown.set, session_token=SESSION_TOKEN)
+            ),
             base_url="http://127.0.0.1",
+            headers=SESSION_HEADERS,
         ) as client:
             # An external watchdog makes the old blocking implementation fail without hanging pytest.
             watchdog = threading.Timer(2, release.set)
@@ -89,7 +93,9 @@ def test_worker_held_lock_keeps_event_loop_responsive(
 
     async def exercise() -> None:
         async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=web.create_dashboard_app(ctx=ctx)), base_url="http://127.0.0.1"
+            transport=httpx.ASGITransport(app=web.create_dashboard_app(ctx=ctx, session_token=SESSION_TOKEN)),
+            base_url="http://127.0.0.1",
+            headers=SESSION_HEADERS,
         ) as client:
             watchdog = threading.Timer(2, release.set)
             watchdog.start()
