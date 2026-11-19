@@ -156,6 +156,8 @@ names and no generic summary phrases. The drafter prompt states these rules, and
 
 Candidates are rewritten in their canonical format (`- tag` bullets for `cms_tags`/`audio_tags`, one comma-separated
 line for `itunes_keywords`). Tags you add by hand while picking are not filtered.
+Curated tags must fit on one line, including under Unicode line splitting. The picker
+checks that the normalized list reads back exactly before it replaces the saved selection.
 
 When picking (`podcast pick --web` and the dashboard), each tag asset shows one suggestion pool instead of candidate
 lists: the union of all its candidates, filtered with the same rules (without the per-candidate cap) and ordered by how

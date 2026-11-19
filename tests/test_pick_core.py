@@ -5,7 +5,7 @@ from uuid import uuid4
 
 import pytest
 
-from podcast_pipeline.domain.models import Asset, Candidate, EpisodeWorkspace
+from podcast_pipeline.domain.models import Asset, Candidate, EpisodeWorkspace, TextFormat
 from podcast_pipeline.pick_core import (
     build_asset,
     find_candidate_by_id,
@@ -13,6 +13,7 @@ from podcast_pipeline.pick_core import (
     load_workspace,
     update_workspace_assets,
     validate_asset_id,
+    write_selected_tags,
 )
 from podcast_pipeline.workspace_store import EpisodeWorkspaceLayout, EpisodeWorkspaceStore
 
@@ -23,6 +24,33 @@ def _write_candidate(layout: EpisodeWorkspaceLayout, asset_id: str, content: str
     store = EpisodeWorkspaceStore(layout.root)
     store.write_candidate(candidate)
     return candidate
+
+
+@pytest.mark.parametrize(
+    "boundary", ["\n", "\r", "\r\n", "\v", "\f", "\x1c", "\x1d", "\x1e", "\x85", "\u2028", "\u2029"]
+)
+@pytest.mark.parametrize("tag_format", ["left{}- right", "left{}"])
+def test_curated_tags_reject_line_boundaries_without_replacing_selection(
+    tmp_path: Path, boundary: str, tag_format: str
+) -> None:
+    store = EpisodeWorkspaceStore(tmp_path)
+    state = EpisodeWorkspace(episode_id="synthetic", root_dir=".")
+    asset_id = "cms_tags"
+    state, error = write_selected_tags(
+        store=store, workspace_state=state, asset_id=asset_id, tags=["original"], max_tags=12
+    )
+    assert error is None
+    paths = [store.layout.selected_text_path(asset_id, fmt) for fmt in (TextFormat.markdown, TextFormat.html)]
+    paths.append(store.layout.state_json)
+    before = [path.read_bytes() for path in paths]
+
+    result, error = write_selected_tags(
+        store=store, workspace_state=state, asset_id=asset_id, tags=[tag_format.format(boundary)], max_tags=12
+    )
+
+    assert error == "Tags for cms_tags must not contain line breaks"
+    assert result is state
+    assert [path.read_bytes() for path in paths] == before
 
 
 def test_load_candidates_single_asset(tmp_path: Path) -> None:
