@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Auphonic control responses enforce the 8 MiB limit on compressed input and decoded output independently.
+
 - Security: the dashboard and `podcast pick --web` require a random per-run session token. The browser receives
   `/?token=...` without a process argument (Python's macOS `osascript` controller, when selected, reads it on
   stdin; otherwise the UI tries a private `0600` launch file that forwards to it). If no browser opens, the UI

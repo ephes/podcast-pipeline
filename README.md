@@ -52,7 +52,7 @@ default `episode_id`). A single-file production is only available as an
 explicit opt-in (`auphonic.mode: single_track`). Credentials: `AUPHONIC_API_KEY`, or `AUPHONIC_USER` +
 `AUPHONIC_PASSWORD`. Details: `docs/tutorials/episode-workflow.md` ("Produce with Auphonic") and
 `docs/decisions/auphonic-multitrack.md`. Preset data that cannot be checked stops `produce` before anything is created
-or changed, and every Auphonic JSON API response is capped at 8 MiB of decoded body
+or changed, and every Auphonic JSON API response is capped separately at 8 MiB on the wire and 8 MiB after decoding
 (`docs/reference/configuration.md`, "Auphonic control response limits").
 
 ## Episode draft on django-cast

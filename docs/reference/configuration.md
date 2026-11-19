@@ -111,7 +111,7 @@ production and its recorded downloads.
 ### Auphonic control response limits
 
 Every Auphonic JSON API response (preset reads, create, upload, start, update, delete and status polls) is streamed
-and capped at 8 MiB of decoded body (`auphonic_api.CONTROL_MAX_BYTES`; library callers can set
+and capped separately at 8 MiB on the wire and 8 MiB after decoding (`auphonic_api.CONTROL_MAX_BYTES`; library callers can set
 `AuphonicClient(control_max_bytes=...)`). Control requests advertise only `gzip, deflate`; compressed bodies are
 inflated incrementally under the same cap, and other Content-Encodings, invalid or truncated compressed bodies fail.
 Redirects are followed without reading their bodies, and bytes after the end of a compressed body are refused. Bodies

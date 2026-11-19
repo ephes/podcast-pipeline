@@ -1,7 +1,7 @@
 """Admission of Auphonic control responses and of preset data before paid or mutating requests.
 
 Control responses (presets, create/upload/start/update/delete answers, status
-polls) are streamed under a decoded byte ceiling; malformed preset data stops
+polls) are streamed under independent wire and decoded byte ceilings; malformed preset data stops
 a run before anything is created or changed. Every request goes through
 ``httpx.MockTransport``.
 """
@@ -138,12 +138,42 @@ def test_declared_oversized_length_fails_before_reading() -> None:
 
 
 def test_gzip_bomb_is_bounded_by_the_decoded_ceiling() -> None:
-    bomb = gzip.compress(b" " * (64 * 1024 * 1024))
-    assert len(bomb) < 128 * 1024
+    bomb = gzip.compress(b" " * (64 * 1024))
+    assert len(bomb) < LIMIT
     response, stream = _streamed(200, [bomb], **{"Content-Encoding": "gzip"})
     with _client(lambda _r: response) as client, pytest.raises(AuphonicApiError, match="exceeds the 4096-byte limit"):
         client.fetch_production("u1")
     assert stream.closed
+
+
+@pytest.mark.parametrize("polling", [False, True])
+@pytest.mark.parametrize("declared_length", [False, True])
+def test_compressed_control_wire_ceiling(polling: bool, declared_length: bool) -> None:
+    raw = _ok_bytes(_production("u1", 3, "Done"))
+    compressed = zlib.compress(raw)
+    # Insert valid non-final empty stored blocks just after the zlib header.
+    chunks = [compressed[:2], *([b"\x00\x00\x00\xff\xff"] * 50), compressed[2:]]
+    body = b"".join(chunks)
+    assert zlib.decompress(body) == raw
+    assert len(raw) < len(body) - 1
+
+    headers = {"Content-Encoding": "deflate"}
+    if declared_length:
+        headers["Content-Length"] = str(len(body))
+    timeout = 5 if polling else None
+    response, stream = _streamed(200, chunks, **headers)
+    with _client(lambda _r: response, limit=len(body)) as client:
+        assert client.fetch_production("u1", timeout_seconds=timeout).uuid == "u1"
+    assert stream.closed
+
+    response, stream = _streamed(200, chunks, **headers)
+    with (
+        _client(lambda _r: response, limit=len(body) - 1) as client,
+        pytest.raises(AuphonicApiError, match="byte limit"),
+    ):
+        client.fetch_production("u1", timeout_seconds=timeout)
+    assert stream.closed
+    assert stream.pulled == (0 if declared_length else len(body))
 
 
 @pytest.mark.parametrize("encoding", ["gzip", "deflate"])

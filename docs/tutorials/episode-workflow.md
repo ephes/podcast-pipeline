@@ -295,7 +295,7 @@ Notes:
   has any; put per-track algorithms into `auphonic.tracks[].algorithms` instead.
 - The preset check fails closed: preset data that is not a mapping, an `is_multitrack` other than `true`/`false`
   (a missing field means a legacy single-track preset) or unreadable `multi_input_files` stop `produce` and
-  `--update` before anything is created or changed. Auphonic API responses are capped at 8 MiB of decoded JSON;
+  `--update` before anything is created or changed. Auphonic API responses are capped separately at 8 MiB on the wire and 8 MiB after decoding.
   see "Auphonic control response limits" in `reference/configuration.md`.
 - `--dry-run` prints the full payload, including `is_multitrack: true`, the `multi_input_files` track list with
   each stem's id and resolved path, and `output_basename`, without loading credentials or calling the API.

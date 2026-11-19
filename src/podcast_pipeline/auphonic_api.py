@@ -38,7 +38,7 @@ class AuphonicNotFoundError(AuphonicApiError):
     """The Auphonic API answered 404, for example for a production that no longer exists."""
 
 
-# Decoded byte ceiling for one Auphonic control (JSON API) response: presets, productions,
+# Independent wire and decoded byte ceilings for one Auphonic control (JSON API) response: presets, productions,
 # create/update/upload/start/delete answers and status polls. Media downloads have their own budget.
 CONTROL_MAX_BYTES = 8 * 1024 * 1024
 # Control responses are decoded here, under the ceiling, never by httpx: only these encodings are accepted.
@@ -556,7 +556,7 @@ def _poll_remaining(uuid: str, deadline: float, timeout_seconds: float) -> float
 
 
 class _ControlBody:
-    """Collect one control response body, decoding it under a decoded byte ceiling.
+    """Collect one control response body, decoding it under independent wire and decoded byte ceilings.
 
     Compressed bodies are inflated incrementally with an output limit, so a
     small compressed body can never expand past ``max_bytes`` in memory.
@@ -574,9 +574,13 @@ class _ControlBody:
             raise AuphonicApiError("Auphonic API response uses an unsupported Content-Encoding.")
         self._max_bytes = max_bytes
         self._parts: list[bytes] = []
+        self._wire_total = 0
         self._total = 0
 
     def feed(self, raw: bytes) -> None:
+        self._wire_total += len(raw)
+        if self._wire_total > self._max_bytes:
+            raise AuphonicApiError(f"Auphonic API response exceeds the {self._max_bytes}-byte limit.")
         if self._inflater is None:
             self._add(raw)
             return
@@ -608,22 +612,28 @@ class _ControlBody:
         self._total += len(chunk)
         if self._total > self._max_bytes:
             raise AuphonicApiError(f"Auphonic API response exceeds the {self._max_bytes}-byte limit.")
-        self._parts.append(chunk)
+        if chunk:
+            self._parts.append(chunk)
 
 
 def _start_control_body(response: httpx.Response, max_bytes: int) -> _ControlBody:
+    length = response.headers.get("Content-Length", "")
+    if length.isascii() and length.isdigit():
+        try:
+            declared_bytes = int(length.lstrip("0") or "0")
+        except ValueError as exc:
+            raise AuphonicApiError(f"Auphonic API response exceeds the {max_bytes}-byte limit.") from exc
+        if declared_bytes > max_bytes:
+            raise AuphonicApiError(f"Auphonic API response exceeds the {max_bytes}-byte limit.")
     if response.is_stream_consumed:
         # An in-memory response (a test transport built it from bytes): httpx already
-        # holds the decoded body, which still has to fit the ceiling.
+        # holds the decoded body and records the number of raw bytes it consumed.
+        if response.num_bytes_downloaded > max_bytes:
+            raise AuphonicApiError(f"Auphonic API response exceeds the {max_bytes}-byte limit.")
         body = _ControlBody("identity", max_bytes)
         body.feed(response.content)
         return body
-    encoding = response.headers.get("Content-Encoding", "")
-    length = response.headers.get("Content-Length", "")
-    if encoding.strip().lower() in {"", "identity"} and length.isascii() and length.isdigit():
-        if int(length) > max_bytes:
-            raise AuphonicApiError(f"Auphonic API response exceeds the {max_bytes}-byte limit.")
-    return _ControlBody(encoding, max_bytes)
+    return _ControlBody(response.headers.get("Content-Encoding", ""), max_bytes)
 
 
 def _read_control(response: httpx.Response, max_bytes: int) -> bytes:
