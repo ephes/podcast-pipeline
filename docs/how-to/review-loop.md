@@ -10,6 +10,7 @@ By default, `podcast review` uses the local Codex/Claude CLIs configured in `epi
 Prompt receipts under `copy/provenance/prompts/` are addressed by a SHA-256 digest of their
 canonical JSON fields, including the template name, rendered text, context, glossary and examples.
 Identical receipts reuse the same reference. Older references still resolve to their original files.
+Prompt template names must be unique within the registry. Duplicate names fail at construction.
 
 ```bash
 podcast review \

@@ -108,7 +108,11 @@ class PromptRenderResult:
 
 class PromptRegistry:
     def __init__(self, templates: Sequence[PromptTemplate]) -> None:
-        self._templates = {template.name: template for template in templates}
+        self._templates: dict[str, PromptTemplate] = {}
+        for template in templates:
+            if template.name in self._templates:
+                raise ValueError(f"Duplicate prompt template name: {template.name!r}")
+            self._templates[template.name] = template
 
     def get(self, name: str) -> PromptTemplate:
         if name not in self._templates:

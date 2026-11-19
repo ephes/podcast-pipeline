@@ -28,6 +28,18 @@ from podcast_pipeline.review_loop_engine import CreatorInput, ReviewerInput
 from podcast_pipeline.workspace_store import EpisodeWorkspaceLayout, EpisodeWorkspaceStore
 
 
+def test_prompt_registry_rejects_duplicate_names() -> None:
+    first = PromptTemplate(name="simple", template="Hello")
+    distinct = PromptTemplate(name="other", template="Hi")
+    second = PromptTemplate(name="simple", template="Goodbye")
+
+    registry = PromptRegistry([first, distinct])
+    assert registry.get("simple") is first
+    assert registry.get("other") is distinct
+    with pytest.raises(ValueError, match=r"^Duplicate prompt template name: 'simple'$"):
+        PromptRegistry([first, distinct, second])
+
+
 def test_prompt_renderer_injects_glossary_and_few_shot_deterministically() -> None:
     registry = PromptRegistry([PromptTemplate(name="simple", template="Hello {name}")])
     renderer = PromptRenderer(registry)
