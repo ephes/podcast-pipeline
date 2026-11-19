@@ -112,13 +112,13 @@ production and its recorded downloads.
 
 Every Auphonic JSON API response (preset reads, create, upload, start, update, delete and status polls) is streamed
 and capped separately at 8 MiB on the wire and 8 MiB after decoding (`auphonic_api.CONTROL_MAX_BYTES`).
-Library callers can set both ceilings with `AuphonicClient(control_max_bytes=...)`. Control requests advertise only `gzip, deflate`; compressed bodies are
-inflated incrementally under the same cap, and other Content-Encodings, invalid or truncated compressed bodies fail.
-Redirects are followed without reading their bodies, and bytes after the end of a compressed body are refused. Bodies
-fail with an Auphonic API error for invalid UTF-8 JSON, including UTF-16/32 and a byte order mark. Excessive nesting,
-duplicate object members at any depth, non-finite numbers (`NaN`, `Infinity`, `1e999`) and integers longer
-than Python's digit limit also fail. This includes oversized error responses (an oversized 404 body is not treated as "not found"). An empty successful DELETE response
-is accepted. A failure after a production was created still reports its UUID, which `state.json` already holds, and
+Library callers can set both ceilings with `AuphonicClient(control_max_bytes=...)`. Control requests advertise
+only `gzip, deflate` and inflate compressed bodies incrementally. Other content encodings, invalid or truncated
+compressed bodies and trailing bytes fail. Redirects are followed without reading their bodies.
+The parser requires strict UTF-8 JSON without a byte order mark. Excessive nesting, duplicate object members
+at any depth, non-finite numbers (`NaN`, `Infinity`, `1e999`) and integers longer than Python's digit limit
+raise an Auphonic API error. Oversized error responses also fail admission, including oversized 404 responses.
+An empty successful DELETE response is accepted. A failure after a production was created still reports its UUID, which `state.json` already holds, and
 never triggers a second create or start.
 
 ### Cleanup of superseded productions
@@ -261,13 +261,16 @@ Injected Auphonic test transports must support both synchronous and asynchronous
 
 ### Auphonic output download limits and publication
 
-Each output file is limited to 4 GiB and one hour, including redirects, headers and the
-streamed body. Configure `PODCAST_PIPELINE_DOWNLOAD_MAX_BYTES` (positive integer bytes)
-and `PODCAST_PIPELINE_DOWNLOAD_TIMEOUT_SECONDS` (finite positive seconds) before running
-`podcast produce`; invalid values fail before requests or paid starts. These values are
-validated when constructing a client, so invalid values also block `podcast auphonic-cleanup --delete` (listing still works). Library callers can
-instead set `AuphonicClient(download_max_bytes=..., download_timeout_seconds=...)`.
-The byte cap is enforced even without Content-Length. Final responses must be HTTP 200,
+Each output file defaults to a 4 GiB byte limit and a one-hour deadline that covers redirects,
+headers and body reads. The whole staged output set has a separate 4 GiB default limit.
+Set `PODCAST_PIPELINE_DOWNLOAD_MAX_BYTES` for the per-file limit and
+`PODCAST_PIPELINE_DOWNLOAD_TOTAL_MAX_BYTES` for the set limit, both in positive integer bytes.
+Set `PODCAST_PIPELINE_DOWNLOAD_TIMEOUT_SECONDS` in finite positive seconds. The client validates
+these values before `podcast produce` makes any requests or paid starts. Invalid values also
+block `podcast auphonic-cleanup --delete` (listing still works). Library callers can set
+`download_max_bytes`, `download_total_max_bytes` and `download_timeout_seconds` on `AuphonicClient`.
+The per-file limit and the remaining set budget both apply to declared lengths and streamed bytes.
+If either limit is exceeded, staging is discarded and the published set stays intact. Final responses must be HTTP 200,
 without a Content-Range header, with identity Content-Encoding and a nonempty body.
 Unsolicited partial responses (including HTTP 206), other statuses and empty outputs fail
 without replacing the previous output set. Signed download URLs are omitted from download error messages.

@@ -71,6 +71,54 @@ def test_empty_output_preserves_previous_set(tmp_path: Path, headers: dict[str, 
     }
 
 
+@pytest.mark.parametrize("declared_length", [False, True])
+@pytest.mark.parametrize("exact", [False, True])
+def test_cumulative_staging_budget(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, declared_length: bool, exact: bool
+) -> None:
+    first = b"a" * 32
+    second = b" " * (20 * 32)
+    monkeypatch.setenv("PODCAST_PIPELINE_DOWNLOAD_TOTAL_MAX_BYTES", str(len(first) + len(second) - int(not exact)))
+    before = {"a.mp3": b"old a", "b.mp3": b"old b", "notes.txt": b"keep"}
+    for name, content in before.items():
+        (tmp_path / name).write_bytes(content)
+    stream = Stream(Clock())
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/a.mp3":
+            return httpx.Response(200, content=first)
+        headers = {"Content-Length": str(len(second))} if declared_length else {}
+        return httpx.Response(200, stream=stream, headers=headers)
+
+    with auphonic_api.AuphonicClient(
+        CREDS, transport=httpx.MockTransport(handler), download_max_bytes=len(second)
+    ) as client:
+        if exact:
+            assert client.download_outputs(OUTPUTS, tmp_path) == (tmp_path / "a.mp3", tmp_path / "b.mp3")
+            before.update({"a.mp3": first, "b.mp3": second})
+        else:
+            with pytest.raises(auphonic_api.AuphonicApiError, match="byte limit"):
+                client.download_outputs(OUTPUTS, tmp_path)
+    assert stream.closed
+    assert stream.count == (0 if declared_length and not exact else 20)
+    assert {p.name: p.read_bytes() for p in tmp_path.iterdir()} == before
+
+
+def test_exhausted_staging_budget_skips_next_request(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PODCAST_PIPELINE_DOWNLOAD_TOTAL_MAX_BYTES", "3")
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.url.path)
+        return httpx.Response(200, content=b"new")
+
+    with auphonic_api.AuphonicClient(CREDS, transport=httpx.MockTransport(handler)) as client:
+        with pytest.raises(auphonic_api.AuphonicApiError, match="byte limit"):
+            client.download_outputs(OUTPUTS, tmp_path)
+    assert calls == ["/a.mp3"]
+    assert not list(tmp_path.iterdir())
+
+
 @pytest.mark.parametrize("slow", [False, True])
 def test_download_stream_budget_preserves_previous_set(
     tmp_path: Path,
@@ -113,6 +161,8 @@ def test_stalled_download_is_cancelled(tmp_path: Path, monkeypatch: pytest.Monke
     [
         ("PODCAST_PIPELINE_DOWNLOAD_MAX_BYTES", "0"),
         ("PODCAST_PIPELINE_DOWNLOAD_MAX_BYTES", "abc"),
+        ("PODCAST_PIPELINE_DOWNLOAD_TOTAL_MAX_BYTES", "0"),
+        ("PODCAST_PIPELINE_DOWNLOAD_TOTAL_MAX_BYTES", "abc"),
         ("PODCAST_PIPELINE_DOWNLOAD_TIMEOUT_SECONDS", "nan"),
         ("PODCAST_PIPELINE_DOWNLOAD_TIMEOUT_SECONDS", "inf"),
         ("PODCAST_PIPELINE_DOWNLOAD_TIMEOUT_SECONDS", "-1"),

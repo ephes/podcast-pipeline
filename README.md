@@ -56,7 +56,8 @@ or changed. Every Auphonic JSON API response is capped separately at 8 MiB on th
 Duplicate JSON object members are rejected at any depth
 (`docs/reference/configuration.md`, "Auphonic control response limits"). Interrupted publication restores the
 previous output set when file identities can be verified. If rollback cannot finish safely, the error names
-the staging directory that holds the recovery files.
+the staging directory that holds the recovery files. Download staging has a 4 GiB default limit for the entire
+output set, configurable with `PODCAST_PIPELINE_DOWNLOAD_TOTAL_MAX_BYTES`. The per-file limit also applies.
 
 ## Episode draft on django-cast
 

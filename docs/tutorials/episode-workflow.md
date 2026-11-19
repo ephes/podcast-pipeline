@@ -403,7 +403,9 @@ What is deleted, and when:
   asks for `podcast produce --restart`; after the new production finished, the old one is recorded as deleted.
 - `auphonic-cleanup --delete` holds the same `auphonic/.produce.lock` as `produce`, so it never runs next to one.
 
-Interrupted output downloads remove partial temporary files and preserve the existing output set.
+Output downloads have a 4 GiB default limit per file and another 4 GiB limit for the whole staged set.
+Set `PODCAST_PIPELINE_DOWNLOAD_TOTAL_MAX_BYTES` to change the set limit. Interrupted or oversized
+downloads remove partial temporary files and preserve the existing output set.
 Publication rolls back even if a rename took effect before the interrupt. If rollback fails
 or the file identities are uncertain, keep the staging directory named in the error and
 inspect its recovery files before retrying.

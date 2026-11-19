@@ -43,6 +43,7 @@ class AuphonicNotFoundError(AuphonicApiError):
 # Independent wire and decoded byte ceilings for one Auphonic control (JSON API) response: presets, productions,
 # create/update/upload/start/delete answers and status polls. Media downloads have their own budget.
 CONTROL_MAX_BYTES = 8 * 1024 * 1024
+_DEFAULT_DOWNLOAD_MAX_BYTES = 4 * 1024**3
 # Control responses are decoded here, under the ceiling, never by httpx: only these encodings are accepted.
 _CONTROL_HEADERS = {"Accept-Encoding": "gzip, deflate"}
 
@@ -208,6 +209,7 @@ class AuphonicClient:
         timeout_seconds: float = 300.0,
         transport: httpx.BaseTransport | None = None,
         download_max_bytes: int | None = None,
+        download_total_max_bytes: int | None = None,
         download_timeout_seconds: float | None = None,
         control_max_bytes: int = CONTROL_MAX_BYTES,
     ) -> None:
@@ -215,9 +217,14 @@ class AuphonicClient:
             raise AuphonicApiError("Auphonic transport must support both sync and async requests")
         try:
             byte_limit = (
-                int(os.environ.get("PODCAST_PIPELINE_DOWNLOAD_MAX_BYTES", str(4 * 1024**3)))
+                int(os.environ.get("PODCAST_PIPELINE_DOWNLOAD_MAX_BYTES", str(_DEFAULT_DOWNLOAD_MAX_BYTES)))
                 if download_max_bytes is None
                 else download_max_bytes
+            )
+            total_byte_limit = (
+                int(os.environ.get("PODCAST_PIPELINE_DOWNLOAD_TOTAL_MAX_BYTES", str(_DEFAULT_DOWNLOAD_MAX_BYTES)))
+                if download_total_max_bytes is None
+                else download_total_max_bytes
             )
             download_timeout = (
                 float(os.environ.get("PODCAST_PIPELINE_DOWNLOAD_TIMEOUT_SECONDS", "3600"))
@@ -226,13 +233,15 @@ class AuphonicClient:
             )
         except ValueError as exc:
             raise AuphonicApiError("Invalid Auphonic download byte/time budget") from exc
-        if isinstance(byte_limit, bool) or not isinstance(byte_limit, int) or byte_limit <= 0:
-            raise AuphonicApiError("download_max_bytes must be a positive integer")
+        for name, limit in (("download_max_bytes", byte_limit), ("download_total_max_bytes", total_byte_limit)):
+            if isinstance(limit, bool) or not isinstance(limit, int) or limit <= 0:
+                raise AuphonicApiError(f"{name} must be a positive integer")
         _positive_finite("download_timeout_seconds", download_timeout)
         if isinstance(control_max_bytes, bool) or not isinstance(control_max_bytes, int) or control_max_bytes <= 0:
             raise AuphonicApiError("control_max_bytes must be a positive integer")
         self._control_max_bytes = control_max_bytes
         self._download_max_bytes = byte_limit
+        self._download_total_max_bytes = total_byte_limit
         self._download_timeout_seconds = download_timeout
         self._timeout_seconds = timeout_seconds
         self._credentials = credentials
@@ -528,6 +537,7 @@ class AuphonicClient:
         used: set[str] = set()
         filenames = [_unique_filename(output.filename, used, idx) for idx, output in enumerate(outputs, start=1)]
         _validate_output_filenames(filenames)
+        remaining_bytes = self._download_total_max_bytes
         async with httpx.AsyncClient(
             timeout=min(self._timeout_seconds, self._download_timeout_seconds),
             transport=self._transport,
@@ -535,11 +545,13 @@ class AuphonicClient:
             headers={"Accept-Encoding": "identity"},
         ) as client:
             for output, filename in zip(outputs, filenames, strict=True):
-                await _download_file(
+                if remaining_bytes == 0:
+                    raise AuphonicApiError(f"Failed to download {filename}: staging byte limit exceeded")
+                remaining_bytes -= await _download_file(
                     client,
                     output.url,
                     incoming / filename,
-                    max_bytes=self._download_max_bytes,
+                    max_bytes=min(self._download_max_bytes, remaining_bytes),
                     timeout_seconds=self._download_timeout_seconds,
                 )
         return filenames
@@ -1172,7 +1184,7 @@ async def _download_file(
     *,
     max_bytes: int,
     timeout_seconds: float,
-) -> None:
+) -> int:
     deadline = time.monotonic() + timeout_seconds
     try:
         async with asyncio.timeout(timeout_seconds):
@@ -1192,8 +1204,9 @@ async def _download_file(
                         request = response.next_request
                         continue
                     _check_download_response(response, max_bytes, dest.name)
-                    await _atomic_write_stream(dest, response.aiter_bytes(), max_bytes=max_bytes, deadline=deadline)
-                    return
+                    return await _atomic_write_stream(
+                        dest, response.aiter_bytes(), max_bytes=max_bytes, deadline=deadline
+                    )
                 finally:
                     await response.aclose()
             raise AuphonicApiError("Failed to download output: too many redirects")
@@ -1223,7 +1236,7 @@ def _check_download_response(response: httpx.Response, max_bytes: int, filename:
             raise AuphonicApiError(f"Failed to download {filename}: byte limit exceeded")
 
 
-async def _atomic_write_stream(path: Path, chunks: AsyncIterable[bytes], *, max_bytes: int, deadline: float) -> None:
+async def _atomic_write_stream(path: Path, chunks: AsyncIterable[bytes], *, max_bytes: int, deadline: float) -> int:
     tmp_path: Path | None = None
     total = 0
     try:
@@ -1250,6 +1263,7 @@ async def _atomic_write_stream(path: Path, chunks: AsyncIterable[bytes], *, max_
         if total == 0:
             raise AuphonicApiError(f"Failed to download {path.name}: empty output")
         os.replace(tmp_path, path)
+        return total
     finally:
         if tmp_path is not None:
             try:

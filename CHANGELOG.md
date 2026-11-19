@@ -6,6 +6,8 @@
 - Auphonic control responses with duplicate JSON object members fail before the response is used.
 - Auphonic output publication rolls back renames that took effect before an interrupt and retains
   recovery files when it cannot verify ownership.
+- Cap the entire staged Auphonic output set at 4 GiB by default, configurable through
+  `PODCAST_PIPELINE_DOWNLOAD_TOTAL_MAX_BYTES`. Exceeding the cap preserves the published set.
 
 - Security: the dashboard and `podcast pick --web` require a random per-run session token. The browser receives
   `/?token=...` without a process argument (Python's macOS `osascript` controller, when selected, reads it on
