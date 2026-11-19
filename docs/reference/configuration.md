@@ -111,14 +111,13 @@ production and its recorded downloads.
 ### Auphonic control response limits
 
 Every Auphonic JSON API response (preset reads, create, upload, start, update, delete and status polls) is streamed
-and capped separately at 8 MiB on the wire and 8 MiB after decoding (`auphonic_api.CONTROL_MAX_BYTES`; library callers can set
-`AuphonicClient(control_max_bytes=...)`). Control requests advertise only `gzip, deflate`; compressed bodies are
+and capped separately at 8 MiB on the wire and 8 MiB after decoding (`auphonic_api.CONTROL_MAX_BYTES`).
+Library callers can set both ceilings with `AuphonicClient(control_max_bytes=...)`. Control requests advertise only `gzip, deflate`; compressed bodies are
 inflated incrementally under the same cap, and other Content-Encodings, invalid or truncated compressed bodies fail.
 Redirects are followed without reading their bodies, and bytes after the end of a compressed body are refused. Bodies
-that are not strict UTF-8 JSON (UTF-16/32 and a byte order mark are refused), that nest too deeply, or that contain
-non-finite numbers (`NaN`, `Infinity`, `1e999`) or integers longer than Python's digit limit fail with an Auphonic
-API error, as do
-oversized error responses (an oversized 404 body is not treated as "not found"). An empty successful DELETE response
+fail with an Auphonic API error for invalid UTF-8 JSON, including UTF-16/32 and a byte order mark. Excessive nesting,
+duplicate object members at any depth, non-finite numbers (`NaN`, `Infinity`, `1e999`) and integers longer
+than Python's digit limit also fail. This includes oversized error responses (an oversized 404 body is not treated as "not found"). An empty successful DELETE response
 is accepted. A failure after a production was created still reports its UUID, which `state.json` already holds, and
 never triggers a second create or start.
 

@@ -1010,6 +1010,38 @@ def test_run_produce_resumes_a_stored_multitrack_production(
     assert fake.started == ["prod-1"]
 
 
+@pytest.mark.parametrize("duplicate", ["root", "production"])
+def test_run_produce_refuses_duplicate_control_members(
+    tmp_path: Path,
+    fake_api: Callable[[list[tuple[int, str]]], _FakeAuphonic],
+    monkeypatch: pytest.MonkeyPatch,
+    duplicate: str,
+) -> None:
+    fake = fake_api([(3, "Done")])
+    workspace = _workspace(tmp_path)
+    store = EpisodeWorkspaceStore(workspace)
+    store.set_auphonic_production_uuid("prod-1", default=EpisodeWorkspace(episode_id="ep_001", root_dir="."))
+    before = store.layout.state_json.read_bytes()
+    production = json.dumps(fake._production("prod-1", 3, "Done"))
+    if duplicate == "root":
+        body = '{"data": {"uuid": "other"}, "data": ' + production + "}"
+    else:
+        body = '{"data": {"uuid": "other", ' + production[1:] + "}"
+    dispatch = fake.recorder._handler
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/production/prod-1.json":
+            return httpx.Response(200, content=body.encode())
+        return dispatch(request)
+
+    monkeypatch.setattr(fake.recorder, "_handler", handler)
+    with pytest.raises(typer.BadParameter, match="invalid JSON"):
+        produce.run_produce(workspace=workspace, dry_run=False)
+    assert fake.recorder.calls == [("GET", "/api/production/prod-1.json")]
+    assert store.layout.state_json.read_bytes() == before
+    assert not store.layout.auphonic_outputs_dir.exists()
+
+
 def test_run_produce_update_reuses_the_stored_production_without_uploads(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],

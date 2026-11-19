@@ -21,6 +21,8 @@ from urllib.parse import quote, urlparse, urlsplit
 
 import httpx
 
+from podcast_pipeline.review_loop_engine import unique_json_members
+
 
 class AuphonicApiError(RuntimeError):
     pass
@@ -703,10 +705,12 @@ def _finite_json_float(text: str) -> float:
 def _check_response(status_code: int, body: bytes) -> dict[str, Any]:
     error_class = AuphonicNotFoundError if status_code == 404 else AuphonicApiError
     try:
-        # Anything but strict UTF-8 without a BOM, non-finite numbers (NaN, Infinity, 1e999),
-        # over-long integers and over-deep nesting all count as invalid JSON.
+        # Decode explicitly to require UTF-8 without a BOM.
         payload = json.loads(
-            body.decode("utf-8"), parse_constant=_reject_json_constant, parse_float=_finite_json_float
+            body.decode("utf-8"),
+            object_pairs_hook=unique_json_members,
+            parse_constant=_reject_json_constant,
+            parse_float=_finite_json_float,
         )
     except (ValueError, RecursionError) as exc:
         raise error_class(f"Auphonic API returned invalid JSON (status {status_code}).") from exc
