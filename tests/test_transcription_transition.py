@@ -4,11 +4,12 @@ from typing import Any
 import pytest
 
 import podcast_pipeline.entrypoints.transcribe as module
+from podcast_pipeline import workspace_store
 from podcast_pipeline.domain.intermediate_formats import EpisodeSummary
 from podcast_pipeline.entrypoints.draft_pipeline import _run_llm_pipeline
 from podcast_pipeline.summarization_stub import write_episode_summary_artifacts
 from podcast_pipeline.transcript_chunker import ChunkerConfig, write_transcript_chunks
-from podcast_pipeline.workspace_store import EpisodeWorkspaceStore
+from podcast_pipeline.workspace_store import EpisodeWorkspaceStore, WorkspaceStoreError
 from tests.test_draft_pipeline import _FakeRunner
 
 
@@ -77,7 +78,7 @@ def test_canonical_publication_failure_preserves_prior_generation(
     def fail(source: Path, target: Path) -> None:
         target = Path(target)
         wanted = next(p for p in paths if p.name == failure)
-        if target == wanted and ".backup-" not in Path(source).name:
+        if target == wanted and Path(source).suffix == ".tmp":
             injected.append(source)
             raise OSError("synthetic canonical replacement failure")
         replace(source, target)
@@ -91,6 +92,41 @@ def test_canonical_publication_failure_preserves_prior_generation(
     assert all(p.read_bytes() == data for p, data in cached.items())
     _run(store)
     assert paths[0].read_text() == "source B"
+
+
+def test_transcription_rollback_keeps_backup_when_parent_sync_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store, output = _setup(tmp_path, monkeypatch)
+    transcript = store.layout.transcript_dir / "transcript.txt"
+    mode_transcript = store.layout.transcript_dir / "draft/transcript.txt"
+    previous = transcript.read_bytes()
+    output[0] = "source B"
+    sync_dir = workspace_store._fsync_dir
+    publication_failed = False
+
+    def fail_provenance(**kwargs: Any) -> None:
+        nonlocal publication_failed
+        assert transcript.read_text() == "source B"
+        publication_failed = True
+        raise OSError("synthetic provenance failure")
+
+    def fail_rollback_sync(path: Path, **kwargs: Any) -> None:
+        if publication_failed and path == transcript.parent:
+            raise OSError("synthetic rollback sync failure")
+        sync_dir(path, **kwargs)
+
+    monkeypatch.setattr(module, "_write_transcribe_provenance", fail_provenance)
+    monkeypatch.setattr(workspace_store, "_fsync_dir", fail_rollback_sync)
+
+    with pytest.raises(WorkspaceStoreError, match="synthetic rollback sync failure") as error:
+        _run(store)
+
+    (backup,) = transcript.parent.glob(".transcript.txt.backup-*")
+    assert str(backup) in str(error.value)
+    assert backup.read_bytes() == transcript.read_bytes() == mode_transcript.read_bytes() == previous
+    assert not list(mode_transcript.parent.glob("*.backup-*"))
+    assert not list(tmp_path.rglob("*.restore-*"))
 
 
 def test_unchaptered_transcription_retires_only_current_mode_chapters(

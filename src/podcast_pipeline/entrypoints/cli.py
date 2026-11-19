@@ -108,6 +108,7 @@ def transcribe(
 ) -> None:
     """Run transcription for a workspace; recommended with podcast-transcript + Voxhelm."""
     from podcast_pipeline.entrypoints.transcribe import TranscribeConfig, TranscriptionMode, run_transcribe
+    from podcast_pipeline.workspace_store import WorkspaceStoreError
 
     try:
         resolved_mode = TranscriptionMode(mode.strip().lower())
@@ -115,11 +116,11 @@ def transcribe(
         raise typer.BadParameter("mode must be 'draft' or 'final'") from exc
 
     config = TranscribeConfig(command=command, args=tuple(arg) if arg else None, timeout_seconds=timeout)
-    run_transcribe(
-        workspace=workspace,
-        mode=resolved_mode,
-        config=config,
-    )
+    try:
+        run_transcribe(workspace=workspace, mode=resolved_mode, config=config)
+    except WorkspaceStoreError as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
 
 
 @app.command()

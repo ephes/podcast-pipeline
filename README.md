@@ -230,6 +230,8 @@ a new transcript retires stale backups together with the canonical set.
 
 Canonical transcription publication validates the complete UTF-8 output and atomically replaces each file.
 Handled publication or metadata failures restore the previous canonical files, YAML and provenance.
+Recovery syncs each restored parent directory before retiring its sibling backup. If recovery cannot
+confirm the restore, the error names the retained backups for manual repair.
 A new transcript without chapters removes the canonical chapters and current-mode chapter pointers;
 manually imported canonical chapters are retired too, so pass `draft --chapters` again to reuse them.
 Other modes remain available. Content-bound draft caches rebuild for changed bytes and survive identical output.

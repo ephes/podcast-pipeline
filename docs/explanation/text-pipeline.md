@@ -208,7 +208,9 @@ later agent calls; this does not serialize entire draft jobs or exclude manual f
 and `files` digests for JSON, Markdown and HTML. All outputs are rendered before publication;
 individual files use atomic replacement and the completion marker is written last. Handled write
 failures restore the previous files and their permissions. If recovery itself fails, remaining files
-are still restored where possible, the error identifies retained sibling backups for manual repair. A summary JSON alone is never a reusable completed generation.
+are still restored where possible. File restores use a staged copy and sync the containing directory
+before retiring the sibling backup. If recovery cannot confirm the restore, the error identifies
+retained backups for manual repair. A summary JSON alone is never a reusable completed generation.
 Rerun draft to rebuild incomplete legacy sets. Explicit contradictory LLM chunk identities are rejected;
 omitted identities are supplied from the request. Each validated chunk summary is fully serialized,
 then written to a unique sibling temporary file, flushed/synced and atomically replaced. Partial-write,

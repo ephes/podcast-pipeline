@@ -14,7 +14,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, BinaryIO
 from uuid import UUID
 
 import yaml
@@ -57,10 +57,12 @@ def episode_workspace_dir(project_root: Path, episode_id: str) -> Path:
     return episodes_dir(project_root) / _safe_path_segment(episode_id)
 
 
-def _fsync_dir(path: Path) -> None:
+def _fsync_dir(path: Path, *, required: bool = False) -> None:
     try:
         fd = os.open(path, os.O_RDONLY)
     except OSError:
+        if required:
+            raise
         return
     try:
         os.fsync(fd)
@@ -108,17 +110,44 @@ def atomic_write_text(path: Path, text: str) -> None:
     _atomic_write_text(path, text)
 
 
+def _stage_file_copy(source: BinaryIO, *, directory: Path, prefix: str) -> Path:
+    staged: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(dir=directory, prefix=prefix, delete=False) as target:
+            staged = Path(target.name)
+            shutil.copyfileobj(source, target)
+            target.flush()
+            os.fchmod(target.fileno(), stat.S_IMODE(os.fstat(source.fileno()).st_mode))
+            os.fsync(target.fileno())
+        return staged
+    except BaseException:
+        if staged is not None:
+            with contextlib.suppress(OSError):
+                staged.unlink(missing_ok=True)
+        raise
+
+
 def _restore_preserved_files(backups: dict[Path, Path | None], retained: set[Path]) -> list[str]:
     failures: list[str] = []
     for path, saved in reversed(list(backups.items())):
+        staged = None
         try:
             if saved is None:
                 path.unlink(missing_ok=True)
             else:
-                os.replace(saved, path)
+                with saved.open("rb") as source:
+                    staged = _stage_file_copy(source, directory=path.parent, prefix=f".{path.name}.restore-")
+                os.replace(staged, path)
+            _fsync_dir(path.parent, required=True)
+            if saved is not None:
                 retained.discard(saved)
         except OSError as exc:
-            failures.append(f"{path}: {exc}; backup: {saved}")
+            recovery = f"; retained backup: {saved}" if saved is not None else ""
+            failures.append(f"{path}: {exc}{recovery}")
+        finally:
+            if staged is not None:
+                with contextlib.suppress(OSError):
+                    staged.unlink(missing_ok=True)
     return failures
 
 
@@ -126,8 +155,8 @@ def _restore_preserved_files(backups: dict[Path, Path | None], retained: set[Pat
 def preserve_files(paths: list[Path]) -> Iterator[None]:
     """Restore named files after a handled failure; callers own serialization.
 
-    Backups live beside their targets for same-filesystem rename recovery. This
-    is not a crash transaction: process death can leave a mixed set and backups.
+    Sibling backups survive until a handled restore is synced. Process death
+    during publication can still leave a mixed set and backups.
     """
     backups: dict[Path, Path | None] = {}
     retained: set[Path] = set()
@@ -135,27 +164,21 @@ def preserve_files(paths: list[Path]) -> Iterator[None]:
         for path in dict.fromkeys(paths):
             path.parent.mkdir(parents=True, exist_ok=True)
             try:
-                with (
-                    path.open("rb") as source,
-                    tempfile.NamedTemporaryFile(
-                        dir=path.parent,
-                        prefix=f".{path.name}.backup-",
-                        delete=False,
-                    ) as target,
-                ):
-                    backup = Path(target.name)
-                    backups[path] = backup
-                    shutil.copyfileobj(source, target)
-                    os.fchmod(target.fileno(), stat.S_IMODE(os.fstat(source.fileno()).st_mode))
+                source = path.open("rb")
             except FileNotFoundError:
                 backups[path] = None
+            else:
+                with source:
+                    backups[path] = _stage_file_copy(source, directory=path.parent, prefix=f".{path.name}.backup-")
+        for directory in {path.parent for path, saved in backups.items() if saved is not None}:
+            _fsync_dir(directory, required=True)
         try:
             yield
         except BaseException as original:
             retained.update(saved for saved in backups.values() if saved is not None)
             failures = _restore_preserved_files(backups, retained)
             if failures:
-                message = "Artifact recovery failed: " + "; ".join(failures)
+                message = "Artifact recovery failed (restore durability unconfirmed): " + "; ".join(failures)
                 original.add_note(message)
                 if isinstance(original, Exception):
                     raise WorkspaceStoreError(message) from original

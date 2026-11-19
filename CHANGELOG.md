@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Sync restored workspace file directories before retiring recovery backups. When rollback cannot
+  confirm durability, report the affected files and retain their last-good backups.
+
 - Auphonic control responses enforce the 8 MiB limit on compressed input and decoded output independently.
 - Auphonic control responses with duplicate JSON object members fail before the response is used.
 - Auphonic output publication rolls back renames that took effect before an interrupt and retains

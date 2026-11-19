@@ -73,7 +73,7 @@ def test_selection_failure_restores_text_provenance_and_state(
     def fail_replace(source: Path, target: Path) -> None:
         target = Path(target)
         hit = target == store.layout.state_json if failure == "state" else "provenance" in target.parts
-        if hit and ".backup-" not in Path(source).name:
+        if hit and Path(source).suffix == ".tmp":
             injected.append(target)
             raise OSError("synthetic publication failure")
         replace(source, target)
@@ -186,9 +186,9 @@ def test_candidate_delete_retains_backup_and_reports_incomplete_compensation(
     replace = module.os.replace
 
     def fail_publication_and_one_restore(source: Path, target: Path) -> None:
-        if Path(target) == store.layout.state_json and ".backup-" not in Path(source).name:
+        if Path(target) == store.layout.state_json and Path(source).suffix == ".tmp":
             raise OSError("synthetic state failure")
-        if Path(target) == path and ".backup-" in Path(source).name:
+        if Path(target) == path and ".restore-" in Path(source).name:
             raise OSError("synthetic restore failure")
         replace(source, target)
 
