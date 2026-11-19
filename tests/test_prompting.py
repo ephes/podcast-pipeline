@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+from hashlib import sha256
 from pathlib import Path
 
 import pytest
@@ -9,7 +10,7 @@ import pytest
 from podcast_pipeline import agent_runners
 from podcast_pipeline.agent_cli_config import AgentCliConfig
 from podcast_pipeline.agent_runners import ClaudeCodeReviewerRunner, load_episode_context_from_workspace
-from podcast_pipeline.domain.models import Candidate
+from podcast_pipeline.domain.models import Candidate, ProvenanceRef
 from podcast_pipeline.prompting import (
     PromptRegistry,
     PromptRenderer,
@@ -74,6 +75,34 @@ def test_prompt_store_writes_prompt_under_provenance(tmp_path: Path) -> None:
     assert payload["prompt_id"] == rendered.prompt_id
     assert payload["template"] == rendered.template
     assert payload["prompt_text"] == rendered.text
+
+
+def test_prompt_receipts_keep_distinct_contexts_and_legacy_reference(tmp_path: Path) -> None:
+    store = EpisodeWorkspaceStore(tmp_path)
+    prompt_store = PromptStore(store)
+    renderer = PromptRenderer(PromptRegistry([PromptTemplate(name="simple", template="Hello {name}")]))
+    first = renderer.render(name="simple", context={"name": "Pod", "unused": "first"})
+    second = renderer.render(name="simple", context={"name": "Pod", "unused": "second"})
+    assert first.text == second.text
+
+    legacy_digest = sha256(f"simple\n{first.text}".encode()).hexdigest()[:12]
+    legacy_ref = ProvenanceRef(kind="prompts", ref=f"simple_{legacy_digest}")
+    legacy_path = store.write_provenance_json(legacy_ref, {**first.to_json_data(), "prompt_id": legacy_ref.ref})
+    legacy_bytes = legacy_path.read_bytes()
+
+    first_ref = prompt_store.write(first)
+    second_ref = prompt_store.write(second)
+    assert first_ref != second_ref
+    for rendered, ref in [(first, first_ref), (second, second_ref)]:
+        path = store.layout.provenance_json_path(ref.kind, ref.ref)
+        receipt = json.loads(path.read_text(encoding="utf-8"))
+        assert receipt["context"] == rendered.context
+        assert receipt["prompt_id"] == ref.ref
+    assert legacy_path.read_bytes() == legacy_bytes
+
+    same = renderer.render(name="simple", context={"unused": "first", "name": "Pod"})
+    assert prompt_store.write(same) == first_ref
+    assert len(list(legacy_path.parent.glob("*.json"))) == 3
 
 
 def test_reviewer_runner_attaches_prompt_provenance(

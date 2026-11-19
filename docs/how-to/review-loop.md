@@ -7,6 +7,10 @@ This guide shows how to run the MVP-1 creator/reviewer loop with the fake runner
 By default, `podcast review` uses the local Codex/Claude CLIs configured in `episode.yaml` or
 `~/.config/podcast-pipeline/config.yaml` and writes protocol state under `copy/protocol/<asset_id>/`.
 
+Prompt receipts under `copy/provenance/prompts/` are addressed by a SHA-256 digest of their
+canonical JSON fields, including the template name, rendered text, context, glossary and examples.
+Identical receipts reuse the same reference. Older references still resolve to their original files.
+
 ```bash
 podcast review \
   --workspace ./workspaces/ep_001 \

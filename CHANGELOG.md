@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Bind prompt provenance references to the full exported receipt, including unused context.
+  Existing references still resolve to their original files.
+
 - Retire obsolete transcription mode caches after canonical output, YAML and provenance commit.
   Cleanup failures warn and preserve the successful transcription result.
 
