@@ -53,6 +53,26 @@ def test_curated_tags_reject_line_boundaries_without_replacing_selection(
     assert [path.read_bytes() for path in paths] == before
 
 
+def test_curated_itunes_keyword_cannot_contain_a_comma(tmp_path: Path) -> None:
+    store = EpisodeWorkspaceStore(tmp_path)
+    state = EpisodeWorkspace(episode_id="synthetic", root_dir=".")
+    asset_id = "itunes_keywords"
+    state, error = write_selected_tags(
+        store=store, workspace_state=state, asset_id=asset_id, tags=["original"], max_tags=12
+    )
+    assert error is None
+    path = store.layout.selected_text_path(asset_id, TextFormat.markdown)
+    before = path.read_bytes()
+
+    result, error = write_selected_tags(
+        store=store, workspace_state=state, asset_id=asset_id, tags=["left, right"], max_tags=12
+    )
+
+    assert error == "Entries in itunes_keywords must not contain commas"
+    assert result is state
+    assert path.read_bytes() == before
+
+
 def test_load_candidates_single_asset(tmp_path: Path) -> None:
     layout = EpisodeWorkspaceLayout(root=tmp_path)
     c1 = _write_candidate(layout, "description", "Candidate 1")

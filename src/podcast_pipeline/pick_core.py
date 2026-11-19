@@ -29,7 +29,7 @@ from podcast_pipeline.tag_assets import (
     render_selected_tags_markdown,
     tag_cap_error,
 )
-from podcast_pipeline.tag_parsing import normalize_tag_values, parse_tag_list
+from podcast_pipeline.tag_parsing import itunes_keyword_delimiter_error, normalize_tag_values, parse_tag_list
 from podcast_pipeline.workspace_store import EpisodeWorkspaceLayout, EpisodeWorkspaceStore
 
 MANUAL_SELECTION_PROVENANCE_KIND = "manual_selection"
@@ -221,6 +221,10 @@ def write_selected_tags(
     """
     if any(tag and tag.splitlines() != [tag] for tag in tags):
         return workspace_state, f"Tags for {asset_id} must not contain line breaks"
+    if asset_id == AssetKind.itunes_keywords.value:
+        error = itunes_keyword_delimiter_error(tags)
+        if error is not None:
+            return workspace_state, error
     normalized = normalize_tag_values(tags)
     error = tag_cap_error(asset_id, len(normalized), max_tags)
     if error is not None:

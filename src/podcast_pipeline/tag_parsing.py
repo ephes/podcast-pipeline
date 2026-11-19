@@ -35,6 +35,12 @@ def normalize_tag_values(items: Sequence[str]) -> list[str]:
     return out
 
 
+def itunes_keyword_delimiter_error(keywords: Sequence[str]) -> str | None:
+    if any("," in keyword for keyword in keywords):
+        return "Entries in itunes_keywords must not contain commas"
+    return None
+
+
 def _extract_bullet_items(text: str) -> list[str]:
     items: list[str] = []
     for text_line in text.splitlines():

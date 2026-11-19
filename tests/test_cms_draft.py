@@ -305,6 +305,24 @@ def _workspace(tmp_path: Path, *, extra_formats: bool = True) -> Path:
     return workspace
 
 
+def test_cms_draft_rejects_comma_in_selected_itunes_keyword_but_keeps_cms_tag(tmp_path: Path) -> None:
+    _write_selected(tmp_path, "title_detail.txt", "Synthetic episode\n")
+    _write_selected(tmp_path, "slug.txt", "synthetic-episode\n")
+    _write_selected(tmp_path, "description.md", "Synthetic description\n")
+    _write_selected(tmp_path, "cms_tags.md", "- left, right\n")
+    _write_selected(tmp_path, "itunes_keywords.md", "- left, right\n")
+    (tmp_path / "sample.mp3").write_bytes(b"fake")
+    config = CmsConfig(base_url=BASE, audio_file="sample.mp3")
+
+    with pytest.raises(CmsConfigError, match="^Entries in itunes_keywords must not contain commas$"):
+        build_cms_draft_plan(episode_yaml={}, workspace=tmp_path, config=config)
+
+    _write_selected(tmp_path, "itunes_keywords.md", "left, right\n")
+    plan = build_cms_draft_plan(episode_yaml={}, workspace=tmp_path, config=config)
+    assert plan.episode_fields["tags"] == ["left, right"]
+    assert plan.episode_fields["keywords"] == "left,right"
+
+
 def _config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, **overrides: Any) -> Path:
     cms: dict[str, Any] = {
         "base_url": BASE,

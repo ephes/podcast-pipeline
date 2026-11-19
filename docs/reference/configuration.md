@@ -158,6 +158,11 @@ Candidates are rewritten in their canonical format (`- tag` bullets for `cms_tag
 line for `itunes_keywords`). Tags you add by hand while picking are not filtered.
 Curated tags must fit on one line, including under Unicode line splitting. The picker
 checks that the normalized list reads back exactly before it replaces the saved selection.
+Each curated `itunes_keywords` entry must be comma-free because django-cast and Auphonic
+export these entries as comma-delimited text. If export rejects an older selection, edit
+any affected keyword in the picker or split it into separate entries. Comma-separated
+keyword lines still represent separate entries. `cms_tags` and `audio_tags` export as arrays
+and can include commas within a single tag.
 
 When picking (`podcast pick --web` and the dashboard), each tag asset shows one suggestion pool instead of candidate
 lists: the union of all its candidates, filtered with the same rules (without the per-candidate cap) and ordered by how
