@@ -279,11 +279,11 @@ is retained; collisions get `_2`, `_3`, etc. before the extension, checking each
 against the whole plan built so far. For example, `é.mp3` and `é.mp3` become `é.mp3` and
 `é_2.mp3`. The plan is revalidated before any existing destination or backup is moved.
 Only after the entire set succeeds are affected filenames replaced. A download or publication
-failure preserves the previous set and leaves unrelated files alone. Publication uses
-rollback for runtime failures, rather than a crash-atomic multi-file filesystem transaction;
-readers should wait for `produce` to finish. `state.json` records downloaded completion only
-after publication succeeds. If rollback itself fails (for example because the disk becomes
-unwritable), the error identifies the retained staging directory containing recovery files.
+failure leaves unrelated files alone. Rollback restores the previous set after handled failures,
+including interrupts delivered after a rename takes effect. These guarantees apply to runtime
+recovery. Readers should wait for `produce` to finish. `state.json` records downloaded completion only
+after publication succeeds. If rollback fails or file identities are uncertain, the error names
+the retained staging directory containing recovery files.
 Normal success and successfully rolled-back failures remove the owned staging directory.
 Cleanup failures log the retained path without masking the publication result or original error.
 

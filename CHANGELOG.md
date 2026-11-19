@@ -4,6 +4,8 @@
 
 - Auphonic control responses enforce the 8 MiB limit on compressed input and decoded output independently.
 - Auphonic control responses with duplicate JSON object members fail before the response is used.
+- Auphonic output publication rolls back renames that took effect before an interrupt and retains
+  recovery files when it cannot verify ownership.
 
 - Security: the dashboard and `podcast pick --web` require a random per-run session token. The browser receives
   `/?token=...` without a process argument (Python's macOS `osascript` controller, when selected, reads it on

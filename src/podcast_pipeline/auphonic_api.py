@@ -1258,42 +1258,77 @@ async def _atomic_write_stream(path: Path, chunks: AsyncIterable[bytes], *, max_
                 logging.getLogger(__name__).warning("Could not remove download temporary file %s: %s", tmp_path, exc)
 
 
+_FileIdentity = tuple[int, int]
+
+
+def _output_identity(path: Path) -> _FileIdentity | None:
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        return None
+    return info.st_dev, info.st_ino
+
+
+@dataclass
+class _OutputTransition:
+    name: str
+    original: _FileIdentity | None
+    staged: _FileIdentity
+    install_attempted: bool = False
+
+
 def _publish_outputs(incoming: Path, output_dir: Path, filenames: Sequence[str]) -> None:
     _validate_output_filenames(filenames)
     backup = incoming.parent / "previous"
     backup.mkdir()
-    published: list[str] = []
-    saved: list[str] = []
+    transitions: list[_OutputTransition] = []
     try:
         for name in filenames:
             dest = output_dir / name
+            source = incoming / name
             if dest.is_dir() and not dest.is_symlink():
                 raise OSError(f"Refusing to replace directory {dest}")
-            if dest.exists() or dest.is_symlink():
+            original = _output_identity(dest)
+            staged = _output_identity(source)
+            if staged is None:
+                raise FileNotFoundError(f"Missing staged output {source}")
+            # Record ownership before either rename can take effect.
+            transition = _OutputTransition(name, original, staged)
+            transitions.append(transition)
+            if original is not None:
                 os.replace(dest, backup / name)
-                saved.append(name)
-            os.replace(incoming / name, dest)
-            published.append(name)
+            transition.install_attempted = True
+            os.replace(source, dest)
     except BaseException:
         try:
-            _restore_outputs(output_dir, backup, published, saved)
-        except OSError as exc:
+            _restore_outputs(incoming, output_dir, backup, transitions)
+        except BaseException as exc:
             raise _OutputRollbackError(
                 f"Output publication rollback failed; recovery files retained in {incoming.parent}"
             ) from exc
         raise
 
 
-def _restore_outputs(output_dir: Path, backup: Path, published: Sequence[str], saved: Sequence[str]) -> None:
+def _restore_outputs(incoming: Path, output_dir: Path, backup: Path, transitions: Sequence[_OutputTransition]) -> None:
     errors: list[OSError] = []
-    for name in reversed(published):
+    for transition in reversed(transitions):
+        dest = output_dir / transition.name
+        saved = backup / transition.name
+        original, staged = transition.original, transition.staged
         try:
-            (output_dir / name).unlink()
-        except OSError as exc:
-            errors.append(exc)
-    for name in reversed(saved):
-        try:
-            os.replace(backup / name, output_dir / name)
+            # A rename may have completed even if its call raised. Check all
+            # three entries before overwriting or removing a destination.
+            observed = (_output_identity(incoming / transition.name), _output_identity(dest), _output_identity(saved))
+            if observed == (staged, original, None):
+                continue
+            backed_up = observed == (staged, None, original)
+            installed = transition.install_attempted and observed == (None, staged, original)
+            if not (backed_up or installed):
+                raise OSError(f"Output entries changed during publication: {dest}")
+            if original is not None:
+                os.replace(saved, dest)
+            elif installed:
+                dest.unlink()
         except OSError as exc:
             errors.append(exc)
     if errors:

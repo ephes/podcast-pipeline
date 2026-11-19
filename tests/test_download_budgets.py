@@ -189,6 +189,49 @@ def test_publication_failure_rolls_back_set(
     assert {p.name: p.read_bytes() for p in tmp_path.iterdir()} == {n: n.encode() for n in names}
 
 
+@pytest.mark.parametrize("phase", ["backup", "install", "install-new", "unknown-destination"])
+def test_publication_rename_then_interrupt(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, phase: str) -> None:
+    before = {"a.mp3": b"old a", "notes.txt": b"unrelated"}
+    if phase != "install-new":
+        before["b.mp3"] = b"old b"
+    for name, content in before.items():
+        (tmp_path / name).write_bytes(content)
+    replacement = tmp_path / "replacement"
+    replacement.write_bytes(b"external replacement")
+    original = auphonic_api.os.replace
+    injected = False
+
+    def replace(source: Path, dest: Path) -> None:
+        nonlocal injected
+        original(source, dest)
+        if source.name != "b.mp3":
+            return
+        if dest.parent.name == "previous" if phase == "backup" else source.parent.name == "incoming":
+            injected = True
+            if phase == "unknown-destination":
+                original(replacement, dest)
+            raise KeyboardInterrupt
+
+    monkeypatch.setattr(auphonic_api.os, "replace", replace)
+    with auphonic_api.AuphonicClient(
+        CREDS, transport=httpx.MockTransport(lambda r: httpx.Response(200, content=b"new"))
+    ) as client:
+        with pytest.raises((KeyboardInterrupt, auphonic_api.AuphonicApiError)) as error:
+            client.download_outputs(OUTPUTS, tmp_path)
+    assert injected
+    if phase == "unknown-destination":
+        assert isinstance(error.value, auphonic_api.AuphonicApiError)
+        assert "recovery files retained" in str(error.value)
+        (stage,) = tmp_path.glob(".outputs-*")
+        assert (stage / "previous" / "b.mp3").read_bytes() == before["b.mp3"]
+        before["b.mp3"] = b"external replacement"
+    replacement.unlink(missing_ok=True)
+    assert {p.name: p.read_bytes() for p in tmp_path.iterdir() if p.is_file()} == before
+    if phase != "unknown-destination":
+        assert isinstance(error.value, KeyboardInterrupt)
+        assert not list(tmp_path.glob(".outputs-*"))
+
+
 def test_complete_set_success_with_explicit_budgets(tmp_path: Path) -> None:
     (tmp_path / "notes.txt").write_bytes(b"keep")
     with auphonic_api.AuphonicClient(

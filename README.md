@@ -54,7 +54,9 @@ explicit opt-in (`auphonic.mode: single_track`). Credentials: `AUPHONIC_API_KEY`
 `docs/decisions/auphonic-multitrack.md`. Preset data that cannot be checked stops `produce` before anything is created
 or changed. Every Auphonic JSON API response is capped separately at 8 MiB on the wire and 8 MiB after decoding.
 Duplicate JSON object members are rejected at any depth
-(`docs/reference/configuration.md`, "Auphonic control response limits").
+(`docs/reference/configuration.md`, "Auphonic control response limits"). Interrupted publication restores the
+previous output set when file identities can be verified. If rollback cannot finish safely, the error names
+the staging directory that holds the recovery files.
 
 ## Episode draft on django-cast
 
