@@ -6,7 +6,8 @@
   Cleanup failures warn and preserve the successful transcription result.
 
 - Sync restored workspace file directories before retiring recovery backups. When rollback cannot
-  confirm durability, report the affected files and retain their last-good backups.
+  confirm durability, report the affected files and retain their last-good backups. `podcast transcribe`
+  prints the triggering error and every retained backup, including those of nested recovery scopes.
 
 - Auphonic control responses enforce the 8 MiB limit on compressed input and decoded output independently.
 - Auphonic control responses with duplicate JSON object members fail before the response is used.

@@ -119,8 +119,29 @@ def transcribe(
     try:
         run_transcribe(workspace=workspace, mode=resolved_mode, config=config)
     except WorkspaceStoreError as exc:
-        typer.echo(f"Error: {exc}", err=True)
+        first, *details = _exception_chain_messages(exc)
+        typer.echo(f"Error: {first}", err=True)
+        for detail in details:
+            typer.echo(f"  {detail}", err=True)
         raise typer.Exit(code=1) from exc
+
+
+def _exception_chain_messages(exc: BaseException) -> list[str]:
+    """Collect messages and notes along an exception's cause chain, without duplicates.
+
+    Nested recovery failures keep the triggering error in ``__cause__`` and inner
+    retained-backup paths in ``__notes__``; both must reach the operator.
+    """
+    messages: list[str] = []
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        for text in (str(current) or type(current).__name__, *getattr(current, "__notes__", ())):
+            if text not in messages:
+                messages.append(text)
+        current = current.__cause__ or (None if current.__suppress_context__ else current.__context__)
+    return messages
 
 
 @app.command()

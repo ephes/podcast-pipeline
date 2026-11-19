@@ -2,10 +2,12 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from typer.testing import CliRunner
 
 import podcast_pipeline.entrypoints.transcribe as module
 from podcast_pipeline import workspace_store
 from podcast_pipeline.domain.intermediate_formats import EpisodeSummary
+from podcast_pipeline.entrypoints.cli import app
 from podcast_pipeline.entrypoints.draft_pipeline import _run_llm_pipeline
 from podcast_pipeline.summarization_stub import write_episode_summary_artifacts
 from podcast_pipeline.transcript_chunker import ChunkerConfig, write_transcript_chunks
@@ -127,6 +129,41 @@ def test_transcription_rollback_keeps_backup_when_parent_sync_fails(
     assert backup.read_bytes() == transcript.read_bytes() == mode_transcript.read_bytes() == previous
     assert not list(mode_transcript.parent.glob("*.backup-*"))
     assert not list(tmp_path.rglob("*.restore-*"))
+
+
+def test_transcribe_cli_reports_trigger_and_all_retained_backups_when_nested_rollback_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store, output = _setup(tmp_path, monkeypatch)
+    transcript_dir = store.layout.transcript_dir
+    mode_dir = transcript_dir / "draft"
+    output[0] = "source B"
+    sync_dir = workspace_store._fsync_dir
+    publication_failed = False
+
+    def fail_provenance(**kwargs: Any) -> None:
+        nonlocal publication_failed
+        publication_failed = True
+        raise OSError("synthetic provenance failure")
+
+    def fail_rollback_sync(path: Path, **kwargs: Any) -> None:
+        if publication_failed and path in {transcript_dir, mode_dir}:
+            raise OSError(f"synthetic rollback sync failure in {path.name}")
+        sync_dir(path, **kwargs)
+
+    monkeypatch.setattr(module, "_write_transcribe_provenance", fail_provenance)
+    monkeypatch.setattr(workspace_store, "_fsync_dir", fail_rollback_sync)
+
+    result = CliRunner().invoke(
+        app, ["transcribe", "--workspace", str(store.layout.root), "--command", "synthetic-transcriber"]
+    )
+
+    assert result.exit_code == 1
+    assert "synthetic provenance failure" in result.output
+    (canonical_backup,) = transcript_dir.glob(".transcript.txt.backup-*")
+    (mode_backup,) = mode_dir.glob(".transcript.txt.backup-*")
+    assert str(canonical_backup) in result.output
+    assert str(mode_backup) in result.output
 
 
 def test_unchaptered_transcription_retires_only_current_mode_chapters(
