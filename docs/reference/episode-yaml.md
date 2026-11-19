@@ -164,11 +164,15 @@ When the transcriber is `podcast-transcript` (`--command transcribe` or `--comma
 runs it with `TRANSCRIPT_DIR` set to `transcript/<mode>/.podcast-transcript/<hash>/` inside the workspace, where
 `<hash>` is the first 16 hex characters of the SHA-256 of the source audio. Episodes whose audio files share a name
 (for example two `final_mix.wav` masters) therefore never share podcast-transcript's cache, and changed audio is
-transcribed afresh. The cache holds a copy of the audio, so the workspace grows by roughly its size. Only this run's output is imported: if the command writes no transcript, `podcast transcribe`
-fails with "Missing transcript output" instead of keeping an older one. A `TRANSCRIPT_DIR` in your environment is
-ignored for these runs, and the shared `~/.podcast-transcripts/transcripts/` cache is no longer read (it is left in
-place; delete it yourself if you no longer need it). Cache directories for older audio of the same mode are removed
-after a successful run. `TRANSCRIPT_HOME` (and its `.env`) is still honored.
+transcribed afresh. The cache holds a copy of the audio, so the workspace grows by roughly its size. The pipeline
+imports only output from the current run. If the command writes no transcript, `podcast transcribe` reports
+"Missing transcript output" and preserves the prior published transcript. These runs use the workspace cache in
+place of the environment's `TRANSCRIPT_DIR` or the legacy shared cache. `TRANSCRIPT_HOME` (and its `.env`) is still
+honored.
+
+Cache directories for older audio of the same mode are removed after the canonical transcript, episode YAML and
+mode provenance commit. A publication failure leaves those caches available. A cleanup failure after commit emits
+a warning and the run still reports success.
 
 ### Regeneration chapter admission
 

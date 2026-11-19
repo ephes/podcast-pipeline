@@ -234,7 +234,9 @@ Recovery syncs each restored parent directory before retiring its sibling backup
 confirm the restore, the error names the retained backups for manual repair.
 A new transcript without chapters removes the canonical chapters and current-mode chapter pointers;
 manually imported canonical chapters are retired too, so pass `draft --chapters` again to reuse them.
-Other modes remain available. Content-bound draft caches rebuild for changed bytes and survive identical output.
+Other modes remain available. Obsolete audio-keyed caches for the current mode are retired after the
+canonical files, YAML and provenance commit. Failed retirement warns and the command reports success.
+Content-bound draft caches rebuild for changed bytes and survive identical output.
 
 ### Durable state and selections
 

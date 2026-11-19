@@ -624,6 +624,80 @@ def test_run_transcribe_refreshes_transcript_when_audio_content_changes(
     assert sorted(p.name for p in cache_root.iterdir()) == [Path(envs[1]["TRANSCRIPT_DIR"]).name]
 
 
+def test_run_transcribe_keeps_old_mode_cache_until_canonical_commit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workspace = tmp_path / "workspace"
+    audio = _write_podcast_transcript_workspace(workspace, audio_name="mix.mp3", audio_bytes=b"first cut")
+    monkeypatch.setattr(transcribe, "_run_transcriber", _fake_podcast_transcript([]))
+
+    def run() -> None:
+        transcribe.run_transcribe(
+            workspace=workspace, mode=transcribe.TranscriptionMode.draft, config=transcribe.TranscribeConfig()
+        )
+
+    run()
+    mode_dir = workspace / "transcript" / "draft"
+    old_cache = transcribe._podcast_transcript_cache_dir(mode_dir=mode_dir.resolve(), audio_file=audio)
+    old_output = _podcast_transcript_plaintext_path(old_cache, audio)
+    prior_files = {
+        path: path.read_bytes()
+        for path in [
+            mode_dir / "transcript.txt",
+            mode_dir / "provenance.json",
+            mode_dir.parent / "transcript.txt",
+            workspace / "episode.yaml",
+            old_output,
+        ]
+    }
+    audio.write_bytes(b"second cut")
+
+    def fail_provenance(**kwargs: Any) -> None:
+        assert (mode_dir.parent / "transcript.txt").read_text() == "transcript of second cut"
+        raise OSError("synthetic provenance failure")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(transcribe, "_write_transcribe_provenance", fail_provenance)
+        with pytest.raises(OSError, match="synthetic provenance failure"):
+            run()
+
+    assert {path: path.read_bytes() for path in prior_files} == prior_files
+    run()
+    assert not old_cache.exists()
+    assert (mode_dir.parent / "transcript.txt").read_text() == "transcript of second cut"
+
+
+def test_run_transcribe_warns_when_committed_mode_cache_cannot_be_pruned(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    workspace = tmp_path / "workspace"
+    audio = _write_podcast_transcript_workspace(workspace, audio_name="mix.mp3", audio_bytes=b"new audio")
+    mode_dir = workspace / "transcript" / "draft"
+    keep = transcribe._podcast_transcript_cache_dir(mode_dir=mode_dir.resolve(), audio_file=audio)
+    obsolete = keep.parent / "0123456789abcdef"
+    obsolete.mkdir(parents=True)
+    monkeypatch.setattr(transcribe, "_run_transcriber", _fake_podcast_transcript([]))
+    rmtree = transcribe.shutil.rmtree
+
+    def fail_removal(path: Path, *args: Any, **kwargs: Any) -> None:
+        if path == obsolete:
+            raise PermissionError("synthetic cache removal failure")
+        rmtree(path, *args, **kwargs)
+
+    monkeypatch.setattr(transcribe.shutil, "rmtree", fail_removal)
+    transcribe.run_transcribe(
+        workspace=workspace, mode=transcribe.TranscriptionMode.draft, config=transcribe.TranscribeConfig()
+    )
+
+    captured = capsys.readouterr()
+    assert "transcription committed" in captured.err
+    assert str(obsolete) in captured.err
+    assert "Transcript (draft):" in captured.out
+    assert obsolete.is_dir()
+    assert (mode_dir / "provenance.json").is_file()
+    assert (mode_dir.parent / "transcript.txt").read_text() == "transcript of new audio"
+
+
 def test_run_transcribe_fails_instead_of_importing_stale_output(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

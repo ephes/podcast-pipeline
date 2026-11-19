@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Retire obsolete transcription mode caches after canonical output, YAML and provenance commit.
+  Cleanup failures warn and preserve the successful transcription result.
+
 - Sync restored workspace file directories before retiring recovery backups. When rollback cannot
   confirm durability, report the affected files and retain their last-good backups.
 

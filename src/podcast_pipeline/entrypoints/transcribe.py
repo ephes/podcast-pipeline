@@ -113,8 +113,6 @@ def run_transcribe(
             raise typer.BadParameter(f"Missing transcript output at {mode_transcript}")
         if mode_transcript.stat().st_size == 0:
             raise typer.BadParameter(f"Transcript output is empty: {mode_transcript}")
-        if cache_dir is not None:
-            _prune_stale_podcast_transcript_caches(keep=cache_dir)
 
         _publish_canonical_transcription(
             store=store,
@@ -124,6 +122,9 @@ def run_transcribe(
             rendered_args=rendered_args,
             episode_yaml=episode_yaml,
         )
+
+    if cache_dir is not None:
+        _prune_stale_podcast_transcript_caches(keep=cache_dir)
 
     typer.echo(f"Workspace: {workspace}")
     typer.echo(f"Transcript ({mode.value}): {mode_transcript}")
@@ -579,12 +580,23 @@ def _file_signature(path: Path) -> tuple[int, int, int] | None:
 
 
 def _prune_stale_podcast_transcript_caches(*, keep: Path) -> None:
-    """Drop cache directories for audio content this mode no longer uses."""
-    for entry in keep.parent.iterdir():
-        if entry == keep or not entry.is_dir() or entry.is_symlink():
+    """Drop obsolete mode caches after transcription publication has committed."""
+    try:
+        entries = list(keep.parent.iterdir())
+    except OSError as exc:
+        typer.echo(
+            f"Warning: transcription committed, but could not inspect mode caches at {keep.parent}: {exc}", err=True
+        )
+        return
+
+    for entry in entries:
+        if entry == keep or not _AUDIO_HASH_DIR_PATTERN.fullmatch(entry.name):
             continue
-        if _AUDIO_HASH_DIR_PATTERN.match(entry.name):
-            shutil.rmtree(entry, ignore_errors=True)
+        try:
+            if not entry.is_symlink() and entry.is_dir():
+                shutil.rmtree(entry)
+        except OSError as exc:
+            typer.echo(f"Warning: transcription committed, but could not remove mode cache {entry}: {exc}", err=True)
 
 
 def _update_episode_inputs(
