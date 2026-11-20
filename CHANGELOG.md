@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Refuse saved review candidates whose filenames disagree with their UUIDs before replay.
+
 - Support maximum-length workspace filenames during atomic writes and rollback.
 
 - Publish creator iteration records atomically so a failed replacement preserves the previous record.

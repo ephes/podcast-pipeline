@@ -39,6 +39,10 @@ Notes:
   the CLI and the dashboard job say so ("no agent calls") instead of reporting a fresh result.
   A selection conflict, invalid protocol state or unreadable saved candidate evidence ends
   `podcast review` with a "Review stopped" message and exit code 1, not a traceback.
+- Saved review candidates must use `copy/candidates/<asset_id>/candidate_<UUID>.json`, with
+  one file per UUID and the same UUID in the filename and JSON. If review stops on conflicting
+  evidence, verify the canonical file against the checkpoint and archive conflicting copies
+  outside the active candidate directory before retrying.
 - Each completed candidate/review is checkpointed before the next agent call. After an agent
   failure, fix the cause and repeat the command. Invalid protocol state stops before agent calls.
 - For an intentional fresh run, archive `copy/protocol/<asset_id>/` and

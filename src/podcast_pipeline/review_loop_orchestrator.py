@@ -233,6 +233,8 @@ def _load_seed_candidates(layout: EpisodeWorkspaceLayout, asset_id: str) -> list
         candidate = Candidate.model_validate(raw)
         if candidate.asset_id != asset_id:
             raise ValueError(f"candidate asset_id mismatch: {path}")
+        if path != layout.candidate_json_path(asset_id, candidate.candidate_id):
+            raise ValueError(f"candidate filename does not match its UUID: {path}")
         candidates.append(candidate)
     return candidates
 

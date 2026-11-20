@@ -6,7 +6,7 @@ import pytest
 
 from podcast_pipeline.agent_runners import FakeCreatorRunner, FakeReviewerRunner
 from podcast_pipeline.domain.models import Candidate, EpisodeWorkspace, ReviewVerdict, TextFormat
-from podcast_pipeline.review_loop_engine import LoopOutcome
+from podcast_pipeline.review_loop_engine import LoopOutcome, LoopProtocolError
 from podcast_pipeline.review_loop_orchestrator import run_review_loop_orchestrator
 from podcast_pipeline.workspace_store import EpisodeWorkspaceStore
 
@@ -399,3 +399,30 @@ def test_changed_saved_candidate_refuses_resume_before_paid_calls(tmp_path: Path
             workspace=tmp_path, asset_id="description", max_iterations=3, creator=creator_resume, reviewer=reviewer
         )
     assert not creator_resume.calls and len(reviewer.calls) == 1
+
+
+@pytest.mark.parametrize("keep_canonical", [True, False], ids=["duplicate-uuid", "renamed-file"])
+def test_review_refuses_noncanonical_saved_candidate_identity(tmp_path: Path, keep_canonical: bool) -> None:
+    store = _init_workspace(tmp_path)
+    store.write_selected_text("description", TextFormat.markdown, "previous selection")
+    creator = FakeCreatorRunner(layout=store.layout, replies=[{"done": True, "candidate": {"content": "reviewed"}}])
+    reviewer = FakeReviewerRunner(layout=store.layout, reviewer="synthetic", replies=[{"verdict": "needs_human"}])
+    state = run_review_loop_orchestrator(
+        workspace=tmp_path, asset_id="description", max_iterations=3, creator=creator, reviewer=reviewer
+    )
+    candidate = state.iterations[0].candidate
+    canonical = store.layout.candidate_json_path("description", candidate.candidate_id)
+    alias = canonical.with_name("candidate_0.json")
+    if keep_canonical:
+        alias.write_text(candidate.model_copy(update={"content": "conflicting evidence"}).model_dump_json())
+    else:
+        canonical.rename(alias)
+    before = {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
+
+    with pytest.raises(LoopProtocolError, match=r"repair or archive copy/candidates/description/"):
+        run_review_loop_orchestrator(
+            workspace=tmp_path, asset_id="description", max_iterations=3, creator=creator, reviewer=reviewer
+        )
+
+    assert len(creator.calls) == len(reviewer.calls) == 1
+    assert {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
