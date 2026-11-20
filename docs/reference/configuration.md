@@ -258,6 +258,11 @@ Editor API responses (including upload acknowledgements and errors) are limited 
 with a 60-second monotonic response-body budget (`DjangoCastClient.response_timeout_seconds`).
 Only identity Content-Encoding is accepted. The response cap is independent of uploaded
 media size. CMS error diagnostics retain at most 2,000 characters.
+Nonempty successful CMS mutation responses must pass strict UTF-8 JSON decoding before
+receipt fields are used. Duplicate object members at any depth and nonfinite numbers
+(including exponent overflow) fail with a fixed diagnostic. The decoder also caps nesting
+at 64 levels, tokens at 100,000 and numeric literals at 256 characters. Check the remote
+outcome in Wagtail before retrying a write whose response was refused.
 
 Auphonic polling requires finite positive `poll_interval` and `timeout_seconds` values.
 One monotonic deadline covers fetches, sleeps and start/rerun grace periods. Fetch timeouts

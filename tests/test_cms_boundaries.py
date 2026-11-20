@@ -256,3 +256,35 @@ def test_malformed_remote_success_stops_followup_mutation(
     assert len(fake.audios) == 1
     assert len(fake.episodes) == (0 if endpoint == "upload" else 1)
     assert not [r for r in fake.requests if r.method == "PATCH"]
+
+
+@pytest.mark.parametrize(
+    ("success_body", "endpoint"),
+    [
+        (b'{"id":83,"id":84}', "upload"),
+        (b'{"id":141,"latest_revision_id":8,"latest_revision_id":9}', "create"),
+        (b'{"id":83,"extra":{"sentinel":0,"sentinel":1}}', "upload"),
+        (b'{"id":83,"extra":NaN}', "upload"),
+        (b'{"id":83,"extra":1e999}', "upload"),
+    ],
+)
+def test_ambiguous_mutation_receipt_stops_workflow(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake: FakeCast, success_body: bytes, endpoint: str
+) -> None:
+    workspace = _workspace(tmp_path)
+    _config(tmp_path, monkeypatch)
+    original = fake._upload if endpoint == "upload" else fake._create
+
+    def malformed(request: httpx.Request) -> httpx.Response:
+        response = original(request)
+        if response.status_code == 201:
+            return httpx.Response(201, content=success_body)
+        return response
+
+    monkeypatch.setattr(fake, "_upload" if endpoint == "upload" else "_create", malformed)
+    with pytest.raises(typer.BadParameter, match=r"returned invalid JSON \(HTTP 201\).*check Wagtail") as exc:
+        _run(workspace)
+    assert "sentinel" not in str(exc.value)
+    expected_path = "/api/editor/media/audios/" if endpoint == "upload" else "/api/editor/episodes/"
+    assert fake.requests[-1].method == "POST"
+    assert fake.requests[-1].url.path == expected_path

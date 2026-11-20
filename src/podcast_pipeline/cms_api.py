@@ -38,6 +38,7 @@ from urllib.parse import urlsplit
 import httpx
 
 from podcast_pipeline.cms_draft import AudioFile, AudioUpload, validate_base_url
+from podcast_pipeline.control_json import load_control_json
 
 PARENTS_PATH = "api/editor/parents/"
 POST_LOOKUP_PATH = "api/editor/posts/"
@@ -332,6 +333,14 @@ def _checked(response: httpx.Response, method: str, path: str) -> Any:
         raise _error(response, method, path)
     if not response.content:
         return None
+    if method in {"POST", "PATCH"}:
+        try:
+            return load_control_json(response.content)
+        except ValueError:
+            raise CmsApiError(
+                f"{method} {path} returned invalid JSON (HTTP {response.status_code}); "
+                "check Wagtail for the remote outcome before retrying."
+            ) from None
     try:
         return response.json()
     except ValueError as exc:

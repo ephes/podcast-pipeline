@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Reject ambiguous or invalid JSON in successful CMS mutation receipts before any follow-up work.
+
 - Apply the pipeline's strict, bounded JSON decoder to the public candidate and review artifact parsers.
 - Resolve nested candidate references within the complete drafter response schema.
 - Bind prompt provenance references to the full exported receipt, including unused context.
