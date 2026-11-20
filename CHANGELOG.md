@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Fill remaining few-shot slots in corpus order without re-sorting scores.
+
 - Restore the caller's stderr after dashboard startup failures and shutdown, and keep old jobs'
   stderr out of progress capture after a restart.
 

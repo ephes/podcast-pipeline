@@ -187,15 +187,11 @@ def select_few_shot_records(
         return ()
 
     topic_tokens = _tokens_from_values(topics)
-    if not topic_tokens:
-        return tuple(_fill_remaining([], [(0, idx, record) for idx, record in enumerate(records)], limit))
-
-    scored = _score_records(records, topic_tokens)
-    selected = _select_scored(scored, limit)
+    selected = _select_scored(_score_records(records, topic_tokens), limit) if topic_tokens else []
     if len(selected) < limit:
-        selected = _fill_remaining(selected, scored, limit)
+        selected = _fill_remaining(selected, records, limit)
 
-    return tuple(selected[:limit])
+    return tuple(selected)
 
 
 def _score_records(
@@ -224,11 +220,11 @@ def _select_scored(scored: Sequence[ScoredRecord], limit: int) -> list[FewShotEx
 
 def _fill_remaining(
     selected: list[FewShotExampleRecord],
-    scored: Sequence[ScoredRecord],
+    records: Sequence[FewShotExampleRecord],
     limit: int,
 ) -> list[FewShotExampleRecord]:
     seen_ids = {record.example_id for record in selected}
-    for _, _, record in sorted(scored, key=lambda item: item[1]):
+    for record in records:
         if record.example_id in seen_ids:
             continue
         selected.append(record)
