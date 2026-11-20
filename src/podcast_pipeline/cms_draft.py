@@ -23,7 +23,7 @@ from podcast_pipeline.agent_cli_config import global_config_path
 from podcast_pipeline.domain.models import TextFormat
 from podcast_pipeline.markdown_html import markdown_to_deterministic_html
 from podcast_pipeline.pick_core import read_current_selection, validate_slug
-from podcast_pipeline.tag_parsing import parse_tag_list
+from podcast_pipeline.tag_parsing import itunes_keyword_delimiter_error, parse_tag_list
 from podcast_pipeline.workspace_store import EpisodeWorkspaceLayout, EpisodeWorkspaceStore
 
 
@@ -230,13 +230,18 @@ def build_cms_draft_plan(
     shownotes = selections["shownotes"]
     detail_html = config.detail_intro_html + (_to_html(*shownotes) if shownotes is not None else "")
 
+    keywords = parse_tag_list(selected_text.get("itunes_keywords"))
+    keyword_error = itunes_keyword_delimiter_error(keywords)
+    if keyword_error is not None:
+        raise CmsConfigError(keyword_error)
+
     episode_fields: dict[str, Any] = {
         "title": title,
         "slug": slug,
         "seo_title": _first_line(selected_text.get("title_seo")) or "",
         "search_description": _plain_text(selected_text.get("summary_short")),
         "tags": parse_tag_list(selected_text.get("cms_tags")),
-        "keywords": ",".join(parse_tag_list(selected_text.get("itunes_keywords"))),
+        "keywords": ",".join(keywords),
         "explicit": config.explicit,
     }
 

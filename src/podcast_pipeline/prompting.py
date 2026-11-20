@@ -3,8 +3,9 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from hashlib import sha256
+from types import MappingProxyType
 from typing import Any
 
 from podcast_pipeline.domain.models import Candidate, ProvenanceRef, ReviewIteration
@@ -73,17 +74,24 @@ class PromptTemplate:
 
 @dataclass(frozen=True)
 class PromptRenderResult:
-    prompt_id: str
     template: str
     text: str
-    context: dict[str, str]
+    context: Mapping[str, str]
     glossary: tuple[GlossaryEntry, ...]
     few_shots: tuple[FewShotExample, ...]
+    prompt_id: str = field(init=False)
 
-    def to_json_data(self) -> dict[str, Any]:
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "context", MappingProxyType(dict(self.context)))
+        canonical = json.dumps(self._receipt_fields(), sort_keys=True, separators=(",", ":"))
+        digest = sha256(canonical.encode()).hexdigest()
+        # Leave room for the digest, extension and atomic write's temporary suffix.
+        safe_template = _safe_ref_token(self.template)[:160]
+        object.__setattr__(self, "prompt_id", f"{safe_template}_{digest}")
+
+    def _receipt_fields(self) -> dict[str, Any]:
         return {
             "version": 1,
-            "prompt_id": self.prompt_id,
             "template": self.template,
             "context": dict(self.context),
             "glossary": [{"term": entry.term, "definition": entry.definition} for entry in self.glossary],
@@ -91,13 +99,20 @@ class PromptRenderResult:
             "prompt_text": self.text,
         }
 
+    def to_json_data(self) -> dict[str, Any]:
+        return {**self._receipt_fields(), "prompt_id": self.prompt_id}
+
     def provenance_ref(self) -> ProvenanceRef:
         return ProvenanceRef(kind="prompts", ref=self.prompt_id)
 
 
 class PromptRegistry:
     def __init__(self, templates: Sequence[PromptTemplate]) -> None:
-        self._templates = {template.name: template for template in templates}
+        self._templates: dict[str, PromptTemplate] = {}
+        for template in templates:
+            if template.name in self._templates:
+                raise ValueError(f"Duplicate prompt template name: {template.name!r}")
+            self._templates[template.name] = template
 
     def get(self, name: str) -> PromptTemplate:
         if name not in self._templates:
@@ -131,9 +146,7 @@ class PromptRenderer:
             sections.append(_render_few_shots(few_shot_entries))
 
         text = "\n\n".join(section for section in sections if section) + "\n"
-        prompt_id = _prompt_ref(template.name, text)
         return PromptRenderResult(
-            prompt_id=prompt_id,
             template=template.name,
             text=text,
             context=context_str,
@@ -385,12 +398,6 @@ def render_episode_context(
 
 
 _SAFE_REF_RE = re.compile(r"[^a-zA-Z0-9._-]+")
-
-
-def _prompt_ref(template: str, text: str) -> str:
-    digest = sha256(f"{template}\n{text}".encode()).hexdigest()
-    safe_template = _safe_ref_token(template)
-    return f"{safe_template}_{digest[:12]}"
 
 
 def _safe_ref_token(value: str) -> str:

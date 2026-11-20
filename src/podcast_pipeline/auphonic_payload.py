@@ -10,7 +10,7 @@ import yaml
 
 from podcast_pipeline.agent_cli_config import global_config_path
 from podcast_pipeline.domain.models import TextFormat
-from podcast_pipeline.tag_parsing import parse_tag_list
+from podcast_pipeline.tag_parsing import itunes_keyword_delimiter_error, parse_tag_list
 from podcast_pipeline.workspace_store import EpisodeWorkspaceLayout
 
 
@@ -189,9 +189,8 @@ def _resolve_metadata(
     if selected_tags:
         _set_default(metadata, "tags", selected_tags)
 
-    selected_keywords = parse_tag_list(selected.get("itunes_keywords"))
-    if selected_keywords:
-        _set_default(metadata, "itunes_keywords", ", ".join(selected_keywords))
+    if not _has_value(metadata.get("itunes_keywords")):
+        _set_default(metadata, "itunes_keywords", _selected_itunes_keywords(selected.get("itunes_keywords")))
 
     if not _has_value(metadata.get("title")):
         episode_id = episode_yaml.get("episode_id")
@@ -394,6 +393,14 @@ def _normalize_tags(value: object, *, source: str) -> list[str] | None:
             raise AuphonicConfigError(f"{source} must be a list of non-empty strings")
         return [item.strip() for item in value]
     raise AuphonicConfigError(f"{source} must be a string or list of strings")
+
+
+def _selected_itunes_keywords(text: str | None) -> str:
+    keywords = parse_tag_list(text)
+    error = itunes_keyword_delimiter_error(keywords)
+    if error is not None:
+        raise AuphonicConfigError(error)
+    return ", ".join(keywords)
 
 
 def _normalize_keywords(value: object, *, source: str) -> str | None:

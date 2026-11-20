@@ -410,6 +410,30 @@ def test_payload_parses_selected_itunes_keywords_from_markdown_list(
     assert payload["metadata"]["itunes_keywords"] == "python, llm, agentic coding, devops"
 
 
+def test_payload_rejects_comma_in_selected_itunes_keyword_but_keeps_array_tags(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _set_global_config(monkeypatch, tmp_path, {})
+    _write_selected_text(tmp_path, "cms_tags", "- left, right\n")
+    _write_selected_text(tmp_path, "itunes_keywords", "- left, right\n")
+    config = {"preset_id": "synthetic", "mode": "single_track", "input_files": ["sample.wav"]}
+
+    with pytest.raises(AuphonicConfigError, match="^Entries in itunes_keywords must not contain commas$"):
+        build_auphonic_payload(episode_yaml={"auphonic": config}, workspace=tmp_path)
+
+    payload = build_auphonic_payload(
+        episode_yaml={"auphonic": {**config, "itunes_keywords": "explicit, keywords"}}, workspace=tmp_path
+    )
+    assert payload["metadata"]["tags"] == ["left, right"]
+    assert payload["metadata"]["itunes_keywords"] == "explicit, keywords"
+
+    _write_selected_text(tmp_path, "itunes_keywords", "left, right\n")
+    _write_selected_text(tmp_path, "audio_tags", "- another, tag\n")
+    payload = build_auphonic_payload(episode_yaml={"auphonic": config}, workspace=tmp_path)
+    assert payload["metadata"]["tags"] == ["another, tag"]
+    assert payload["metadata"]["itunes_keywords"] == "left, right"
+
+
 def test_single_track_mode_rejects_multiple_input_files(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     _set_global_config(monkeypatch, tmp_path, {})
     workspace = tmp_path / "workspace"

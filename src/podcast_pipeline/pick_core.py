@@ -29,7 +29,7 @@ from podcast_pipeline.tag_assets import (
     render_selected_tags_markdown,
     tag_cap_error,
 )
-from podcast_pipeline.tag_parsing import normalize_tag_values, parse_tag_list
+from podcast_pipeline.tag_parsing import itunes_keyword_delimiter_error, normalize_tag_values, parse_tag_list
 from podcast_pipeline.workspace_store import EpisodeWorkspaceLayout, EpisodeWorkspaceStore
 
 MANUAL_SELECTION_PROVENANCE_KIND = "manual_selection"
@@ -215,19 +215,23 @@ def write_selected_tags(
 ) -> tuple[EpisodeWorkspace, str | None]:
     """Publish a curated tag selection to ``copy/selected/<asset_id>.md``.
 
-    Returns the (possibly updated) workspace state and an error message when a tag
-    contains a line break or the selection exceeds *max_tags*; nothing is written in
-    that case. The cap is checked on the published text as it will be read back, so no
-    entry can expand into several tags. A curated selection replaces any
-    whole-candidate selection.
+    Returns the (possibly updated) workspace state and a validation error, if any.
+    Valid selections round-trip through the tag parser and replace any whole-candidate
+    selection. Validation errors leave the previous selection intact.
     """
-    normalized = normalize_tag_values(tags)
-    if any("\n" in tag or "\r" in tag for tag in normalized):
+    if any(tag and tag.splitlines() != [tag] for tag in tags):
         return workspace_state, f"Tags for {asset_id} must not contain line breaks"
-    content = render_selected_tags_markdown(asset_id, normalized)
-    error = tag_cap_error(asset_id, max(len(normalized), len(parse_tag_list(content))), max_tags)
+    if asset_id == AssetKind.itunes_keywords.value:
+        error = itunes_keyword_delimiter_error(tags)
+        if error is not None:
+            return workspace_state, error
+    normalized = normalize_tag_values(tags)
+    error = tag_cap_error(asset_id, len(normalized), max_tags)
     if error is not None:
         return workspace_state, error
+    content = render_selected_tags_markdown(asset_id, normalized)
+    if parse_tag_list(content) != normalized:
+        return workspace_state, f"Tags for {asset_id} cannot be stored without changing the selection"
 
     def update(current: EpisodeWorkspace) -> EpisodeWorkspace:
         store.write_selected_text(asset_id, TextFormat.markdown, content)

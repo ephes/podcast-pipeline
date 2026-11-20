@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Bind prompt provenance references to the full exported receipt, including unused context.
+  Existing references still resolve to their original files.
+- Reject duplicate prompt template names when constructing the registry.
+- Reject all line boundaries in curated tags and preserve the previous selection when
+  the normalized tags cannot be read back exactly.
+- Refuse commas within individual iTunes keywords when picking or exporting an existing
+  selection to django-cast or Auphonic. CMS and audio tags can still contain commas.
+
 - Retire obsolete transcription mode caches after canonical output, YAML and provenance commit.
   Cleanup failures warn and preserve the successful transcription result.
 
