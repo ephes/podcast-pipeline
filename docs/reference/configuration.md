@@ -258,6 +258,15 @@ Editor API responses (including upload acknowledgements and errors) are limited 
 with a 60-second monotonic response-body budget (`DjangoCastClient.response_timeout_seconds`).
 Only identity Content-Encoding is accepted. The response cap is independent of uploaded
 media size. CMS error diagnostics retain at most 2,000 characters.
+Nonempty successful CMS mutation responses must pass strict UTF-8 JSON decoding before
+receipt fields are used. Duplicate object members at any depth and nonfinite numbers
+(including exponent overflow) fail with a fixed diagnostic. The decoder also caps nesting
+at 64 levels, tokens at 100,000 and numeric literals at 256 characters. Check the remote
+outcome in Wagtail before retrying a write whose response was refused.
+
+`DjangoCastClient` exposes synchronous methods. Async applications can call them with
+`await asyncio.to_thread(client.list_parents)`, for example. Calling a request method
+directly on a running event loop raises `CmsApiError` before starting transport work.
 
 Auphonic polling requires finite positive `poll_interval` and `timeout_seconds` values.
 One monotonic deadline covers fetches, sleeps and start/rerun grace periods. Fetch timeouts
@@ -327,6 +336,7 @@ returns 503 and permits immediate retry while preserving single-flight admission
 Each job retains the latest 128 KiB / 1024 progress entries; oversized writes retain a UTF-8 tail.
 JSON/SSE responses include an earlier-progress-truncated notice when history was evicted.
 SSE progress IDs increase monotonically and support `Last-Event-ID` reconnects across eviction.
+A cursor ahead of the job's newest event replays the retained history and resumes live progress.
 The dashboard retains at most 64 terminal jobs plus all running jobs; evicted job URLs return 404.
 Both local UIs admit an explicit Host port only as one to five ASCII decimal digits in 1..65535.
 Malformed ports return the existing 403 Forbidden host response before reading a body, including
@@ -335,6 +345,12 @@ Workspace reads/writes, job admission and context-lock acquisition run in Starle
 Snapshots are serialized or copied under that same lock; HTTP/SSE sends and waits happen after it is
 released. A slow workspace operation or a worker-held lock can delay dependent snapshots, while the
 event loop and Done/shutdown endpoint remain responsive. Initialization and ingest use this boundary too.
+
+`run_dashboard` restores the caller's stderr when serving exits or startup fails, provided
+the dashboard still owns the installed wrapper. Overlapping serves can share the wrapper
+until the final serve exits. The original stream stays open. A background job can outlive
+the serve. Once its wrapper is removed, later writes go to the current stderr, including
+when the dashboard has restarted.
 
 ### Concurrent selections and RSS imports
 

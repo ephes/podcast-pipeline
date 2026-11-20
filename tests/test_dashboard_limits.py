@@ -156,6 +156,39 @@ def test_sse_live_and_reconnect_after_eviction(
     assert "id: 3\n" not in response.text
 
 
+def test_sse_replays_and_follows_progress_when_reconnect_cursor_is_ahead(ctx: context.DashboardContext) -> None:
+    job = ctx.create_job("test")
+    capture = web._ProgressCapture(ctx, job)
+    capture.write("first")
+
+    async def receive() -> dict[str, Any]:
+        await asyncio.sleep(60)
+        return {"type": "http.disconnect"}
+
+    async def exercise() -> None:
+        request = Request(
+            {
+                "type": "http",
+                "headers": [(b"last-event-id", b"100")],
+                "path_params": {"job_id": job.job_id},
+            },
+            receive,
+        )
+        response = await web._DashboardApi(ctx=ctx, on_done=None).serve_job_stream(request)
+        assert isinstance(response, StreamingResponse)
+        iterator = response.body_iterator.__aiter__()
+        first = str(await asyncio.wait_for(anext(iterator), timeout=1))
+        assert 'id: 1\ndata: {"type": "progress", "message": "first"}' in first
+        capture.write("later")
+        with ctx.lock:
+            ctx.finish_job(job, "completed")
+        remaining = "".join([str(chunk) async for chunk in iterator])
+        assert 'id: 2\ndata: {"type": "progress", "message": "later"}' in remaining
+        assert '"type": "done"' in remaining
+
+    asyncio.run(exercise())
+
+
 @pytest.mark.parametrize("length", [None, "1"])
 def test_streamed_json_size_limit(ctx: context.DashboardContext, length: str | None) -> None:
     consumed: list[int] = []

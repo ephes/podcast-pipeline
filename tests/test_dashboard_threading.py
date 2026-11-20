@@ -3,8 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import io
+import socket
+import sys
 import threading
 import time
+from contextlib import nullcontext
 from pathlib import Path
 from typing import Any
 
@@ -14,6 +18,100 @@ import pytest
 from podcast_pipeline.dashboard_context import DashboardContext
 from podcast_pipeline.entrypoints import dashboard_web as web
 from tests.session_support import SESSION_HEADERS, SESSION_TOKEN
+
+
+@pytest.mark.parametrize("exit_at", ["bind", "serve", "normal", "replacement"])
+def test_dashboard_restores_owned_stderr_on_exit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, exit_at: str
+) -> None:
+    original, replacement = io.StringIO(), io.StringIO()
+    monkeypatch.setattr(sys, "stderr", original)
+    monkeypatch.setattr(web, "open_in_browser", lambda url: nullcontext())
+
+    if exit_at == "bind":
+
+        def fail_bind(sock: socket.socket, address: Any) -> None:
+            raise OSError("synthetic bind failure")
+
+        with monkeypatch.context() as bind_patch:
+            bind_patch.setattr(socket.socket, "bind", fail_bind)
+            with pytest.raises(OSError, match="synthetic bind failure"):
+                web.run_dashboard(workspace=tmp_path)
+    else:
+
+        def serve(*args: Any) -> None:
+            assert sys.stderr is not original
+            if exit_at == "replacement":
+                monkeypatch.setattr(sys, "stderr", replacement)
+            if exit_at == "serve":
+                raise RuntimeError("synthetic serve failure")
+
+        monkeypatch.setattr(web, "_run_uvicorn_server", serve)
+        if exit_at == "serve":
+            with pytest.raises(RuntimeError, match="synthetic serve failure"):
+                web.run_dashboard(workspace=tmp_path)
+        else:
+            web.run_dashboard(workspace=tmp_path)
+
+    assert sys.stderr is (replacement if exit_at == "replacement" else original)
+    assert not original.closed
+    original.close()
+
+    next_stderr = io.StringIO()
+    monkeypatch.setattr(sys, "stderr", next_stderr)
+    monkeypatch.setattr(web, "_run_uvicorn_server", lambda *args: print("unrelated", file=sys.stderr))
+    web.run_dashboard(workspace=tmp_path)
+    assert "\nunrelated\n" in next_stderr.getvalue()
+    assert sys.stderr is next_stderr
+
+
+def test_job_stderr_capture_ends_when_dashboard_exits(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from podcast_pipeline.entrypoints import transcribe
+
+    ctx = DashboardContext(workspace=tmp_path)
+    capturing, resume, finished = threading.Event(), threading.Event(), threading.Event()
+    original, next_stderr = io.StringIO(), io.StringIO()
+    monkeypatch.setattr(sys, "stderr", original)
+    monkeypatch.setattr(web, "open_in_browser", lambda url: nullcontext())
+
+    def transcribe_job(**kwargs: Any) -> None:
+        print("while serving", file=sys.stderr)
+        capturing.set()
+        assert resume.wait(5)
+        print("after restart", file=sys.stderr)
+
+    monkeypatch.setattr(transcribe, "run_transcribe", transcribe_job)
+    api = web._DashboardApi(ctx=ctx, on_done=None)
+
+    def run_job(ctx: DashboardContext, job: Any) -> None:
+        try:
+            web._run_transcribe_job(ctx, job, "draft")
+        finally:
+            finished.set()
+
+    def first_serve(*args: Any) -> None:
+        assert api._start_job("transcribe", run_job).status_code == 200
+        assert capturing.wait(5)
+
+    def second_serve(*args: Any) -> None:
+        resume.set()
+        assert finished.wait(5)
+
+    try:
+        monkeypatch.setattr(web, "_run_uvicorn_server", first_serve)
+        web.run_dashboard(workspace=tmp_path)
+        monkeypatch.setattr(sys, "stderr", next_stderr)
+        monkeypatch.setattr(web, "_run_uvicorn_server", second_serve)
+        web.run_dashboard(workspace=tmp_path)
+    finally:
+        resume.set()
+        if ctx.jobs:
+            assert finished.wait(5)
+
+    job = next(iter(ctx.jobs.values()))
+    assert list(job.progress) == ["while serving"]
+    assert "\nafter restart\n" in next_stderr.getvalue()
+    assert job.status == "completed"
 
 
 @pytest.mark.parametrize(
