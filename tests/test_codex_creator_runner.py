@@ -7,7 +7,7 @@ from uuid import UUID
 
 import pytest
 
-from podcast_pipeline import agent_runners
+from podcast_pipeline import agent_runners, workspace_store
 from podcast_pipeline.agent_cli_config import AgentCliConfig
 from podcast_pipeline.agent_runners import AgentRunnerError, CodexCliCreatorRunner
 from podcast_pipeline.workspace_store import EpisodeWorkspaceLayout
@@ -76,6 +76,21 @@ def test_codex_creator_runner_writes_creator_iteration_and_candidate(
     assert call["input"] == "Update description"
     assert call["timeout"] == 900.0
     assert call["cwd"] == str(tmp_path)
+
+    replace = workspace_store.os.replace
+
+    def fail_creator_replace(source: Path, target: Path) -> None:
+        if target == creator_path:
+            raise OSError("synthetic creator publication failure")
+        replace(source, target)
+
+    monkeypatch.setattr(workspace_store.os, "replace", fail_creator_replace)
+    output = output.replace('"done": false', '"done": true')
+    with pytest.raises(OSError, match="synthetic creator publication failure"):
+        runner.run_prompt(prompt_path=prompt_path, asset_id="description", iteration=2)
+
+    assert json.loads(creator_path.read_text(encoding="utf-8")) == saved_creator
+    assert list(creator_path.parent.iterdir()) == [creator_path]
 
 
 def test_codex_creator_runner_wraps_timeout(tmp_path: Path) -> None:

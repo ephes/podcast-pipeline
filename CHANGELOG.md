@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Publish creator iteration records atomically so a failed replacement preserves the previous record.
+
 - Report invalid CMS contributor roles as configuration errors before upload planning.
   An omitted role still defaults to `host`.
 
