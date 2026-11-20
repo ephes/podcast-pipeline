@@ -282,6 +282,15 @@ class DjangoCastClient:
         return _identity(_checked(response, method, path), method, path, revision=revision)
 
     def _send(self, method: str, path: str, **kwargs: Any) -> httpx.Response:
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            pass
+        else:
+            raise CmsApiError(
+                "DjangoCastClient cannot make synchronous requests from a running event loop. "
+                "Call the synchronous operation with asyncio.to_thread."
+            )
         return asyncio.run(self._send_async(method, path, **kwargs))
 
     async def _send_async(self, method: str, path: str, **kwargs: Any) -> httpx.Response:

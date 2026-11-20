@@ -264,6 +264,10 @@ receipt fields are used. Duplicate object members at any depth and nonfinite num
 at 64 levels, tokens at 100,000 and numeric literals at 256 characters. Check the remote
 outcome in Wagtail before retrying a write whose response was refused.
 
+`DjangoCastClient` exposes synchronous methods. Async applications can call them with
+`await asyncio.to_thread(client.list_parents)`, for example. Calling a request method
+directly on a running event loop raises `CmsApiError` before starting transport work.
+
 Auphonic polling requires finite positive `poll_interval` and `timeout_seconds` values.
 One monotonic deadline covers fetches, sleeps and start/rerun grace periods. Fetch timeouts
 and the final sleep are capped by the remaining budget; the configured per-request timeout is never increased; late terminal responses are rejected.

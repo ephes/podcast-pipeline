@@ -1,6 +1,9 @@
 """Synthetic CMS preview, privacy, path and publication-boundary regressions."""
 
+import asyncio
+import gc
 import json
+import warnings
 from pathlib import Path
 from typing import Any
 
@@ -233,6 +236,23 @@ def test_transport_error_omits_private_exception_text() -> None:
     with pytest.raises(CmsApiError, match="transport error") as exc:
         client.list_parents()
     assert "SIGNED_PRIVATE_SENTINEL" not in str(exc.value)
+
+
+def test_sync_cms_client_refuses_running_event_loop_without_coroutine_warning() -> None:
+    def unexpected_request(request: httpx.Request) -> httpx.Response:
+        pytest.fail(f"Unexpected {request.method} request")
+
+    client = DjangoCastClient(BASE, TOKEN, transport=httpx.MockTransport(unexpected_request))
+
+    async def embed() -> None:
+        with pytest.raises(CmsApiError, match=r"running event loop.*asyncio\.to_thread"):
+            client.list_parents()
+
+    with warnings.catch_warnings(record=True) as recorded:
+        warnings.simplefilter("always", RuntimeWarning)
+        asyncio.run(embed())
+        gc.collect()
+    assert not [warning for warning in recorded if issubclass(warning.category, RuntimeWarning)]
 
 
 @pytest.mark.parametrize("endpoint", ["upload", "create"])
