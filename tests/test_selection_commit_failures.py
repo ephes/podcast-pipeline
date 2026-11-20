@@ -195,7 +195,7 @@ def test_candidate_delete_retains_backup_and_reports_incomplete_compensation(
     monkeypatch.setattr(module.os, "replace", fail_publication_and_one_restore)
     with pytest.raises(WorkspaceStoreError, match="Artifact recovery failed") as error:
         ctx.delete_candidate("description", str(candidate.candidate_id))
-    (backup,) = list(path.parent.glob(f".{path.name}.backup-*"))
+    (backup,) = list(path.parent.glob(".backup-*"))
     assert str(backup) in str(error.value)
     assert backup.read_bytes() == original
     assert store.read_state().assets[0].selected_candidate_id == candidate.candidate_id

@@ -214,7 +214,7 @@ def test_artifact_rollback_keeps_modes_and_failed_recovery_backups(
                 raise ValueError("synthetic publication error")
     assert injected
     assert paths[0].read_text() == paths[2].read_text() == "old"
-    backups = list(tmp_path.glob(".second.backup-*"))
+    backups = list(tmp_path.glob(".backup-*"))
     assert len(backups) == 1 and backups[0].read_text() == "old"
 
 
@@ -226,7 +226,7 @@ def test_unexpected_recovery_errors_keep_unconsumed_backups(
 
     paths = [tmp_path / name for name in ["first", "second"]]
     for path in paths:
-        path.write_text("old")
+        path.write_text(path.name)
 
     def fail(source: Path, target: Path) -> None:
         if interrupt:
@@ -240,6 +240,5 @@ def test_unexpected_recovery_errors_keep_unconsumed_backups(
                 for path in paths:
                     path.write_text("new")
                 raise KeyboardInterrupt("synthetic interrupt")
-    for path in paths:
-        backups = list(tmp_path.glob(f".{path.name}.backup-*"))
-        assert len(backups) == 1 and backups[0].read_text() == "old"
+    backups = list(tmp_path.glob(".backup-*"))
+    assert sorted(backup.read_text() for backup in backups) == ["first", "second"]

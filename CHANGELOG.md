@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Support maximum-length workspace filenames during atomic writes and rollback.
+
 - Publish creator iteration records atomically so a failed replacement preserves the previous record.
 
 - Report invalid CMS contributor roles as configuration errors before upload planning.
