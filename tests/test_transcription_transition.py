@@ -124,11 +124,11 @@ def test_transcription_rollback_keeps_backup_when_parent_sync_fails(
     with pytest.raises(WorkspaceStoreError, match="synthetic rollback sync failure") as error:
         _run(store)
 
-    (backup,) = transcript.parent.glob(".transcript.txt.backup-*")
+    (backup,) = (path for path in transcript.parent.glob(".backup-*") if path.read_bytes() == previous)
     assert str(backup) in str(error.value)
     assert backup.read_bytes() == transcript.read_bytes() == mode_transcript.read_bytes() == previous
-    assert not list(mode_transcript.parent.glob("*.backup-*"))
-    assert not list(tmp_path.rglob("*.restore-*"))
+    assert not list(mode_transcript.parent.glob(".backup-*"))
+    assert not list(tmp_path.rglob(".restore-*"))
 
 
 def test_transcribe_cli_reports_trigger_and_all_retained_backups_when_nested_rollback_fails(
@@ -160,10 +160,9 @@ def test_transcribe_cli_reports_trigger_and_all_retained_backups_when_nested_rol
 
     assert result.exit_code == 1
     assert "synthetic provenance failure" in result.output
-    (canonical_backup,) = transcript_dir.glob(".transcript.txt.backup-*")
-    (mode_backup,) = mode_dir.glob(".transcript.txt.backup-*")
-    assert str(canonical_backup) in result.output
-    assert str(mode_backup) in result.output
+    backups = list(transcript_dir.rglob(".backup-*"))
+    assert {path.parent for path in backups} == {transcript_dir, mode_dir}
+    assert all(str(path) in result.output for path in backups)
 
 
 def test_unchaptered_transcription_retires_only_current_mode_chapters(

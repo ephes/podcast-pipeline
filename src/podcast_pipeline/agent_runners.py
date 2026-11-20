@@ -31,7 +31,7 @@ from podcast_pipeline.prompting import (
     render_reviewer_prompt,
 )
 from podcast_pipeline.review_loop_engine import CreatorInput, CreatorOutput, ReviewerInput
-from podcast_pipeline.workspace_store import EpisodeWorkspaceLayout, EpisodeWorkspaceStore
+from podcast_pipeline.workspace_store import EpisodeWorkspaceLayout, EpisodeWorkspaceStore, atomic_write_text
 
 _FAKE_UUID_NAMESPACE = UUID("00000000-0000-0000-0000-000000000000")
 _DEFAULT_CREATED_AT = "2000-01-01T00:00:00+00:00"
@@ -489,8 +489,7 @@ def _write_creator_iteration(
         "done": done,
         "candidate_id": str(candidate.candidate_id),
     }
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    atomic_write_text(path, json.dumps(payload, indent=2, sort_keys=True) + "\n")
     return path
 
 

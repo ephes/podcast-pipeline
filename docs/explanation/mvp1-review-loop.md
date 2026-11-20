@@ -49,6 +49,8 @@ Two sticky behaviors prevent regressions once a decision is made:
 
 The MVP-1 loop produces protocol artifacts that can be inspected or surfaced by status tooling:
 
+- `copy/protocol/<asset_id>/iteration_XX.creator.json`: creator CLI result marker, published by atomic
+  replacement after the candidate. If replacement fails, the previous marker stays readable.
 - `copy/protocol/<asset_id>/iteration_XX.json`: per-iteration envelope with creator `done`, the candidate, and the
   reviewer payload.
 - `copy/protocol/<asset_id>/state.json`: protocol state snapshot with decision and all iterations; used by

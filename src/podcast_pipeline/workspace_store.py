@@ -82,7 +82,7 @@ def _atomic_write_bytes(path: Path, data: bytes) -> None:
             mode="wb",
             delete=False,
             dir=str(path.parent),
-            prefix=f".{path.name}.",
+            prefix=".write-",
             suffix=".tmp",
         ) as tmp:
             tmp_path = Path(tmp.name)
@@ -136,7 +136,7 @@ def _restore_preserved_files(backups: dict[Path, Path | None], retained: set[Pat
                 path.unlink(missing_ok=True)
             else:
                 with saved.open("rb") as source:
-                    staged = _stage_file_copy(source, directory=path.parent, prefix=f".{path.name}.restore-")
+                    staged = _stage_file_copy(source, directory=path.parent, prefix=".restore-")
                 os.replace(staged, path)
             _fsync_dir(path.parent, required=True)
             if saved is not None:
@@ -169,7 +169,7 @@ def preserve_files(paths: list[Path]) -> Iterator[None]:
                 backups[path] = None
             else:
                 with source:
-                    backups[path] = _stage_file_copy(source, directory=path.parent, prefix=f".{path.name}.backup-")
+                    backups[path] = _stage_file_copy(source, directory=path.parent, prefix=".backup-")
         for directory in {path.parent for path, saved in backups.items() if saved is not None}:
             _fsync_dir(directory, required=True)
         try:

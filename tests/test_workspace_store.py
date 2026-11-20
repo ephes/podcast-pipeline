@@ -182,7 +182,7 @@ def test_candidate_failure_restores_complete_set(
     with pytest.raises((OSError, ValueError), match="synthetic"):
         store.write_candidate(candidate.model_copy(update={"content": "# After"}))
     assert {path: path.read_bytes() if path.exists() else None for path in paths} == before
-    assert not list(tmp_path.rglob("*.backup-*"))
+    assert not list(tmp_path.rglob(".backup-*"))
 
 
 def test_candidate_json_is_published_last(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -259,3 +259,23 @@ def test_read_artifacts_accept_matching_legacy_optional_metadata(tmp_path: Path)
     path.parent.mkdir(parents=True)
     path.write_text('{"iteration":1,"verdict":"ok"}')
     assert store.read_review("description", 1).reviewer is None
+
+
+def test_workspace_replacement_and_rollback_support_maximum_basename(tmp_path: Path) -> None:
+    path = tmp_path / ("x" * workspace_store.os.pathconf(tmp_path, "PC_NAME_MAX"))
+    path.write_text("original")
+    path.chmod(0o640)
+
+    workspace_store.atomic_write_text(path, "published")
+    assert path.read_text() == "published"
+    assert path.stat().st_mode & 0o777 == 0o640
+
+    with pytest.raises(ValueError, match="synthetic publication failure"):
+        with workspace_store.preserve_files([path]):
+            workspace_store.atomic_write_text(path, "uncommitted")
+            path.chmod(0o600)
+            raise ValueError("synthetic publication failure")
+
+    assert path.read_text() == "published"
+    assert path.stat().st_mode & 0o777 == 0o640
+    assert list(tmp_path.iterdir()) == [path]
