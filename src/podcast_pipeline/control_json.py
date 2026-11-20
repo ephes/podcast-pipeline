@@ -57,9 +57,13 @@ def _finite_float(value: str) -> float:
     return number
 
 
-def load_control_json(raw: str) -> Any:
+def load_control_json(raw: str | bytes | bytearray) -> Any:
     """Raise a content-free ValueError for invalid or excessive control JSON."""
     try:
+        if not isinstance(raw, str):
+            if len(raw) > MAX_JSON_BYTES:
+                raise ValueError("JSON byte limit")
+            raw = raw.decode("utf-8")
         _admit_structure(raw)
         value = json.loads(
             raw,

@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Apply the pipeline's strict, bounded JSON decoder to the public candidate and review artifact parsers.
 - Bind prompt provenance references to the full exported receipt, including unused context.
   Existing references still resolve to their original files.
 - Reject duplicate prompt template names when constructing the registry.

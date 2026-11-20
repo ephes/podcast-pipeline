@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
+from podcast_pipeline.control_json import load_control_json
 from podcast_pipeline.domain.intermediate_formats import ChunkSummary, EpisodeSummary
 from podcast_pipeline.domain.models import Candidate, ReviewIteration
 
@@ -26,11 +27,11 @@ def validate_review_iteration_payload(payload: Mapping[str, Any]) -> ReviewItera
 
 
 def parse_candidate_json(raw: str | bytes | bytearray) -> Candidate:
-    return Candidate.model_validate_json(raw)
+    return validate_candidate_payload(load_control_json(raw))
 
 
 def parse_review_iteration_json(raw: str | bytes | bytearray) -> ReviewIteration:
-    return ReviewIteration.model_validate_json(raw)
+    return validate_review_iteration_payload(load_control_json(raw))
 
 
 def chunk_summary_json_schema() -> dict[str, Any]:

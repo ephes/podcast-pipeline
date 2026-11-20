@@ -9,6 +9,11 @@ This reference describes the JSON payloads written by the creator and reviewer s
 - Reviewer iteration files: `copy/reviews/<asset_id>/iteration_XX.<reviewer>.json` (or `iteration_XX.json` if the
   reviewer name is omitted).
 
+`parse_candidate_json` and `parse_review_iteration_json` accept JSON text, UTF-8 bytes, or a UTF-8
+bytearray. They apply the pipeline's control JSON limits (8 MiB, 64 levels, 100,000 tokens and
+256 characters per numeric token) before model validation. Invalid UTF-8, malformed JSON, duplicate
+object members at any depth and nonfinite numbers raise a content-free `ValueError`.
+
 ## Creator candidate (Candidate)
 
 Required fields:
