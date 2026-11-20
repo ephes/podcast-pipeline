@@ -346,6 +346,12 @@ Snapshots are serialized or copied under that same lock; HTTP/SSE sends and wait
 released. A slow workspace operation or a worker-held lock can delay dependent snapshots, while the
 event loop and Done/shutdown endpoint remain responsive. Initialization and ingest use this boundary too.
 
+`run_dashboard` restores the caller's stderr when serving exits or startup fails, provided
+the dashboard still owns the installed wrapper. Overlapping serves can share the wrapper
+until the final serve exits. The original stream stays open. A background job can outlive
+the serve. Once its wrapper is removed, later writes go to the current stderr, including
+when the dashboard has restarted.
+
 ### Concurrent selections and RSS imports
 
 Candidate, custom-text and curated-tag selections, dashboard deletion and review completion reload state

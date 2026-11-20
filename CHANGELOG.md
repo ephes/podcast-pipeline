@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Restore the caller's stderr after dashboard startup failures and shutdown, and keep old jobs'
+  stderr out of progress capture after a restart.
+
 - Replay retained dashboard progress when an SSE reconnect cursor is ahead of the current job.
 
 - Report a CMS client error with worker-thread guidance when called from a running asyncio event loop.

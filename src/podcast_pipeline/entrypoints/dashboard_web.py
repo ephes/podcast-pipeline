@@ -7,7 +7,8 @@ import math
 import socket
 import sys
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, TypeVar
 
@@ -221,8 +222,18 @@ class _DashboardApi:
                     status_code=409,
                 )
             job = self.ctx.create_job(stage)
+            stderr = sys.stderr
+            capture_owner = stderr.capture_owner if isinstance(stderr, _StderrMultiplexer) else None
+
+            def run_job(ctx: DashboardContext, job: BackgroundJob, *args: Any) -> None:
+                _thread_local.capture_owner = capture_owner
+                try:
+                    target(ctx, job, *args)
+                finally:
+                    del _thread_local.capture_owner
+
             try:
-                _start_daemon_thread(target, self.ctx, job, *args)
+                _start_daemon_thread(run_job, self.ctx, job, *args)
             except Exception:
                 job.error = "Could not start background worker"
                 self.ctx.finish_job(job, "failed")
@@ -692,9 +703,7 @@ def run_dashboard(*, workspace: Path) -> None:
         raise SystemExit(1)
 
     ctx = DashboardContext(workspace=workspace)
-    _install_stderr_multiplexer()
-
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+    with _serve_stderr(), socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         sock.bind(("127.0.0.1", 0))
         sock.listen(128)
         host = str(sock.getsockname()[0])
@@ -737,25 +746,26 @@ def run_dashboard(*, workspace: Path) -> None:
 # --- Background job runners ---
 
 _thread_local = threading.local()
+_stderr_lock = threading.Lock()
 
 
 class _StderrMultiplexer(io.TextIOBase):
     """Thread-aware stderr wrapper that routes writes to per-job captures.
 
-    Installed once on sys.stderr.  When a background job thread sets
-    ``_thread_local.capture``, writes from that thread go to the capture
-    instead of the real stderr.  All other threads (including the main
-    thread) see the original stderr unchanged.
+    Job captures are tied to the installation that admitted the job.
+    Other writes go to the original stderr.
     """
 
     def __init__(self, real_stderr: Any) -> None:
         self._real = real_stderr
+        self.capture_owner = object()
+        self.serve_count = 0
 
     # TextIOBase API
     def write(self, s: Any) -> int:
         text = _to_text(s)
         target = getattr(_thread_local, "capture", None)
-        if target is not None:
+        if target is not None and getattr(_thread_local, "capture_owner", None) is self.capture_owner:
             return int(target.write(text))
         return int(self._real.write(text))
 
@@ -769,10 +779,22 @@ class _StderrMultiplexer(io.TextIOBase):
         return bool(self._real.isatty())
 
 
-def _install_stderr_multiplexer() -> None:
-    """Install the multiplexer exactly once (idempotent)."""
-    if not isinstance(sys.stderr, _StderrMultiplexer):
-        sys.stderr = _StderrMultiplexer(sys.stderr)
+@contextmanager
+def _serve_stderr() -> Iterator[None]:
+    """Share an installation across overlapping serves and restore it on final exit."""
+    with _stderr_lock:
+        wrapper = sys.stderr
+        if not isinstance(wrapper, _StderrMultiplexer):
+            wrapper = _StderrMultiplexer(wrapper)
+            sys.stderr = wrapper
+        wrapper.serve_count += 1
+    try:
+        yield
+    finally:
+        with _stderr_lock:
+            wrapper.serve_count -= 1
+            if wrapper.serve_count == 0 and sys.stderr is wrapper:
+                sys.stderr = wrapper._real
 
 
 class _ProgressCapture(io.StringIO):
