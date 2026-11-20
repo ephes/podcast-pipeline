@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Replay retained dashboard progress when an SSE reconnect cursor is ahead of the current job.
+
 - Report a CMS client error with worker-thread guidance when called from a running asyncio event loop.
 
 - Reject ambiguous or invalid JSON in successful CMS mutation receipts before any follow-up work.

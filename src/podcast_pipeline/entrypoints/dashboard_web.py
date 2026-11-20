@@ -559,15 +559,17 @@ class _DashboardApi:
 
     def _progress_snapshot(
         self, job: BackgroundJob, last_idx: int
-    ) -> tuple[int, list[tuple[int, str]], str, str | None]:
+    ) -> tuple[int, int, list[tuple[int, str]], str, str | None]:
         with self.ctx.lock:
             first_idx = job.progress_start
+            if last_idx > first_idx + len(job.progress):
+                last_idx = 0
             progress = [
                 (first_idx + index + 1, _to_text(line))
                 for index, line in enumerate(job.progress)
                 if first_idx + index + 1 > last_idx
             ]
-            return first_idx, progress, job.status, job.error
+            return last_idx, first_idx, progress, job.status, job.error
 
     async def serve_job_stream(self, request: Request) -> Response:
         job_id = request.path_params["job_id"]
@@ -584,7 +586,7 @@ class _DashboardApi:
                 if await request.is_disconnected():
                     break
 
-                first_idx, current_progress, status, error = await run_in_threadpool(
+                last_idx, first_idx, current_progress, status, error = await run_in_threadpool(
                     self._progress_snapshot, job, last_idx
                 )
 
