@@ -54,7 +54,8 @@ def asset_candidates_response_json_schema(
     When *num_candidates* is given, ``minItems`` and ``maxItems`` are set
     so the schema encodes the exact count constraint.
     """
-    candidate_schema = Candidate.model_json_schema()
+    candidate_schema = candidate_json_schema()
+    definitions = candidate_schema.pop("$defs", None)
     candidates_prop: dict[str, Any] = {
         "type": "array",
         "items": candidate_schema,
@@ -64,7 +65,7 @@ def asset_candidates_response_json_schema(
             raise ValueError(f"num_candidates must be >= 1, got {num_candidates}")
         candidates_prop["minItems"] = num_candidates
         candidates_prop["maxItems"] = num_candidates
-    return {
+    schema: dict[str, Any] = {
         "type": "object",
         "properties": {
             "candidates": candidates_prop,
@@ -72,3 +73,7 @@ def asset_candidates_response_json_schema(
         "required": ["candidates"],
         "additionalProperties": False,
     }
+    if definitions is not None:
+        # Candidate references are relative to the full response document.
+        schema["$defs"] = definitions
+    return schema

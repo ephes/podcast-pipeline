@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from typing import Any
 
 import pytest
@@ -148,6 +148,31 @@ def test_asset_candidates_response_schema_with_count() -> None:
     assert candidates_prop["type"] == "array"
     assert candidates_prop["minItems"] == 5
     assert candidates_prop["maxItems"] == 5
+
+
+def _schema_references(node: Any) -> Iterator[str]:
+    if isinstance(node, dict):
+        if "$ref" in node:
+            yield node["$ref"]
+        for value in node.values():
+            yield from _schema_references(value)
+    elif isinstance(node, list):
+        for value in node:
+            yield from _schema_references(value)
+
+
+def test_asset_candidates_response_schema_resolves_references_at_the_root() -> None:
+    schema = asset_candidates_response_json_schema(num_candidates=1)
+    references = set(_schema_references(schema))
+    assert references
+    for ref in sorted(references):
+        assert ref.startswith("#/")
+        target = schema
+        for token in ref[2:].split("/"):
+            key = token.replace("~1", "/").replace("~0", "~")
+            assert key in target, f"Could not resolve {ref} from the response schema root"
+            target = target[key]
+        assert isinstance(target, dict)
 
 
 @pytest.mark.parametrize("bad_value", [0, -1, -10])

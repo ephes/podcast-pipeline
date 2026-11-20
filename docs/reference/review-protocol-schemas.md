@@ -63,6 +63,10 @@ Drafting and dashboard regeneration allocate fresh candidate UUIDs in the applic
 `candidate_id` returned by the drafter. Regeneration appends distinct alternatives and preserves existing
 candidates, selections and reviews. The complete candidate response is validated before it is written.
 
+`asset_candidates_response_json_schema` describes the object containing the `candidates` array.
+References inside each candidate resolve against `$defs` at the root of that response schema.
+The response object forbids extra fields and `num_candidates`, when supplied, fixes the array length.
+
 ## Completed-round checkpoints
 
 `copy/protocol/<asset_id>/state.json` (version 1) records `asset_id`, `max_iterations`,
