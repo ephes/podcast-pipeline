@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Reject incomplete or conflicting few-shot text pairs with a JSONL line number.
+  Legacy `user`/`assistant` pairs and identical dual pairs remain supported.
+
 - Fill remaining few-shot slots in corpus order without re-sorting scores.
 
 - Restore the caller's stderr after dashboard startup failures and shutdown, and keep old jobs'

@@ -88,5 +88,8 @@ reading. All file admission finishes before JSON construction; failures leave th
 Each nonblank line must be one object. Duplicate members at every level, NaN/Infinity, overflowing
 floats, integers over 4,300 encoded characters, and nesting beyond 64 containers are refused.
 Decoder recursion/numeric and record-shape failures become `TagConfigError` with a bounded line
-number/category diagnostic, never example text. Legacy `user`/`assistant` records still work.
+number/category diagnostic. Each record must have a complete pair of strings, either `input`/`output`
+or the legacy `user`/`assistant`. When any field from both pairs is present, both pairs must be
+complete and the corresponding strings must match exactly, including whitespace. Incomplete or
+conflicting pairs are reported by line number and field names. Diagnostics omit example text.
 Split oversized corpora explicitly; selection does not silently truncate a refused corpus.
