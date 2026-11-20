@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
+from podcast_pipeline.control_json import load_control_json
 from podcast_pipeline.domain.intermediate_formats import ChunkSummary, EpisodeSummary
 from podcast_pipeline.domain.models import Candidate, ReviewIteration
 
@@ -26,11 +27,11 @@ def validate_review_iteration_payload(payload: Mapping[str, Any]) -> ReviewItera
 
 
 def parse_candidate_json(raw: str | bytes | bytearray) -> Candidate:
-    return Candidate.model_validate_json(raw)
+    return validate_candidate_payload(load_control_json(raw))
 
 
 def parse_review_iteration_json(raw: str | bytes | bytearray) -> ReviewIteration:
-    return ReviewIteration.model_validate_json(raw)
+    return validate_review_iteration_payload(load_control_json(raw))
 
 
 def chunk_summary_json_schema() -> dict[str, Any]:
@@ -53,7 +54,8 @@ def asset_candidates_response_json_schema(
     When *num_candidates* is given, ``minItems`` and ``maxItems`` are set
     so the schema encodes the exact count constraint.
     """
-    candidate_schema = Candidate.model_json_schema()
+    candidate_schema = candidate_json_schema()
+    definitions = candidate_schema.pop("$defs", None)
     candidates_prop: dict[str, Any] = {
         "type": "array",
         "items": candidate_schema,
@@ -63,7 +65,7 @@ def asset_candidates_response_json_schema(
             raise ValueError(f"num_candidates must be >= 1, got {num_candidates}")
         candidates_prop["minItems"] = num_candidates
         candidates_prop["maxItems"] = num_candidates
-    return {
+    schema: dict[str, Any] = {
         "type": "object",
         "properties": {
             "candidates": candidates_prop,
@@ -71,3 +73,7 @@ def asset_candidates_response_json_schema(
         "required": ["candidates"],
         "additionalProperties": False,
     }
+    if definitions is not None:
+        # Candidate references are relative to the full response document.
+        schema["$defs"] = definitions
+    return schema
