@@ -895,6 +895,48 @@ def test_cli_cms_draft_dry_run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
     assert json.loads(result.output)["lookup"]["params"] == {"parent": PODCAST_ID, "slug": "python-315"}
 
 
+@pytest.mark.parametrize("role", [["host"], {"name": "host"}, None], ids=["list", "mapping", "null"])
+def test_cli_cms_draft_dry_run_rejects_non_string_contributor_role(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], role: object
+) -> None:
+    workspace = _workspace(tmp_path)
+    _config(tmp_path, monkeypatch, contributors={})
+    _set_episode_yaml(
+        workspace, hosts=["Speaker"], cms={"contributors": {"Speaker": {"slug": "speaker", "role": role}}}
+    )
+
+    with pytest.raises(
+        typer.BadParameter, match=r"^cms\.contributors\.Speaker\.role in episode\.yaml must be host or guest$"
+    ):
+        cms_entry.run_cms_draft(workspace=workspace, dry_run=True)
+    assert capsys.readouterr().out == ""
+
+
+def test_cli_cms_draft_dry_run_accepts_named_and_omitted_contributor_roles(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workspace = _workspace(tmp_path)
+    _config(
+        tmp_path,
+        monkeypatch,
+        contributors={
+            "Default Host": {"slug": "default-host"},
+            "Named Host": {"slug": "named-host", "role": "host"},
+            "Guest": {"slug": "guest", "role": "guest"},
+        },
+    )
+    _set_episode_yaml(workspace, hosts=["Default Host", "Named Host", "Guest"])
+
+    result = CliRunner().invoke(app, ["cms-draft", "--workspace", str(workspace), "--dry-run"])
+
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.stdout)["contributors"] == [
+        {"slug": "default-host", "role": "host"},
+        {"slug": "named-host", "role": "host"},
+        {"slug": "guest", "role": "guest"},
+    ]
+
+
 def _all_endpoints(fake: FakeCast) -> None:
     fake.accept_enabled_diarization = True
     fake.supports_contributors = True

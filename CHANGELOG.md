@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Report invalid CMS contributor roles as configuration errors before upload planning.
+  An omitted role still defaults to `host`.
+
 - Reject incomplete or conflicting few-shot text pairs with a JSONL line number.
   Legacy `user`/`assistant` pairs and identical dual pairs remain supported.
 

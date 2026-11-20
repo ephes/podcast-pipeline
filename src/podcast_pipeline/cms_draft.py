@@ -651,9 +651,9 @@ def _contributors(value: object, *, source: str) -> dict[str, ContributorRef]:
             role = entry.get("role", "host")
         if not isinstance(slug, str) or not slug.strip():
             raise CmsConfigError(message)
-        if role not in CONTRIBUTOR_ROLES:
+        if not isinstance(role, str) or role not in CONTRIBUTOR_ROLES:
             raise CmsConfigError(f"cms.contributors.{name}.role in {source} must be host or guest")
-        refs[name.strip()] = ContributorRef(slug=slug.strip(), role=str(role))
+        refs[name.strip()] = ContributorRef(slug=slug.strip(), role=role)
     return refs
 
 

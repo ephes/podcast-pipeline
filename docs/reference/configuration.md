@@ -228,6 +228,10 @@ cms:
 | `transcript_diarization` | global or episode | Diarization mode of the uploaded Audio. `enabled` (default) gives speaker labels regardless of the site's Voxhelm settings; `inherit` follows them. The transcript is only started automatically when the Audio reports `enabled`. |
 | `audio_file` | episode only | File to upload as the Audio (relative to the workspace or absolute; `.mp3`, `.m4a`, `.ogg`/`.oga` or `.opus`). Default: `auphonic/outputs/<output_basename>.mp3`, else the only MP3 there. Files with the same name and another of these extensions are the further formats. |
 
+For a contributor mapping, omitting `role` defaults to `host`. When specified, the role must be the
+string `host` or `guest`. Invalid values such as lists, mappings and explicit `null` raise a configuration
+error before upload planning, including in a dry run.
+
 `cms/draft.json` in the workspace stores `base_url`, `parent_id`, `episode_id`, `audio_id`, `audio_edit_url`, `audio_attached`
 (false between an upload and the episode request that attaches it) and `transcript_pending` (an uploaded Audio whose
 transcript was neither started nor listed as a manual step yet) after each step; ids stored for another `base_url`
