@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Bound review candidate evidence reads to regular UTF-8 JSON files and per-file and per-asset byte limits.
+
 - Refuse saved review candidates whose filenames disagree with their UUIDs before replay.
 
 - Support maximum-length workspace filenames during atomic writes and rollback.

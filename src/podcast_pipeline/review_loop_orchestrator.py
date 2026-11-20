@@ -1,12 +1,13 @@
 from __future__ import annotations
 
-import json
+import os
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 from uuid import UUID
 
+from podcast_pipeline.control_json import MAX_JSON_BYTES
 from podcast_pipeline.domain.models import (
     Asset,
     AssetKind,
@@ -18,7 +19,9 @@ from podcast_pipeline.domain.models import (
     ReviewVerdict,
     TextFormat,
 )
+from podcast_pipeline.file_inputs import read_workspace_utf8
 from podcast_pipeline.pick_core import build_asset, clear_manual_selection_provenance
+from podcast_pipeline.protocol_schemas import parse_candidate_json
 from podcast_pipeline.review_loop_engine import (
     CreatorInput,
     CreatorOutput,
@@ -32,6 +35,9 @@ from podcast_pipeline.review_loop_engine import (
     run_review_loop_engine,
 )
 from podcast_pipeline.workspace_store import EpisodeWorkspaceLayout, EpisodeWorkspaceStore, atomic_write_text
+
+MAX_CANDIDATE_EVIDENCE_FILE_BYTES = MAX_JSON_BYTES
+MAX_CANDIDATE_EVIDENCE_TOTAL_BYTES = 64 * 1024 * 1024
 
 
 class ReviewSelectionConflict(ValueError):
@@ -159,7 +165,7 @@ def run_review_loop_orchestrator(
 
     try:
         saved_candidates = _load_seed_candidates(layout, asset_id)
-    except (OSError, ValueError) as exc:  # JSON, pydantic validation and asset mismatches
+    except (OSError, ValueError) as exc:
         # Content-free diagnostic; the cause stays chained for debugging.
         raise LoopProtocolError(
             f"Invalid saved review candidate evidence; repair or archive copy/candidates/{asset_id}/."
@@ -224,18 +230,28 @@ def run_review_loop_orchestrator(
 
 def _load_seed_candidates(layout: EpisodeWorkspaceLayout, asset_id: str) -> list[Candidate]:
     candidates_dir = layout.copy_candidates_dir / asset_id
-    if not candidates_dir.exists():
+    try:
+        entries = os.scandir(candidates_dir)
+    except FileNotFoundError:
         return []
 
+    remaining = MAX_CANDIDATE_EVIDENCE_TOTAL_BYTES
     candidates: list[Candidate] = []
-    for path in sorted(candidates_dir.glob("candidate_*.json")):
-        raw = json.loads(path.read_text(encoding="utf-8"))
-        candidate = Candidate.model_validate(raw)
-        if candidate.asset_id != asset_id:
-            raise ValueError(f"candidate asset_id mismatch: {path}")
-        if path != layout.candidate_json_path(asset_id, candidate.candidate_id):
-            raise ValueError(f"candidate filename does not match its UUID: {path}")
-        candidates.append(candidate)
+    with entries:
+        for entry in entries:
+            if not (entry.name.startswith("candidate_") and entry.name.endswith(".json")):
+                continue
+            path = candidates_dir / entry.name
+            raw = read_workspace_utf8(
+                layout.root, path.relative_to(layout.root), max_bytes=min(MAX_CANDIDATE_EVIDENCE_FILE_BYTES, remaining)
+            )
+            remaining -= len(raw.encode("utf-8"))
+            candidate = parse_candidate_json(raw)
+            if candidate.asset_id != asset_id:
+                raise ValueError(f"candidate asset_id mismatch: {path}")
+            if path != layout.candidate_json_path(asset_id, candidate.candidate_id):
+                raise ValueError(f"candidate filename does not match its UUID: {path}")
+            candidates.append(candidate)
     return candidates
 
 
