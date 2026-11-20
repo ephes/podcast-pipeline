@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import pytest
+
+from podcast_pipeline import few_shot_selector as selector
 from podcast_pipeline.few_shot_selector import select_few_shot_examples
 
 
@@ -52,6 +55,32 @@ def test_empty_topics_fill_limit_with_unique_ids() -> None:
         ]
         selected = select_few_shot_examples(examples=examples, topics=topics, limit=3)
         assert [example.input_text for example in selected] == ["first", "generated", "last"]
+
+
+@pytest.mark.parametrize("topics", [[], ["python"], ["unmatched"]])
+def test_fallback_matches_reference_without_resorting(topics: list[str], monkeypatch: pytest.MonkeyPatch) -> None:
+    records = [
+        selector.FewShotExampleRecord("duplicate", "early duplicate", "text"),
+        selector.FewShotExampleRecord("fallback", "first fallback", "text"),
+        selector.FewShotExampleRecord("duplicate", "python", "text"),
+        selector.FewShotExampleRecord("tie", "python topic", "text"),
+        selector.FewShotExampleRecord("tagged", "tag match", "text", tags=("python",)),
+        selector.FewShotExampleRecord("fallback", "late fallback", "text"),
+        selector.FewShotExampleRecord("last", "last fallback", "text"),
+    ]
+    ranked = sorted(records, key=lambda record: -record.match_score(set(topics)))
+    expected: dict[str, selector.FewShotExampleRecord] = {}
+    for record in ranked:
+        expected.setdefault(record.example_id, record)
+
+    def unexpected_sort(*args: object, **kwargs: object) -> None:
+        pytest.fail("Fallback must scan records in corpus order without sorting")
+
+    monkeypatch.setattr(selector, "sorted", unexpected_sort, raising=False)
+    for limit in (1, 4, 10):
+        assert selector.select_few_shot_records(examples=records, topics=topics, limit=limit) == tuple(
+            list(expected.values())[:limit]
+        )
 
 
 def test_unicode_words_match_without_fragments() -> None:

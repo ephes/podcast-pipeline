@@ -47,7 +47,9 @@ Examples are unique by a non-blank string `example_id`/`id` (compared exactly, i
 or by the generated input/output hash. A truthy `example_id` takes precedence over `id`;
 if that chosen value is not a non-blank string, the input/output hash is used.
 With empty or blank topics, the first record for each id wins in dataset order; later unique
-records fill the limit. With topics, positive scores retain their weighted, stable ordering.
+records fill the limit. With topics, positive scores rank highest first, with ties in dataset order.
+If fewer unique IDs match than the limit allows, a scan in dataset order fills remaining slots
+with IDs that have yet to be selected.
 Matching uses Unicode words (underscores separate words), casefolding and NFC normalization,
 so Latin accented words with precomposable characters and decomposed umlauts match consistently
 without single-letter fragments. Combining marks that NFC cannot compose remain word separators.
@@ -86,5 +88,8 @@ reading. All file admission finishes before JSON construction; failures leave th
 Each nonblank line must be one object. Duplicate members at every level, NaN/Infinity, overflowing
 floats, integers over 4,300 encoded characters, and nesting beyond 64 containers are refused.
 Decoder recursion/numeric and record-shape failures become `TagConfigError` with a bounded line
-number/category diagnostic, never example text. Legacy `user`/`assistant` records still work.
+number/category diagnostic. Each record must have a complete pair of strings, either `input`/`output`
+or the legacy `user`/`assistant`. When any field from both pairs is present, both pairs must be
+complete and the corresponding strings must match exactly, including whitespace. Incomplete or
+conflicting pairs are reported by line number and field names. Diagnostics omit example text.
 Split oversized corpora explicitly; selection does not silently truncate a refused corpus.

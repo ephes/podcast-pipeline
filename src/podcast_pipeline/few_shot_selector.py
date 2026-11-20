@@ -75,6 +75,10 @@ class FewShotExampleRecord:
 ScoredRecord = tuple[int, int, FewShotExampleRecord]
 
 
+class _FewShotPairError(TypeError):
+    """A text-pair error whose message can be reported without exposing record values."""
+
+
 def load_few_shot_records(path: Path) -> list[FewShotExampleRecord]:
     records: list[FewShotExampleRecord] = []
     for line_number, raw_line in enumerate(_read_corpus_lines(path), start=1):
@@ -93,6 +97,8 @@ def load_few_shot_records(path: Path) -> list[FewShotExampleRecord]:
             if not isinstance(raw, Mapping):
                 raise TypeError
             records.append(FewShotExampleRecord.from_value(raw))
+        except _FewShotPairError as exc:
+            raise ValueError(f"Invalid JSONL record at line {line_number} ({exc}).") from exc
         except (ValueError, TypeError, RecursionError, OverflowError) as exc:
             raise ValueError(f"Invalid JSONL record at line {line_number} (JSON/record admission).") from exc
     return records
@@ -187,15 +193,11 @@ def select_few_shot_records(
         return ()
 
     topic_tokens = _tokens_from_values(topics)
-    if not topic_tokens:
-        return tuple(_fill_remaining([], [(0, idx, record) for idx, record in enumerate(records)], limit))
-
-    scored = _score_records(records, topic_tokens)
-    selected = _select_scored(scored, limit)
+    selected = _select_scored(_score_records(records, topic_tokens), limit) if topic_tokens else []
     if len(selected) < limit:
-        selected = _fill_remaining(selected, scored, limit)
+        selected = _fill_remaining(selected, records, limit)
 
-    return tuple(selected[:limit])
+    return tuple(selected)
 
 
 def _score_records(
@@ -224,11 +226,11 @@ def _select_scored(scored: Sequence[ScoredRecord], limit: int) -> list[FewShotEx
 
 def _fill_remaining(
     selected: list[FewShotExampleRecord],
-    scored: Sequence[ScoredRecord],
+    records: Sequence[FewShotExampleRecord],
     limit: int,
 ) -> list[FewShotExampleRecord]:
     seen_ids = {record.example_id for record in selected}
-    for _, _, record in sorted(scored, key=lambda item: item[1]):
+    for record in records:
         if record.example_id in seen_ids:
             continue
         selected.append(record)
@@ -239,15 +241,20 @@ def _fill_remaining(
 
 
 def _extract_io(value: Mapping[str, Any]) -> tuple[str, str]:
-    if "input" in value and "output" in value:
-        input_text = value.get("input")
-        output_text = value.get("output")
-    else:
-        input_text = value.get("user")
-        output_text = value.get("assistant")
-    if not isinstance(input_text, str) or not isinstance(output_text, str):
-        raise TypeError("Few-shot records must include input/output strings")
-    return input_text, output_text
+    pair: tuple[str, str] | None = None
+    for input_key, output_key in (("input", "output"), ("user", "assistant")):
+        if input_key not in value and output_key not in value:
+            continue
+        input_text = value.get(input_key)
+        output_text = value.get(output_key)
+        if not isinstance(input_text, str) or not isinstance(output_text, str):
+            raise _FewShotPairError(f"{input_key}/{output_key} must both be strings")
+        if pair is not None and pair != (input_text, output_text):
+            raise _FewShotPairError("conflicting input/output and user/assistant pairs")
+        pair = (input_text, output_text)
+    if pair is None:
+        raise _FewShotPairError("expected input/output or user/assistant strings")
+    return pair
 
 
 def _extract_example_id(value: Mapping[str, Any], input_text: str, output_text: str) -> str:

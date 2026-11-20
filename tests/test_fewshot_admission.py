@@ -95,6 +95,48 @@ def test_growing_corpus_cannot_bypass_actual_byte_limit(tmp_path: Path, monkeypa
         _load_examples(corpus)
 
 
+def test_corpus_selects_text_from_complete_pairs(tmp_path: Path) -> None:
+    corpus = tmp_path / "corpus.jsonl"
+    records = [
+        {"input": "Modern", "output": "Answer A"},
+        {"user": "Legacy", "assistant": "Answer B"},
+        {"input": "Both", "output": "", "user": "Both", "assistant": ""},
+    ]
+    corpus.write_text("".join(json.dumps(record) + "\n" for record in records), encoding="utf-8")
+
+    selected = selector.select_few_shot_examples(examples=_load_examples(corpus), topics=[])
+
+    assert [(shot.input_text, shot.output_text) for shot in selected] == [
+        ("Modern", "Answer A"),
+        ("Legacy", "Answer B"),
+        ("Both", ""),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("fields", "reason"),
+    [
+        ({"input": "PRIVATE_SENTINEL", "user": "Question", "assistant": "Answer"}, "input/output"),
+        ({"output": "PRIVATE_SENTINEL", "user": "Question", "assistant": "Answer"}, "input/output"),
+        ({"input": "Question", "output": "PRIVATE_SENTINEL", "user": "Question"}, "user/assistant"),
+        ({"input": "Question", "output": "PRIVATE_SENTINEL", "assistant": "Answer"}, "user/assistant"),
+        ({"input": "Question", "output": "PRIVATE_SENTINEL", "user": None, "assistant": "Answer"}, "user/assistant"),
+        ({"input": None, "output": "PRIVATE_SENTINEL", "user": "Question", "assistant": "Answer"}, "input/output"),
+        ({"input": "PRIVATE_SENTINEL", "output": "Answer", "user": "Question", "assistant": "Answer"}, "conflicting"),
+        ({"input": "Question", "output": "Answer", "user": "Question", "assistant": "Answer "}, "conflicting"),
+        ({"input": "PRIVATE_SENTINEL", "assistant": "Answer"}, "input/output"),
+        ({"title": "PRIVATE_SENTINEL"}, "input/output"),
+    ],
+)
+def test_corpus_rejects_invalid_text_pairs(tmp_path: Path, fields: dict[str, object], reason: str) -> None:
+    corpus = tmp_path / "corpus.jsonl"
+    corpus.write_text('{"input":"Valid","output":"Text"}\n\n' + json.dumps(fields) + "\n", encoding="utf-8")
+
+    with pytest.raises(TagConfigError, match=f"line 3.*{reason}") as error:
+        _load_examples(corpus)
+    assert "PRIVATE_SENTINEL" not in str(error.value)
+
+
 BAD_LINES = [
     '{"input":"PRIVATE_SENTINEL","input":"other","output":"text"}',
     '{"input":"x","output":"PRIVATE_SENTINEL","output":"other"}',
