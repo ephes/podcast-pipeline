@@ -193,7 +193,7 @@ inline code and punctuation. These rules are exercised from the generator throug
 `transcript/chunks/complete.json` version 1 records `source_sha256`, `config`, ordered `chunk_ids`
 and a `files` map of text/metadata basenames to SHA-256 digests. Chunks are written in a sibling staging
 directory, then the previous directory is moved aside and the completed directory renamed into place.
-A handled publication error restores the previous directory. Discovery rejects legacy prefixes,
+A handled publication error triggers an attempt to restore the previous directory. Discovery rejects legacy prefixes,
 missing or changed members and sets whose source no longer matches `transcript/transcript.txt`.
 Publication and discovery share the existing stable workspace-directory lock with state/YAML writers.
 Staging happens outside the lock; the source is read again under the lock before swapping. Changed
@@ -234,11 +234,15 @@ Do not delete backups just to suppress an ambiguous outcome. An existing canonic
 authoritative; this rule does not replace it with an older backup. The deterministic dry-run golden
 fixture includes both manifests; failure fixtures use invented transcript and summary text.
 
+If installing the new directory fails and the immediate restore rename also fails, the original
+publication error propagates with a note naming the restore failure and the retained backup path.
+The previous generation remains available for validation and recovery.
+
 Installing the completed directory is the commit point. An `OSError` retiring its old backup
-afterward emits one warning naming the retained path and returns the new generation's metadata
-successfully. Discovery continues to identify the new canonical set; do not retry paid work just
-because old-directory cleanup warned. Later publishers retire only their own backups. To clean
-retained evidence, stop draft/transcription writers, verify the canonical set with
+afterward attempts one warning naming the retained path. The new generation's metadata is returned
+even if a logging handler fails. Discovery continues to identify the new canonical set. Check the
+published generation before retrying work after a cleanup warning. Later publishers retire only
+their own backups. To clean retained evidence, stop draft/transcription writers, verify the canonical set with
 `discover_complete_chunk_ids(layout, config=requested_config)`, and inspect/move or remove only
 the named old backup under `publication_lock()` (discovery must run outside that lock).
 Ingesting a new transcript (`podcast draft --transcript`) retires every `.chunks-previous-*`

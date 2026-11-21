@@ -8,6 +8,7 @@ import os
 import re
 import shutil
 import tempfile
+from contextlib import suppress
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
@@ -295,22 +296,23 @@ def _publish_chunks(staged: Path, destination: Path) -> None:
         os.replace(destination, backup)
     try:
         os.replace(staged, destination)
-    except BaseException:
+    except BaseException as publication_error:
         if backup.exists():
             try:
                 os.replace(backup, destination)
             except BaseException as recovery_error:
-                recovery_error.add_note(f"Previous chunks retained at {backup}")
-                raise
+                publication_error.add_note(f"Could not restore previous chunks retained at {backup}: {recovery_error}")
         raise
     if backup.exists():
         try:
             shutil.rmtree(backup)
         except OSError:
-            logging.getLogger(__name__).warning(
-                "Chunk generation committed; old backup retained at %s; verify current chunks before manual cleanup",
-                backup,
-            )
+            # A diagnostics handler cannot undo the committed directory swap.
+            with suppress(Exception):
+                logging.getLogger(__name__).warning(
+                    "Chunk generation committed; old backup retained at %s; verify current chunks before cleanup",
+                    backup,
+                )
 
 
 def discover_complete_chunk_ids(

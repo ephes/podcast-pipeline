@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Return committed transcript chunk metadata if old-backup cleanup fails and its warning handler raises an exception.
+
+- Preserve the original transcript chunk publication error when restoring the previous generation fails, and report the restore failure and retained backup path.
+
 - Repair missing text or HTML when retrying an identical immutable review candidate, and report conflicting companion files without changing them.
 
 - Sync the selection directory after removing old formats during a format change or clear, and recover the previous selection if the sync fails.
