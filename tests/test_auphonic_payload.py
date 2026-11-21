@@ -1,13 +1,18 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
+from unittest.mock import MagicMock
 
 import pytest
 import yaml
+from typer.testing import CliRunner
 
 from podcast_pipeline.auphonic_payload import AuphonicConfigError, build_auphonic_payload
 from podcast_pipeline.domain.models import TextFormat
+from podcast_pipeline.entrypoints import produce
+from podcast_pipeline.entrypoints.cli import app
 from podcast_pipeline.workspace_store import EpisodeWorkspaceLayout
 
 # One speaker stem so payload tests that focus on metadata or presets build a valid multitrack production.
@@ -252,8 +257,6 @@ def test_payload_rejects_invalid_output_basename(
 def test_dry_run_prints_full_multitrack_payload(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    import json
-
     from podcast_pipeline.entrypoints import produce
 
     _set_global_config(monkeypatch, tmp_path, {})
@@ -387,6 +390,101 @@ def test_payload_rejects_invalid_global_yaml(
             episode_yaml={"auphonic": {"preset": "main"}},
             workspace=workspace,
         )
+
+
+@pytest.mark.parametrize("dry_run", [True, False], ids=["preview", "production"])
+@pytest.mark.parametrize(
+    "config_yaml",
+    [
+        "auphonic: {presets: {main: first, main: second}}",
+        "auphonic: {tracks: [], tracks: []}",
+        "base: &base {main: first, main: second}\nauphonic: {presets: {<<: *base}}",
+        "auphonic: {<<: {preset: first}, <<: {preset: second}}",
+    ],
+    ids=["preset", "tracks", "merge-source", "merge-key"],
+)
+def test_produce_rejects_duplicate_global_config_keys(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, dry_run: bool, config_yaml: str
+) -> None:
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(config_yaml, encoding="utf-8")
+    monkeypatch.setenv("PODCAST_PIPELINE_CONFIG", str(config_path))
+    (tmp_path / "episode.yaml").write_text(
+        yaml.safe_dump({"episode_id": "ep_test", "auphonic": {"preset": "main", **_STEMS}}), encoding="utf-8"
+    )
+
+    def unexpected_credentials() -> Any:
+        raise AssertionError("Invalid config must stop before loading credentials")
+
+    monkeypatch.setattr(produce, "load_auphonic_credentials", unexpected_credentials)
+    args = ["produce", "--workspace", str(tmp_path)]
+    if dry_run:
+        args.append("--dry-run")
+    result = CliRunner().invoke(app, args, terminal_width=240, env={"COLUMNS": "240"})
+
+    assert result.exit_code == 2
+    assert f"Invalid YAML at {config_path}" in result.output
+    assert "duplicate key" in result.output
+
+
+def test_payload_preserves_yaml_merge_precedence(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        "defaults: &defaults {preset: default, cleanup_superseded: false}\n"
+        "common: &common {<<: *defaults, preset: common}\n"
+        "auphonic: {<<: [*common, {preset: other}], presets: {common: preset_123}}\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("PODCAST_PIPELINE_CONFIG", str(config_path))
+
+    payload = build_auphonic_payload(episode_yaml={"auphonic": _STEMS}, workspace=tmp_path)
+
+    assert payload["preset"] == "preset_123"
+
+
+@pytest.mark.parametrize("config_state", ["missing", "invalid-utf8", "permission-denied", "read-failed"])
+def test_preview_reports_global_config_read_errors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, config_state: str
+) -> None:
+    config_path = tmp_path / "config.yaml"
+    monkeypatch.setenv("PODCAST_PIPELINE_CONFIG", str(config_path))
+    (tmp_path / "episode.yaml").write_text(
+        yaml.safe_dump({"episode_id": "ep_test", "auphonic": {"preset_id": "episode_preset", **_STEMS}}),
+        encoding="utf-8",
+    )
+    if config_state == "invalid-utf8":
+        config_path.write_bytes(b"auphonic: \xff")
+    elif config_state != "missing":
+        config_path.write_text("auphonic: {}", encoding="utf-8")
+        original_open = Path.open
+        stream = MagicMock()
+        stream.__enter__.return_value = stream
+        stream.read.side_effect = FileNotFoundError("config read failed")
+
+        def open_config(path: Path, *args: Any, **kwargs: Any) -> Any:
+            if path != config_path:
+                return original_open(path, *args, **kwargs)
+            if config_state == "permission-denied":
+                raise PermissionError("config access denied")
+            return stream
+
+        monkeypatch.setattr(Path, "open", open_config)
+
+    result = CliRunner().invoke(
+        app, ["produce", "--workspace", str(tmp_path), "--dry-run"], terminal_width=240, env={"COLUMNS": "240"}
+    )
+
+    if config_state == "missing":
+        assert result.exit_code == 0
+        assert json.loads(result.output)["preset"] == "episode_preset"
+    else:
+        assert result.exit_code == 2
+        assert f"Cannot read Auphonic config at {config_path}" in result.output
+        assert {
+            "invalid-utf8": "invalid start byte",
+            "permission-denied": "config access denied",
+            "read-failed": "config read failed",
+        }[config_state] in result.output
 
 
 def test_payload_parses_selected_itunes_keywords_from_markdown_list(

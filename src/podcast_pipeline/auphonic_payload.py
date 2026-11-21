@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import math
-from collections.abc import Mapping, Sequence
+from collections.abc import Hashable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
 import yaml
+from yaml.constructor import ConstructorError
+from yaml.nodes import MappingNode
 
 from podcast_pipeline.agent_cli_config import global_config_path
 from podcast_pipeline.domain.models import TextFormat
@@ -16,6 +18,41 @@ from podcast_pipeline.workspace_store import EpisodeWorkspaceLayout
 
 class AuphonicConfigError(RuntimeError):
     pass
+
+
+class _UniqueKeySafeLoader(yaml.SafeLoader):
+    def __init__(self, stream: Any) -> None:
+        super().__init__(stream)
+        self._checked_mappings: set[MappingNode] = set()
+
+    def flatten_mapping(self, node: MappingNode) -> None:
+        if node in self._checked_mappings:
+            return
+        self._checked_mappings.add(node)
+
+        # Check each mapping's own keys before SafeLoader applies YAML merge precedence.
+        merge_key = object()
+        keys: set[Hashable] = set()
+        for key_node, _ in node.value:
+            if key_node.tag == "tag:yaml.org,2002:merge":
+                key = merge_key
+            else:
+                if key_node.tag == "tag:yaml.org,2002:value":
+                    key_node.tag = "tag:yaml.org,2002:str"
+                key = self.construct_object(key_node)
+            if not isinstance(key, Hashable):
+                raise ConstructorError(
+                    "while constructing a mapping", node.start_mark, "unhashable key", key_node.start_mark
+                )
+            if key in keys:
+                raise ConstructorError(
+                    "while constructing a mapping",
+                    node.start_mark,
+                    f"duplicate key {key_node.value!r}",
+                    key_node.start_mark,
+                )
+            keys.add(key)
+        super().flatten_mapping(node)
 
 
 # Track roles that mark a pre-mixed master. Such a file may feed transcription,
@@ -96,10 +133,17 @@ def resolve_cleanup_superseded(episode_yaml: Mapping[str, Any]) -> bool:
 
 
 def _load_yaml_mapping(path: Path) -> dict[str, Any]:
-    if not path.exists():
-        return {}
     try:
-        loaded = yaml.safe_load(path.read_text(encoding="utf-8"))
+        try:
+            stream = path.open(encoding="utf-8")
+        except FileNotFoundError:
+            return {}
+        with stream as config_file:
+            contents = config_file.read()
+    except (OSError, UnicodeDecodeError) as exc:
+        raise AuphonicConfigError(f"Cannot read Auphonic config at {path}: {exc}") from exc
+    try:
+        loaded = yaml.load(contents, Loader=_UniqueKeySafeLoader)
     except yaml.YAMLError as exc:
         raise AuphonicConfigError(f"Invalid YAML at {path}: {exc}") from exc
     if loaded is None:

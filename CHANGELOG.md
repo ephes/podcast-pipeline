@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Reject duplicate keys in the global YAML configuration before building an Auphonic payload.
+
+- Report global Auphonic configuration read and UTF-8 decoding errors with the file path.
+
 - Use the published chunk manifest for dashboard counts and flag incomplete fallback inventories.
 
 - Return a validation error when dashboard note edits encounter malformed stored notes, preserving the episode file.
