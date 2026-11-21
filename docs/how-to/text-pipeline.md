@@ -102,7 +102,8 @@ recoveries cover handled errors, not process death between multiple file replace
 
 Candidate and custom-text saves reload current state under the stable workspace state lock, prepare and
 validate the intended metadata, and preserve the affected selected text formats, manual provenance and
-`state.json` before publishing. A handled provenance, serialization or final state-replacement failure restores
-the previous usable selection. Retry after fixing the write error. A recovery error names retained sibling
+`state.json` before publishing. Changing formats or clearing a selection syncs the selection directory after
+removing old files and before committing state. A handled deletion sync, provenance, serialization or final
+state-replacement failure restores the previous usable selection. Retry after fixing the write error. A recovery error names retained sibling
 backups; repair those before retrying. This is rollback for handled failures, not a multi-file rename transaction:
 process death can leave mixed files and backups, requiring inspection against `state.json` and provenance.

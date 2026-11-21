@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Repair missing text or HTML when retrying an identical immutable review candidate, and report conflicting companion files without changing them.
+
+- Sync the selection directory after removing old formats during a format change or clear, and recover the previous selection if the sync fails.
+
 - Use the public link or title for CMS example identity when the page ID is missing or is neither an integer nor a nonblank string.
 
 - Reject blank saved chapter titles with an indexed configuration error before building CMS chapter text.

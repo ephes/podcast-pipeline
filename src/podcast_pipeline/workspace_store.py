@@ -617,15 +617,30 @@ class EpisodeWorkspaceStore:
         if candidate.format == TextFormat.markdown:
             html_path = self.layout.candidate_text_path(candidate.asset_id, candidate.candidate_id, TextFormat.html)
             artifacts[html_path] = markdown_to_deterministic_html(content)
-        # Serialize/render first, then publish JSON last: it makes candidates discoverable.
-        artifacts[path] = dumped
-        with self._state_lock(), preserve_files(list(artifacts)):
+        with self._state_lock():
             if immutable and path.exists():
                 if self.read_candidate(candidate.asset_id, candidate.candidate_id) != candidate:
                     raise ValueError("Review candidate identity cannot change; use a fresh candidate UUID.")
-                return path
-            for artifact_path, text in artifacts.items():
-                _atomic_write_text(artifact_path, text)
+                missing: dict[Path, str] = {}
+                for artifact_path, text in artifacts.items():
+                    try:
+                        mode = artifact_path.lstat().st_mode
+                    except FileNotFoundError:
+                        missing[artifact_path] = text
+                        continue
+                    if stat.S_ISREG(mode):
+                        expected = text.encode()
+                        with artifact_path.open("rb") as source:
+                            if source.read(len(expected) + 1) == expected:
+                                continue
+                    raise WorkspaceStoreError(f"Immutable candidate companion conflicts at {artifact_path}")
+                artifacts = missing
+            else:
+                # Publish JSON last: it makes candidates discoverable.
+                artifacts[path] = dumped
+            with preserve_files(list(artifacts)):
+                for artifact_path, text in artifacts.items():
+                    _atomic_write_text(artifact_path, text)
         return path
 
     def read_candidate(self, asset_id: str, candidate_id: UUID) -> Candidate:
@@ -687,23 +702,31 @@ class EpisodeWorkspaceStore:
         else:
             _atomic_write_text(path, content)
         # Only once the new selection is published: drop files of superseded formats.
-        for superseded in TextFormat:
-            stale = self.layout.selected_text_path(asset_id, superseded)
-            if stale in published:
-                continue
-            try:
-                stale.unlink(missing_ok=True)
-            except OSError as exc:
-                raise WorkspaceStoreError(f"Failed to remove superseded selected text at {stale}: {exc}") from exc
+        self._remove_selected_text(asset_id, keep=published)
         return path
 
     def clear_selected_text(self, asset_id: str) -> None:
+        self._remove_selected_text(asset_id, keep=set())
+
+    def _remove_selected_text(self, asset_id: str, *, keep: set[Path]) -> None:
+        removed = False
         for fmt in TextFormat:
             path = self.layout.selected_text_path(asset_id, fmt)
+            if path in keep:
+                continue
             try:
-                path.unlink(missing_ok=True)
+                path.unlink()
+            except FileNotFoundError:
+                continue
             except OSError as exc:
                 raise WorkspaceStoreError(f"Failed to remove selected text at {path}: {exc}") from exc
+            removed = True
+        if removed:
+            directory = self.layout.copy_selected_dir
+            try:
+                _fsync_dir(directory, required=True)
+            except OSError as exc:
+                raise WorkspaceStoreError(f"Selection deletion durability unconfirmed at {directory}: {exc}") from exc
 
     def delete_candidate_files(self, asset_id: str, candidate_id: UUID) -> None:
         paths = {self.layout.candidate_json_path(asset_id, candidate_id)}
