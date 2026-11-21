@@ -8,6 +8,35 @@ from podcast_pipeline.workspace_store import EpisodeWorkspaceStore
 from tests.test_chunk_publication_processes import _initial
 
 
+def test_failed_restore_preserves_publication_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    layout = _initial(tmp_path)
+    destination = layout.transcript_chunks_dir
+    before = {path.name: path.read_bytes() for path in destination.iterdir()}
+    replace = chunker.os.replace
+    promotion_error = OSError("promotion refused")
+    config = chunker.ChunkerConfig(max_tokens=4, overlap_tokens=0)
+
+    def fail_promotion_and_restore(source: Path, target: Path) -> None:
+        if target == destination:
+            if source.name == "new":
+                raise promotion_error
+            if source.name.startswith(".chunks-previous-"):
+                raise OSError("restore refused")
+        replace(source, target)
+
+    monkeypatch.setattr(chunker.os, "replace", fail_promotion_and_restore)
+    with pytest.raises(OSError) as failure:
+        chunker.write_transcript_chunks(
+            layout=layout, transcript_path=layout.transcript_dir / "transcript.txt", config=config
+        )
+
+    assert failure.value is promotion_error
+    assert not destination.exists()
+    (backup,) = layout.transcript_dir.glob(".chunks-previous-*")
+    assert {path.name: path.read_bytes() for path in backup.iterdir()} == before
+    assert any("restore refused" in note and str(backup) in note for note in failure.value.__notes__)
+
+
 def test_postcommit_retirement_failure_returns_new_generation_and_warns(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:

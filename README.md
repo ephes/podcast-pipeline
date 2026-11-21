@@ -227,8 +227,10 @@ credential-free feed source; regenerate old RSS corpora instead of mixing old an
 
 Chunk discovery and publication share the stable workspace lock and revalidate the source before swapping.
 After an interrupted swap, a unique validated `.chunks-previous-*` backup is restored when current chunks
-are absent; ambiguous/damaged backups require explicit repair. Failed old-backup cleanup after commit
-warns and returns the successful new set. Keep the named evidence until the canonical set is verified.
+are absent; ambiguous/damaged backups require explicit repair. If publication and immediate restoration
+both fail, the publication error carries a note with the restore failure and retained backup path.
+Failed old-backup cleanup after commit warns and returns the successful new set. Keep the named evidence
+until the canonical set is verified.
 `podcast draft` reports recovery, chunking-limit and changed-source refusals as `Error: ...` with exit code 1. Ingesting
 a new transcript retires stale backups together with the canonical set.
 

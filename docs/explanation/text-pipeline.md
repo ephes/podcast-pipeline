@@ -234,6 +234,10 @@ Do not delete backups just to suppress an ambiguous outcome. An existing canonic
 authoritative; this rule does not replace it with an older backup. The deterministic dry-run golden
 fixture includes both manifests; failure fixtures use invented transcript and summary text.
 
+If installing the new directory fails and the immediate restore rename also fails, the original
+publication error propagates with a note naming the restore failure and the retained backup path.
+The previous generation remains available for validation and recovery.
+
 Installing the completed directory is the commit point. An `OSError` retiring its old backup
 afterward emits one warning naming the retained path and returns the new generation's metadata
 successfully. Discovery continues to identify the new canonical set; do not retry paid work just

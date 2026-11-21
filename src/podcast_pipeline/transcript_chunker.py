@@ -295,13 +295,12 @@ def _publish_chunks(staged: Path, destination: Path) -> None:
         os.replace(destination, backup)
     try:
         os.replace(staged, destination)
-    except BaseException:
+    except BaseException as publication_error:
         if backup.exists():
             try:
                 os.replace(backup, destination)
             except BaseException as recovery_error:
-                recovery_error.add_note(f"Previous chunks retained at {backup}")
-                raise
+                publication_error.add_note(f"Could not restore previous chunks retained at {backup}: {recovery_error}")
         raise
     if backup.exists():
         try:
