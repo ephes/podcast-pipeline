@@ -229,8 +229,8 @@ Chunk discovery and publication share the stable workspace lock and revalidate t
 After an interrupted swap, a unique validated `.chunks-previous-*` backup is restored when current chunks
 are absent; ambiguous/damaged backups require explicit repair. If publication and immediate restoration
 both fail, the publication error carries a note with the restore failure and retained backup path.
-Failed old-backup cleanup after commit warns and returns the successful new set. Keep the named evidence
-until the canonical set is verified.
+Failed old-backup cleanup after commit attempts a warning and returns the successful new set even if
+the logging handler fails. Keep the retained evidence until the canonical set is verified.
 `podcast draft` reports recovery, chunking-limit and changed-source refusals as `Error: ...` with exit code 1. Ingesting
 a new transcript retires stale backups together with the canonical set.
 
