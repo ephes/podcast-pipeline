@@ -88,6 +88,10 @@ Stub behaviors:
 
 The default `podcast draft` flow uses `podcast_pipeline.asset_candidates_llm`. It provides the episode summary,
 optional chapters, and host names to the configured drafter CLI and validates the structured candidate response.
+Asset candidate prompts admit up to 65,536 characters across summary, key points, topics, chapters and
+host names, and up to 200 combined key points, topics, chapter entries and hosts. Chapter entries in
+drafts are stripped nonblank lines. Exceeding either limit stops candidate generation before rendering
+the prompt or calling the candidate model. Shorten the supplemental context and retry.
 For per-asset regeneration, `inputs.chapters` is read through nonblocking regular-file and
 workspace-directory descriptors. Every path component must stay inside that opened workspace;
 symlinks, changed file/directory names, in-place changes, invalid UTF-8, more than 1 MiB or more than

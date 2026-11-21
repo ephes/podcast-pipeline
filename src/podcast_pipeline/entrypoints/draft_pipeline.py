@@ -43,25 +43,17 @@ def _load_chapters_lines(store: EpisodeWorkspaceStore) -> list[str]:
         if isinstance(raw_chapters, str):
             candidate = store.layout.root / raw_chapters
             if candidate.exists() and candidate.is_file():
-                return _first_non_empty_lines(candidate.read_text(encoding="utf-8"), limit=200)
+                return _non_empty_lines(candidate.read_text(encoding="utf-8"))
 
     fallback = store.layout.transcript_dir / "chapters.txt"
     if fallback.exists() and fallback.is_file():
-        return _first_non_empty_lines(fallback.read_text(encoding="utf-8"), limit=200)
+        return _non_empty_lines(fallback.read_text(encoding="utf-8"))
 
     return []
 
 
-def _first_non_empty_lines(text: str, *, limit: int) -> list[str]:
-    lines: list[str] = []
-    for raw in text.splitlines():
-        stripped = raw.strip()
-        if not stripped:
-            continue
-        lines.append(stripped)
-        if len(lines) >= limit:
-            break
-    return lines
+def _non_empty_lines(text: str) -> list[str]:
+    return [stripped for line in text.splitlines() if (stripped := line.strip())]
 
 
 def _open_or_create_workspace(

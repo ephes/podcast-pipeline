@@ -202,6 +202,7 @@ def draft(
     from podcast_pipeline.agent_cli_config import AgentCliConfigError, resolve_agent_timeout
     from podcast_pipeline.agent_runners import AgentRunnerError
     from podcast_pipeline.entrypoints.draft_pipeline import run_draft_pipeline
+    from podcast_pipeline.prompting import PromptInputError
     from podcast_pipeline.summarization_stub import StubSummarizerConfig
     from podcast_pipeline.tag_assets import TagConfigError
     from podcast_pipeline.transcript_chunker import (
@@ -230,6 +231,7 @@ def draft(
         AgentRunnerError,
         AgentCliConfigError,
         TagConfigError,
+        PromptInputError,
         ChunkRecoveryError,
         ChunkerResourceError,
         ChunkSourceChangedError,
@@ -265,14 +267,19 @@ def review(
 ) -> None:
     """Run the Creator/Reviewer loop for one asset."""
     from podcast_pipeline.entrypoints.draft_demo import run_draft_demo
+    from podcast_pipeline.prompting import PromptInputError
 
-    run_draft_demo(
-        fake_runner=fake_runner,
-        workspace=workspace,
-        episode_id=episode_id,
-        asset_id=asset_id,
-        max_iterations=max_iterations,
-    )
+    try:
+        run_draft_demo(
+            fake_runner=fake_runner,
+            workspace=workspace,
+            episode_id=episode_id,
+            asset_id=asset_id,
+            max_iterations=max_iterations,
+        )
+    except PromptInputError as exc:
+        typer.echo(f"Review stopped: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
 
 
 @app.command()

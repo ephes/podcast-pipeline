@@ -20,6 +20,10 @@ from podcast_pipeline.review_loop_engine import CreatorInput, ReviewerInput
 from podcast_pipeline.workspace_store import EpisodeWorkspaceStore
 
 
+class PromptInputError(ValueError):
+    """Input that cannot be admitted to a prompt."""
+
+
 @dataclass(frozen=True)
 class GlossaryEntry:
     term: str
@@ -346,6 +350,26 @@ def render_reviewer_prompt(
 
 
 _MAX_TRANSCRIPT_EXCERPT_CHARS = 4000
+_MAX_EPISODE_CONTEXT_CHARS = 65536
+_MAX_EPISODE_CONTEXT_ITEMS = 200
+
+
+def _check_episode_context_size(
+    summary: str,
+    *sections: Sequence[str],
+    chapter_text: str = "",
+) -> None:
+    item_error = f"Supplemental episode context exceeds {_MAX_EPISODE_CONTEXT_ITEMS} items"
+    items = sum(len(section) for section in sections)
+    if items > _MAX_EPISODE_CONTEXT_ITEMS:
+        raise PromptInputError(item_error)
+
+    chars = len(summary) + len(chapter_text) + sum(len(value) for section in sections for value in section)
+    if chars > _MAX_EPISODE_CONTEXT_CHARS:
+        raise PromptInputError(f"Supplemental episode context exceeds {_MAX_EPISODE_CONTEXT_CHARS} characters")
+
+    if chapter_text and items + len(chapter_text.splitlines()) > _MAX_EPISODE_CONTEXT_ITEMS:
+        raise PromptInputError(item_error)
 
 
 def _render_hosts(hosts: Sequence[str] | None) -> str:
@@ -369,6 +393,7 @@ def render_episode_context(
     hosts: Sequence[str] | None = None,
 ) -> str:
     """Render episode context (summary, chapters, transcript) into a text block for prompts."""
+    _check_episode_context_size(summary or "", key_points or (), hosts or (), chapter_text=chapters or "")
     sections: list[str] = []
 
     hosts_text = _render_hosts(hosts)
@@ -510,6 +535,7 @@ def render_asset_candidates_prompt(
     hosts: Sequence[str] | None = None,
     few_shots: Sequence[FewShotExample | Mapping[str, Any]] | None = None,
 ) -> PromptRenderResult:
+    _check_episode_context_size(episode_summary_markdown, key_points, topics, chapters, hosts or ())
     hosts_text = _render_hosts(hosts)
     context = {
         "asset_id": asset_id,

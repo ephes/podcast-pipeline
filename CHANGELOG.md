@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Refuse supplemental episode context above 65,536 characters or 200 combined list entries before building asset candidate or review prompts.
+
 - Return committed transcript chunk metadata if old-backup cleanup fails and its warning handler raises an exception.
 
 - Preserve the original transcript chunk publication error when restoring the previous generation fails, and report the restore failure and retained backup path.

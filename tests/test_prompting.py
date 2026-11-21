@@ -198,6 +198,27 @@ def test_render_episode_context_truncates_long_transcript() -> None:
     assert len(ctx) < 5000
 
 
+def test_render_episode_context_admits_exact_limits_and_clips_transcript() -> None:
+    points = ["p"] * 199
+    chapters = "c"
+    summary = "s" * (65536 - len(points) - len(chapters))
+    context = render_episode_context(
+        summary=summary,
+        key_points=points,
+        chapters=chapters,
+        transcript_excerpt="hello world",
+        max_transcript_chars=5,
+    )
+    assert summary in context
+    assert context.endswith("Transcript excerpt:\nhello\n[...truncated]")
+
+
+def test_render_episode_context_counts_chapter_lines_with_other_items() -> None:
+    chapters = "Opening\n" * 200
+    with pytest.raises(ValueError, match="200 items"):
+        render_episode_context(chapters=chapters, key_points=["A point"], transcript_excerpt="A normal transcript.")
+
+
 def test_creator_prompt_includes_episode_context() -> None:
     renderer = PromptRenderer(default_prompt_registry())
     inp = CreatorInput(asset_id="description", iteration=1, previous_candidate=None, previous_review=None)

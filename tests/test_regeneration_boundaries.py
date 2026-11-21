@@ -11,6 +11,7 @@ from podcast_pipeline.dashboard_context import BackgroundJob, DashboardContext
 from podcast_pipeline.domain.intermediate_formats import EpisodeSummary
 from podcast_pipeline.domain.models import Asset, Candidate, EpisodeWorkspace, ReviewIteration, ReviewVerdict
 from podcast_pipeline.entrypoints.dashboard_web import _run_regenerate_job
+from podcast_pipeline.prompting import PromptRenderResult
 from podcast_pipeline.workspace_store import EpisodeWorkspaceStore
 
 
@@ -82,6 +83,43 @@ def test_regeneration_includes_local_chapters(tmp_path: Path, monkeypatch: pytes
     assert "00:00 Local intro" in prompt
     assert "00:12 Main topic" in prompt
     assert candidates[0].content == "Generated"
+
+
+@pytest.mark.parametrize(
+    ("chapters", "key_points", "limit"),
+    [
+        ("c" * 32768, ["p" * 32768], "65536 characters"),
+        ("00:00 Opening", ["Point"] * 200, "200 items"),
+    ],
+    ids=["aggregate-characters", "aggregate-items"],
+)
+def test_regeneration_refuses_oversized_episode_context(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    chapters: str,
+    key_points: list[str],
+    limit: str,
+) -> None:
+    store = _workspace(tmp_path, "chapters.txt")
+    with store.update_episode_yaml() as episode:
+        episode["inputs"]["transcript"] = "transcript.txt"
+    (tmp_path / "transcript.txt").write_text("A normal transcript.", encoding="utf-8")
+    (tmp_path / "chapters.txt").write_text(chapters, encoding="utf-8")
+    store.layout.episode_summary_json_path().write_text(
+        EpisodeSummary(summary_markdown="Summary", key_points=key_points, topics=[]).model_dump_json(),
+        encoding="utf-8",
+    )
+    runner = Mock()
+    runner.return_value.run.return_value = {"candidates": [{"content": "Generated"}]}
+    monkeypatch.setattr("podcast_pipeline.drafter_runner.DrafterCliRunner", runner)
+    receipt = Mock(wraps=PromptRenderResult)
+    monkeypatch.setattr("podcast_pipeline.prompting.PromptRenderResult", receipt)
+
+    with pytest.raises(ValueError, match=limit):
+        generate_single_asset_candidates_llm(workspace=tmp_path, asset_id="description", candidates_per_asset=1)
+
+    receipt.assert_not_called()
+    runner.return_value.run.assert_not_called()
 
 
 @pytest.mark.parametrize("invalid_second", [False, True])
