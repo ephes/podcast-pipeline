@@ -1111,3 +1111,25 @@ def test_cms_chapter_input_forms_share_seconds(tmp_path: Path, monkeypatch: pyte
     workspace = _workspace(tmp_path)
     _set_episode_yaml(workspace, auphonic={"chapters": [{"start": start, "title": "Chapter"}]})
     assert _plan(tmp_path, monkeypatch, workspace).audio.chaptermarks == "00:01:30 Chapter"
+
+
+def test_cms_plan_requires_nonblank_saved_chapter_titles(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    workspace = _workspace(tmp_path)
+    _set_episode_yaml(workspace, auphonic=None)
+    state_path = workspace / "state.json"
+    second_chapter = {"title": " \t\n ", "start_sec": 90}
+    state = {
+        "schema_version": 1,
+        "episode_id": workspace.name,
+        "root_dir": str(workspace),
+        "chapters": [{"title": "Intro", "start_sec": 0}, second_chapter],
+    }
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+
+    with pytest.raises(CmsConfigError, match=r"CMS chapter\[2\]\.title must be a non-empty string"):
+        _plan(tmp_path, monkeypatch, workspace)
+
+    second_chapter["title"] = "  Main \t topic  "
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+
+    assert _plan(tmp_path, monkeypatch, workspace).audio.chaptermarks == "00:00:00 Intro\n00:01:30 Main topic"

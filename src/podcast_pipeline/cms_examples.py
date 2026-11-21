@@ -368,14 +368,12 @@ def _coerce_html(value: Any) -> str | None:
     return normalize_html(str(value)) or None
 
 
-def _coerce_id(value: Any) -> str | None:
-    if value is None:
-        return None
+def _coerce_id(value: object) -> str | None:
     if isinstance(value, str):
         return value.strip() or None
-    if isinstance(value, (int, float)):
+    if type(value) is int:
         return str(value)
-    return str(value).strip() or None
+    return None
 
 
 def _coerce_tags(value: Any) -> tuple[str, ...]:

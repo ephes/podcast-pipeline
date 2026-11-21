@@ -192,12 +192,28 @@ def test_cms_identity_distinguishes_api_paths() -> None:
     assert first.example_id() != second.example_id()
 
 
-def test_cms_id_digest_is_stable() -> None:
+@pytest.mark.parametrize("page_id", [{"value": 42}, [42], True, False, 42.0, " \t"])
+@pytest.mark.parametrize("link", ["https://cms.example/episode", None])
+def test_cms_unsupported_page_id_uses_same_identity_as_missing_id(page_id: object, link: str | None) -> None:
+    item = {"title": "Episode", "description": "<p>Notes</p>", "url": link}
+    with_id, without_id = parse_cms_examples(
+        [{**item, "id": page_id}, item],
+        api_url="https://cms.example/api",
+        limit=2,
+    )
+
+    assert with_id.page_id is None
+    assert with_id.to_record() == without_id.to_record()
+
+
+@pytest.mark.parametrize("page_id", [42, " 42 "])
+def test_cms_id_digest_is_stable(page_id: int | str) -> None:
     example = parse_cms_examples(
-        [{"id": 42, "title": "Episode", "description": "<p>Notes</p>"}],
+        [{"id": page_id, "title": "Episode", "description": "<p>Notes</p>"}],
         api_url="https://cms.example/api",
         limit=1,
     )[0]
+    assert example.to_record()["page_id"] == "42"
     assert example.example_id() == "cms_fc79d2e15716"
 
 

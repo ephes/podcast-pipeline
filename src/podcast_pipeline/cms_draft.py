@@ -376,11 +376,14 @@ def format_chaptermarks(chapters: Sequence[tuple[float, str]]) -> str:
         if total <= previous:
             raise CmsConfigError("CMS chapter starts must increase at microsecond precision.")
         previous = total
+        title = " ".join(title.split())
+        if not title:
+            raise CmsConfigError(f"CMS chapter[{idx}].title must be a non-empty string.")
         whole, micros = divmod(total, 1_000_000)
         hours, rest = divmod(whole, 3600)
         minutes, seconds = divmod(rest, 60)
         fraction = f".{micros:06d}" if micros else ""
-        lines.append(f"{hours:02d}:{minutes:02d}:{seconds:02d}{fraction} {' '.join(title.split())}")
+        lines.append(f"{hours:02d}:{minutes:02d}:{seconds:02d}{fraction} {title}")
     return "\n".join(lines)
 
 
