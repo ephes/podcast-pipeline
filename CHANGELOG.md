@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Apply bounded JSON admission to CMS reads and report unreadable error bodies using the HTTP status.
+
 - Report incomplete CMS audio inventories separately from a confirmed absent ID.
 
 - Bound dashboard selection reads and report unreadable artifacts separately from missing selections.

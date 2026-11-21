@@ -250,9 +250,9 @@ class DjangoCastClient:
         if response.status_code != 400:
             raise _error(response, "POST", AUDIOS_PATH)
         try:
-            body = response.json()
+            body = load_control_json(response.content)
         except ValueError:
-            return False
+            raise CmsApiError(f"POST {AUDIOS_PATH} failed with HTTP {response.status_code}") from None
         errors = body.get("errors") if isinstance(body, dict) else None
         return isinstance(errors, Mapping) and "transcript_diarization_mode" not in errors
 
@@ -350,18 +350,13 @@ def _checked(response: httpx.Response, method: str, path: str) -> Any:
         raise _error(response, method, path)
     if not response.content:
         return None
-    if method in {"POST", "PATCH"}:
-        try:
-            return load_control_json(response.content)
-        except ValueError:
-            raise CmsApiError(
-                f"{method} {path} returned invalid JSON (HTTP {response.status_code}); "
-                "check Wagtail for the remote outcome before retrying."
-            ) from None
     try:
-        return response.json()
-    except ValueError as exc:
-        raise CmsApiError(f"{method} {path} returned non-JSON content (HTTP {response.status_code})") from exc
+        return load_control_json(response.content)
+    except ValueError:
+        message = f"{method} {path} returned invalid JSON (HTTP {response.status_code})"
+        if method in {"POST", "PATCH"}:
+            message += "; check Wagtail for the remote outcome before retrying."
+        raise CmsApiError(message) from None
 
 
 def _expect_dict(data: Any, method: str, path: str) -> dict[str, Any]:
@@ -397,7 +392,7 @@ def _redirect_origin(location: str) -> str:
 
 def _error(response: httpx.Response, method: str, path: str) -> CmsApiError:
     try:
-        body = response.json()
+        body = load_control_json(response.content)
     except ValueError:
         body = None
     prefix = f"{method} {path} failed with HTTP {response.status_code}"

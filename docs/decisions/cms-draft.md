@@ -102,6 +102,10 @@ updates. If inputs change during upload/setup, the command stops with a retry me
 checkpointed for the retry; check the new selection/configuration before rerunning. This check does not lock out
 manual edits after the final comparison or roll back an episode request that already succeeded.
 
+CMS JSON reads, write acknowledgements, and error bodies share the same admission limits.
+Unreadable successful reads report invalid JSON. Unreadable HTTP error bodies give the method,
+endpoint and status. A valid revision-conflict reply still gives the Wagtail recovery diagnostic.
+
 API errors show the trusted method, endpoint, HTTP status and allowlisted error/field categories. Redirects show
 only the destination origin (no userinfo, path, query or fragment) and are never followed. Response bodies and raw
 server messages are omitted, including revision-conflict payloads; conflicts still explain checking Wagtail before
