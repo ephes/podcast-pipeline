@@ -181,17 +181,25 @@ class DjangoCastClient:
         Pages are requested by number on the configured base URL; the ``next`` links in responses are never
         followed, so the token stays on the configured site.
         """
+        prefix = f"GET {AUDIOS_PATH}: incomplete audio inventory"
         for page in range(1, max_pages + 1):
             data = self._json("GET", AUDIOS_PATH, params={"page": str(page), "pageSize": str(_AUDIO_PAGE_SIZE)})
-            results = data.get("results") if isinstance(data, dict) else None
-            if not isinstance(results, list) or not results:
-                return None
-            for item in results:
-                if isinstance(item, dict) and item.get("id") == audio_id:
-                    return _identity(item, "GET", AUDIOS_PATH)
-            if not data.get("next"):
-                return None
-        return None
+            if not isinstance(data, dict) or not isinstance(data.get("results"), list) or "next" not in data:
+                raise CmsApiError(f"{prefix}, invalid page {page}")
+            next_page = data["next"]
+            if next_page is not None and (not isinstance(next_page, str) or not next_page.strip()):
+                raise CmsApiError(f"{prefix}, invalid page {page} continuation")
+
+            match = None
+            for item in data["results"]:
+                item_id = item.get("id") if isinstance(item, dict) else None
+                if type(item_id) is not int or item_id < 1:
+                    raise CmsApiError(f"{prefix}, invalid audio ID on page {page}")
+                if item_id == audio_id and match is None:
+                    match = item
+            if match is not None or next_page is None:
+                return match
+        raise CmsApiError(f"{prefix}, page limit ({max_pages}) reached")
 
     def create_episode(self, payload: Mapping[str, Any]) -> dict[str, Any]:
         return self._dict("POST", EPISODES_PATH, revision=True, json=dict(payload))
@@ -242,9 +250,9 @@ class DjangoCastClient:
         if response.status_code != 400:
             raise _error(response, "POST", AUDIOS_PATH)
         try:
-            body = response.json()
+            body = load_control_json(response.content)
         except ValueError:
-            return False
+            raise CmsApiError(f"POST {AUDIOS_PATH} failed with HTTP {response.status_code}") from None
         errors = body.get("errors") if isinstance(body, dict) else None
         return isinstance(errors, Mapping) and "transcript_diarization_mode" not in errors
 
@@ -342,18 +350,13 @@ def _checked(response: httpx.Response, method: str, path: str) -> Any:
         raise _error(response, method, path)
     if not response.content:
         return None
-    if method in {"POST", "PATCH"}:
-        try:
-            return load_control_json(response.content)
-        except ValueError:
-            raise CmsApiError(
-                f"{method} {path} returned invalid JSON (HTTP {response.status_code}); "
-                "check Wagtail for the remote outcome before retrying."
-            ) from None
     try:
-        return response.json()
-    except ValueError as exc:
-        raise CmsApiError(f"{method} {path} returned non-JSON content (HTTP {response.status_code})") from exc
+        return load_control_json(response.content)
+    except ValueError:
+        message = f"{method} {path} returned invalid JSON (HTTP {response.status_code})"
+        if method in {"POST", "PATCH"}:
+            message += "; check Wagtail for the remote outcome before retrying."
+        raise CmsApiError(message) from None
 
 
 def _expect_dict(data: Any, method: str, path: str) -> dict[str, Any]:
@@ -389,7 +392,7 @@ def _redirect_origin(location: str) -> str:
 
 def _error(response: httpx.Response, method: str, path: str) -> CmsApiError:
     try:
-        body = response.json()
+        body = load_control_json(response.content)
     except ValueError:
         body = None
     prefix = f"{method} {path} failed with HTTP {response.status_code}"

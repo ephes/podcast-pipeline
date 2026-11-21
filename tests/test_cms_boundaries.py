@@ -12,7 +12,7 @@ import pytest
 import typer
 import yaml
 
-from podcast_pipeline.cms_api import CmsApiError, DjangoCastClient
+from podcast_pipeline.cms_api import CmsApiError, CmsRevisionConflictError, DjangoCastClient
 from podcast_pipeline.entrypoints import cms_draft as entry
 from tests.test_cms_draft import BASE, PODCAST_ID, TOKEN, FakeCast, _config, _run, _workspace, _write_selected
 
@@ -105,7 +105,8 @@ def test_untrusted_errors_hide_private_payloads(kind: str) -> None:
         return httpx.Response(400, json={"code": secret, "detail": secret})
 
     client = DjangoCastClient(BASE, TOKEN, transport=httpx.MockTransport(handle))
-    with pytest.raises(CmsApiError) as exc:
+    error_type = CmsRevisionConflictError if kind == "conflict" else CmsApiError
+    with pytest.raises(error_type) as exc:
         client.create_episode({})
     assert secret not in str(exc.value)
     assert "POST" in str(exc.value) and "api/editor/episodes/" in str(exc.value)
@@ -308,3 +309,61 @@ def test_ambiguous_mutation_receipt_stops_workflow(
     expected_path = "/api/editor/media/audios/" if endpoint == "upload" else "/api/editor/episodes/"
     assert fake.requests[-1].method == "POST"
     assert fake.requests[-1].url.path == expected_path
+
+
+def test_audio_lookup_reports_absence_after_valid_terminal_page() -> None:
+    transport = httpx.MockTransport(lambda request: httpx.Response(200, json={"results": [], "next": None}))
+    with DjangoCastClient(BASE, TOKEN, transport=transport) as client:
+        assert client.find_audio(83, max_pages=1) is None
+
+
+@pytest.mark.parametrize(
+    ("body", "reason"),
+    [
+        ([], "invalid page"),
+        ({"results": {}, "next": None}, "invalid page"),
+        ({"results": []}, "invalid page"),
+        ({"results": [], "next": False}, "invalid page"),
+        ({"results": [{"id": "83"}], "next": None}, "invalid audio ID"),
+        ({"results": [{"id": 84}], "next": "https://elsewhere.test/?page=2"}, "page limit"),
+        ({"results": [], "next": "https://elsewhere.test/?page=2"}, "page limit"),
+    ],
+)
+def test_audio_lookup_reports_incomplete_inventory(body: Any, reason: str) -> None:
+    def handle(request: httpx.Request) -> httpx.Response:
+        assert request.method == "GET"
+        assert request.url.host == "cms.test"
+        assert request.url.params["page"] == "1"
+        return httpx.Response(200, json=body)
+
+    with DjangoCastClient(BASE, TOKEN, transport=httpx.MockTransport(handle)) as client:
+        with pytest.raises(CmsApiError, match=f"incomplete audio inventory.*{reason}"):
+            client.find_audio(83, max_pages=1)
+
+
+@pytest.mark.parametrize("status", [200, 502, 400])
+@pytest.mark.parametrize(
+    "kind",
+    ["malformed", "nested", "duplicate"],
+)
+def test_unreadable_cms_json_has_safe_diagnostic(status: int, kind: str) -> None:
+    secret = b"SIGNED_PRIVATE_SENTINEL"
+    bodies = {
+        "malformed": b'{"detail": "' + secret,
+        "nested": b'{"detail":' + b"[" * 2000 + b'"' + secret + b'"' + b"]" * 2000 + b"}",
+        "duplicate": b'{"code":"required","code":"revision_conflict","detail":"' + secret + b'"}',
+    }
+    transport = httpx.MockTransport(lambda request: httpx.Response(status, content=bodies[kind]))
+    with DjangoCastClient(BASE, TOKEN, transport=transport) as client:
+        with pytest.raises(CmsApiError) as exc:
+            if status == 400:
+                client.supports_upload_diarization_mode("enabled", collection=None)
+            else:
+                client.list_parents()
+    assert type(exc.value) is CmsApiError
+    if status == 200:
+        assert str(exc.value) == "GET api/editor/parents/ returned invalid JSON (HTTP 200)"
+    elif status == 502:
+        assert str(exc.value) == "GET api/editor/parents/ failed with HTTP 502"
+    else:
+        assert str(exc.value) == "POST api/editor/media/audios/ failed with HTTP 400"

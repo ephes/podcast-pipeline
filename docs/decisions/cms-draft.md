@@ -59,6 +59,10 @@ editor API (DRF token auth). That run showed what the API needs and where it sto
 
 ### CMS recovery checkpoints
 
+When reusing Audio, the client checks the editor's inventory by page number. A valid final page
+confirms absence if no page contained the ID. Invalid pages or reaching the 50-page limit with more
+results pending stop the draft run with an incomplete-inventory error.
+
 CMS recovery state is validated before mutation: IDs must be positive integers or null and present flags must
 be booleans. `cms/draft.json` now records the resolved `parent_id` as well as the site. Changing podcasts requires
 an explicit reset after checking the old episode and Audio in Wagtail; no old IDs are reused. Legacy state with
@@ -97,6 +101,10 @@ text/format and effective configuration immediately before episode create/update
 updates. If inputs change during upload/setup, the command stops with a retry message. An uploaded Audio remains
 checkpointed for the retry; check the new selection/configuration before rerunning. This check does not lock out
 manual edits after the final comparison or roll back an episode request that already succeeded.
+
+CMS JSON reads, write acknowledgements, and error bodies share the same admission limits.
+Unreadable successful reads report invalid JSON. Unreadable HTTP error bodies give the method,
+endpoint and status. A valid revision-conflict reply still gives the Wagtail recovery diagnostic.
 
 API errors show the trusted method, endpoint, HTTP status and allowlisted error/field categories. Redirects show
 only the destination origin (no userinfo, path, query or fragment) and are never followed. Response bodies and raw

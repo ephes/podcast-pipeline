@@ -23,7 +23,12 @@ from starlette.routing import Route
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from podcast_pipeline.asset_refine_llm import RefineRequest
-from podcast_pipeline.dashboard_context import PROGRESS_TRUNCATED, BackgroundJob, DashboardContext
+from podcast_pipeline.dashboard_context import (
+    PROGRESS_TRUNCATED,
+    BackgroundJob,
+    DashboardContext,
+    SelectedArtifactError,
+)
 from podcast_pipeline.local_web_guard import (
     RESPONSE_SECURITY_HEADERS,
     SESSION_BOOTSTRAP_PAGE,
@@ -252,6 +257,8 @@ class _DashboardApi:
             with self.ctx.lock:
                 data = self.ctx.get_status_json()
                 return JSONResponse(data)
+        except SelectedArtifactError:
+            raise
         except Exception as exc:
             return JSONResponse({"error": str(exc)}, status_code=500)
 
@@ -634,6 +641,10 @@ class _DashboardApi:
         return JSONResponse({"ok": True})
 
 
+def _selected_artifact_error(_request: Request, exc: Exception) -> Response:
+    return JSONResponse({"error": str(exc)}, status_code=422)
+
+
 def create_dashboard_app(
     *,
     ctx: DashboardContext,
@@ -687,6 +698,7 @@ def create_dashboard_app(
 
     return Starlette(
         routes=routes,
+        exception_handlers={SelectedArtifactError: _selected_artifact_error},
         middleware=[Middleware(_LocalRequestGuardMiddleware, expected_port=port, session_token=session_token)],
     )
 

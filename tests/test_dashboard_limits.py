@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import threading
 from collections.abc import AsyncIterator
 from pathlib import Path
@@ -13,6 +14,7 @@ from starlette.responses import StreamingResponse
 from starlette.testclient import TestClient
 
 from podcast_pipeline import dashboard_context as context
+from podcast_pipeline.domain.models import Candidate, TextFormat
 from podcast_pipeline.entrypoints import dashboard_web as web
 from tests.session_support import SESSION_HEADERS, SESSION_TOKEN
 
@@ -409,3 +411,48 @@ def test_dashboard_malformed_port_is_rejected_before_body(ctx: context.Dashboard
     assert not consumed
     assert not ctx.jobs
     assert not list(ctx.workspace.iterdir())
+
+
+@pytest.mark.parametrize("scenario", ["disappeared", "oversized"])
+def test_selected_tag_artifact_admission(
+    ctx: context.DashboardContext, monkeypatch: pytest.MonkeyPatch, scenario: str
+) -> None:
+    ctx.store.write_candidate(Candidate(asset_id="cms_tags", content="Candidate"))
+    markdown = ctx.layout.selected_text_path("cms_tags", TextFormat.markdown)
+    plain = ctx.layout.selected_text_path("cms_tags", TextFormat.plain)
+    html = ctx.layout.selected_text_path("cms_tags", TextFormat.html)
+    markdown.parent.mkdir(parents=True, exist_ok=True)
+    markdown.write_text("- Markdown", encoding="utf-8")
+    plain.write_text("- Plain", encoding="utf-8")
+    html.write_text("- HTML", encoding="utf-8")
+
+    with TestClient(
+        web.create_dashboard_app(ctx=ctx, port=8765, session_token=SESSION_TOKEN),
+        base_url="http://127.0.0.1:8765",
+        headers=SESSION_HEADERS,
+    ) as client:
+        tags_url = "/api/assets/cms_tags/tags"
+        assert client.get(tags_url).json()["tags"] == ["Markdown"]
+        if scenario == "disappeared":
+            original_stat = os.stat
+
+            def stat(path: Any, **kwargs: Any) -> os.stat_result:
+                result = original_stat(path, **kwargs)
+                if path in (markdown, Path(markdown.name)):
+                    markdown.unlink()
+                return result
+
+            with monkeypatch.context() as patch:
+                patch.setattr(os, "stat", stat)
+                assert client.get(tags_url).json()["tags"] == ["Plain"]
+            plain.unlink()
+            assert client.get(tags_url).json()["tags"] == ["HTML"]
+            html.unlink()
+            assert client.get(tags_url).json()["tags"] == []
+        else:
+            with markdown.open("wb") as artifact:
+                artifact.truncate(8 * 1024 * 1024 + 1)
+            for url in (tags_url, "/api/assets", "/api/status"):
+                response = client.get(url)
+                assert response.status_code == 422
+                assert response.json() == {"error": "Selected artifact cms_tags.md is unreadable or invalid."}

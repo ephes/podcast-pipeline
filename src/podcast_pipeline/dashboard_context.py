@@ -19,6 +19,7 @@ from podcast_pipeline.dashboard_api_models import (
     TagPoolEntryOut,
 )
 from podcast_pipeline.domain.models import Candidate, EpisodeWorkspace, TextFormat
+from podcast_pipeline.file_inputs import read_workspace_utf8
 from podcast_pipeline.markdown_html import markdown_to_deterministic_html
 from podcast_pipeline.pick_core import (
     MANUAL_SELECTION_PROVENANCE_KIND,
@@ -26,7 +27,6 @@ from podcast_pipeline.pick_core import (
     find_candidate_by_id,
     load_candidates,
     load_workspace,
-    read_current_selection,
     save_candidate_selection,
     save_custom_selection,
     tag_pool_json,
@@ -46,7 +46,12 @@ from podcast_pipeline.workspace_store import EpisodeWorkspaceStore, WorkspaceSto
 MAX_PROGRESS_BYTES = 128 * 1024
 MAX_PROGRESS_ENTRIES = 1024
 MAX_COMPLETED_JOBS = 64
+MAX_SELECTED_ARTIFACT_BYTES = 8 * 1024 * 1024
 PROGRESS_TRUNCATED = "[Earlier progress truncated]"
+
+
+class SelectedArtifactError(WorkspaceStoreError):
+    """A published selection could not be safely read."""
 
 
 @dataclass
@@ -108,7 +113,7 @@ class DashboardContext:
             if (
                 ref.kind == MANUAL_SELECTION_PROVENANCE_KIND
                 and ref.ref not in pickable
-                and read_current_selection(self.layout, ref.ref) is not None
+                and self._read_selected_text(ref.ref) is not None
             ):
                 pickable[ref.ref] = []
         return pickable
@@ -213,9 +218,12 @@ class DashboardContext:
             cands = candidates[asset_key]
             existing = assets_by_id.get(asset_key)
             selected_id = str(existing.selected_candidate_id) if existing and existing.selected_candidate_id else None
-            has_selection = self._is_asset_selected(asset_key, existing.selected_candidate_id if existing else None)
-            current = read_current_selection(self.layout, asset_key)
-            custom_selected = selected_id is None and has_selection and current is not None
+            current = self._read_selected_text(asset_key)
+            is_tag = _is_tag_asset(asset_key)
+            selected_tags = parse_tag_list(current) if is_tag else []
+            has_text = bool(selected_tags) if is_tag else bool(current and current.strip())
+            has_selection = selected_id is not None or has_text
+            custom_selected = selected_id is None and has_text
 
             candidate_items: list[AssetCandidateOut] = []
             for c in cands:
@@ -235,15 +243,15 @@ class DashboardContext:
                 selected_candidate_id=selected_id,
                 has_selection=has_selection,
                 custom_selected=custom_selected,
-                selected_text=current[1] if custom_selected and current is not None else None,
+                selected_text=current if custom_selected else None,
                 selection_format=custom_selection_format(asset_key).value,
                 candidates=candidate_items,
             )
-            if _is_tag_asset(asset_key):
+            if is_tag:
                 pool = tag_pool_json(cands, settings=tag_settings, hosts=hosts)
                 asset_data = asset_data.model_copy(
                     update={
-                        "selected_tags": self.get_selected_tags(asset_key),
+                        "selected_tags": selected_tags,
                         "tag_pool": [TagPoolEntryOut.model_validate(entry) for entry in pool],
                         "max_tags": tag_settings.max_tags,
                     }
@@ -352,7 +360,7 @@ class DashboardContext:
         candidates = self._pickable_assets()
         if asset_id not in candidates:
             return f"Unknown asset_id: {asset_id}"
-        current = read_current_selection(self.layout, asset_id)
+        current = self._read_selected_text(asset_id)
         try:
             return build_refine_request(
                 asset_id=asset_id,
@@ -360,7 +368,7 @@ class DashboardContext:
                 candidates=candidates[asset_id],
                 candidate_id=candidate_id,
                 text=text,
-                current_selection_text=current[1] if current is not None else None,
+                current_selection_text=current,
                 editorial_notes=self.get_editorial_notes(asset_id),
             )
         except ValueError as exc:
@@ -498,8 +506,11 @@ class DashboardContext:
         return None
 
     def create_job(self, stage: str) -> BackgroundJob:
+        """Reserve a job ID and insert the record. Caller holds the context lock."""
         self.prune_jobs()
-        job_id = str(uuid.uuid4())[:8]
+        job_id = str(uuid.uuid4())
+        while job_id in self.jobs:
+            job_id = str(uuid.uuid4())
         job = BackgroundJob(job_id=job_id, stage=stage)
         self.jobs[job_id] = job
         return job
@@ -507,9 +518,11 @@ class DashboardContext:
     def finish_job(self, job: BackgroundJob, status: str) -> None:
         """Mark terminal status and trim completed history. Caller holds the context lock."""
         job.status = status
+        if self.jobs.get(job.job_id) is not job:
+            return
         # A long-running job that just finished is the newest terminal result,
         # regardless of when it was admitted.
-        self.jobs.pop(job.job_id, None)
+        del self.jobs[job.job_id]
         self.jobs[job.job_id] = job
         self.prune_jobs()
 
@@ -529,8 +542,15 @@ class DashboardContext:
     def _read_selected_text(self, asset_id: str) -> str | None:
         for fmt in (TextFormat.markdown, TextFormat.plain, TextFormat.html):
             path = self.layout.selected_text_path(asset_id, fmt)
-            if path.exists():
-                return path.read_text(encoding="utf-8")
+            try:
+                text = read_workspace_utf8(
+                    self.layout.root, path.relative_to(self.layout.root), max_bytes=MAX_SELECTED_ARTIFACT_BYTES
+                )
+            except FileNotFoundError:
+                continue
+            except (OSError, ValueError):
+                raise SelectedArtifactError(f"Selected artifact {path.name} is unreadable or invalid.") from None
+            return text.replace("\r\n", "\n").replace("\r", "\n")
         return None
 
     def _is_asset_selected(self, asset_id: str, selected_candidate_id: UUID | None) -> bool:
