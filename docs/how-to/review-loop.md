@@ -14,6 +14,10 @@ excerpt still clips at 4,000 characters and includes a truncation marker when cl
 
 Prompt receipts under `copy/provenance/prompts/` are addressed by a SHA-256 digest of their
 canonical JSON fields, including the template name, rendered text, context, glossary and examples.
+Prompt rendering requires Unicode scalar text in template names and sources, all context keys and
+values (including unused entries), glossary entries and few-shot examples. An unpaired surrogate
+stops rendering before a prompt receipt or model call. Valid text, including characters outside
+the Basic Multilingual Plane, keeps its existing receipt identity.
 Identical receipts reuse the same reference. Older references still resolve to their original files.
 Prompt template names must be unique within the registry. Duplicate names fail at construction.
 

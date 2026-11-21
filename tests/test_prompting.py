@@ -4,6 +4,7 @@ import json
 import subprocess
 from hashlib import sha256
 from pathlib import Path
+from unittest.mock import Mock
 
 import pytest
 
@@ -14,6 +15,7 @@ from podcast_pipeline.domain.models import Candidate, ProvenanceRef
 from podcast_pipeline.prompting import (
     PromptRegistry,
     PromptRenderer,
+    PromptRenderResult,
     PromptStore,
     PromptTemplate,
     default_prompt_registry,
@@ -65,6 +67,48 @@ def test_prompt_renderer_injects_glossary_and_few_shot_deterministically() -> No
     assert "Few-shot examples:" in rendered_a.text
     assert "User:\nPing" in rendered_a.text
     assert "Assistant:\nPong" in rendered_a.text
+
+
+@pytest.mark.parametrize(
+    ("context", "glossary", "field"),
+    [
+        ({"name": "Pod"}, {"Mic": "\ud800"}, "glossary definition"),
+        ({"name": "Pod", "unused": "\udfff"}, {}, "context value"),
+        ({"name": "Pod", "\ud800": "unused"}, {}, "context key"),
+    ],
+)
+def test_prompt_renderer_refuses_surrogates_before_receipt(
+    monkeypatch: pytest.MonkeyPatch,
+    context: dict[str, str],
+    glossary: dict[str, str],
+    field: str,
+) -> None:
+    renderer = PromptRenderer(PromptRegistry([PromptTemplate(name="simple", template="Hello {name}")]))
+    receipt = Mock(wraps=PromptRenderResult)
+    monkeypatch.setattr("podcast_pipeline.prompting.PromptRenderResult", receipt)
+
+    with pytest.raises(ValueError, match=rf"{field}.*Unicode scalar text"):
+        renderer.render(name="simple", context=context, glossary=glossary)
+
+    receipt.assert_not_called()
+
+
+def test_direct_prompt_receipt_refuses_surrogate() -> None:
+    with pytest.raises(ValueError, match="prompt text.*Unicode scalar text"):
+        PromptRenderResult(template="simple", text="\ud800", context={}, glossary=(), few_shots=())
+
+
+def test_prompt_receipt_preserves_non_bmp_identity() -> None:
+    renderer = PromptRenderer(PromptRegistry([PromptTemplate(name="simple", template="Hello {name}")]))
+    rendered = renderer.render(
+        name="simple",
+        context={"name": "🎙", "unused": "🛰"},
+        glossary={"Mic": "🎤"},
+        few_shots=[{"input": "🗣", "output": "👋"}],
+    )
+
+    assert rendered.text.encode("utf-8").decode("utf-8").startswith("Hello 🎙")
+    assert rendered.prompt_id == "simple_f6d2a4c62785051f4cfdbbe884e8d27e09649241473be1ea77149b5f430e79bd"
 
 
 def test_prompt_store_writes_prompt_under_provenance(tmp_path: Path) -> None:
