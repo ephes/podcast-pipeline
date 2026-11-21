@@ -48,7 +48,7 @@ class StatusStagesOut(_DashboardApiModel):
     episode_yaml: bool
     state_json: bool
     transcript: bool
-    chunks: int
+    chunks: int | None
     summary: bool
     candidates: int
     candidate_assets: int

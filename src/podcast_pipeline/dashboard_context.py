@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import threading
 import uuid
 from collections import deque
@@ -41,12 +42,14 @@ from podcast_pipeline.tag_assets import (
     tag_cap_error,
 )
 from podcast_pipeline.tag_parsing import parse_tag_list
+from podcast_pipeline.transcript_chunker import DEFAULT_LIMITS, read_published_chunk_count
 from podcast_pipeline.workspace_store import EpisodeWorkspaceStore, WorkspaceStoreError
 
 MAX_PROGRESS_BYTES = 128 * 1024
 MAX_PROGRESS_ENTRIES = 1024
 MAX_COMPLETED_JOBS = 64
 MAX_SELECTED_ARTIFACT_BYTES = 8 * 1024 * 1024
+MAX_CHUNK_INVENTORY_ENTRIES = 2 * DEFAULT_LIMITS.chunks
 PROGRESS_TRUNCATED = "[Earlier progress truncated]"
 
 
@@ -132,7 +135,9 @@ class DashboardContext:
         episode_yaml = self._read_episode_yaml_safe()
 
         transcript_ok = (layout.transcript_dir / "transcript.txt").exists()
-        chunk_count = _glob_count(layout.transcript_chunks_dir, "chunk_*.txt")
+        chunk_count = read_published_chunk_count(layout)
+        if chunk_count is None:
+            chunk_count = _count_chunk_entries(layout.transcript_chunks_dir)
         summary_ok = layout.episode_summary_json_path().exists()
         candidates = self._ensure_candidates()
         candidate_count = sum(len(v) for v in candidates.values())
@@ -562,10 +567,24 @@ class DashboardContext:
         return bool(selected_text and selected_text.strip())
 
 
-def _glob_count(path: Path, pattern: str) -> int:
-    if not path.exists():
+def _count_chunk_entries(path: Path) -> int | None:
+    count = 0
+    try:
+        entries = os.scandir(path)
+    except FileNotFoundError:
         return 0
-    return sum(1 for _ in path.glob(pattern))
+    except OSError:
+        return None
+    try:
+        with entries as scan:
+            for index, entry in enumerate(scan, start=1):
+                if index > MAX_CHUNK_INVENTORY_ENTRIES:
+                    return None
+                if entry.name.startswith("chunk_") and entry.name.endswith(".txt"):
+                    count += 1
+    except OSError:
+        return None
+    return count
 
 
 def _is_tag_asset(asset_id: str) -> bool:

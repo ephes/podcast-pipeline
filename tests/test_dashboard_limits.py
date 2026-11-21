@@ -3,7 +3,8 @@ from __future__ import annotations
 import asyncio
 import os
 import threading
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -16,12 +17,55 @@ from starlette.testclient import TestClient
 from podcast_pipeline import dashboard_context as context
 from podcast_pipeline.domain.models import Candidate, TextFormat
 from podcast_pipeline.entrypoints import dashboard_web as web
+from podcast_pipeline.transcript_chunker import ChunkerConfig, write_transcript_chunks
 from tests.session_support import SESSION_HEADERS, SESSION_TOKEN
 
 
 @pytest.fixture
 def ctx(tmp_path: Path) -> context.DashboardContext:
     return context.DashboardContext(workspace=tmp_path)
+
+
+def test_status_bounds_chunk_directory_entries(ctx: context.DashboardContext, monkeypatch: pytest.MonkeyPatch) -> None:
+    directory = ctx.layout.transcript_chunks_dir
+    directory.mkdir(parents=True)
+    (directory / "chunk_0001.txt").touch()
+    for i in range(40):
+        (directory / f"leftover-{i}").touch()
+    monkeypatch.setattr(context, "MAX_CHUNK_INVENTORY_ENTRIES", 8, raising=False)
+    scandir = os.scandir
+    visited = 0
+
+    @contextmanager
+    def track_chunk_entries(path: str | Path) -> Iterator[Iterator[os.DirEntry[str]]]:
+        def entries(scan: Iterator[os.DirEntry[str]]) -> Iterator[os.DirEntry[str]]:
+            nonlocal visited
+            for entry in scan:
+                visited += 1
+                assert visited <= 9
+                yield entry
+
+        with scandir(path) as scan:
+            yield entries(scan) if Path(path) == directory else scan
+
+    monkeypatch.setattr(os, "scandir", track_chunk_entries)
+    assert ctx.get_status_json()["stages"]["chunks"] is None
+    assert visited == 9
+
+
+def test_status_counts_published_chunks_from_manifest(ctx: context.DashboardContext) -> None:
+    transcript = ctx.layout.transcript_dir / "transcript.txt"
+    transcript.parent.mkdir(parents=True)
+    transcript.write_text("one two three four", encoding="utf-8")
+    chunks = write_transcript_chunks(
+        layout=ctx.layout, transcript_path=transcript, config=ChunkerConfig(max_tokens=2, overlap_tokens=0)
+    )
+    directory = ctx.layout.transcript_chunks_dir
+    (directory / "chunk_stray.txt").touch()
+    assert ctx.get_status_json()["stages"]["chunks"] == len(chunks)
+
+    (directory / "complete.json").write_text('{"chunk_ids": [1]}', encoding="utf-8")
+    assert ctx.get_status_json()["stages"]["chunks"] == len(chunks) + 1
 
 
 def test_thread_start_failure_retry(ctx: context.DashboardContext, monkeypatch: pytest.MonkeyPatch) -> None:
