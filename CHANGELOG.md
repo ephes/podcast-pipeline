@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Bound dashboard selection reads and report unreadable artifacts separately from missing selections.
+
 - Reserve full dashboard job UUIDs so collisions cannot replace retained jobs or bypass conflict checks.
 
 - Bound review candidate evidence reads to regular UTF-8 JSON files and per-file and per-asset byte limits.

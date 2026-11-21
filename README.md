@@ -88,7 +88,9 @@ production run single-flight per episode. Details: `docs/tutorials/episode-workf
 
 Besides picking a whole generated candidate, `podcast pick --web` and the dashboard let you write or edit the
 selected text of an asset (start from a candidate with "Edit", then "Use custom text"); tag assets use the tag pool
-instead. Slugs are validated as
+instead. The dashboard reads selected copy as regular workspace UTF-8 files up to 8 MiB per file, in
+Markdown, plain text, then HTML order. Missing files allow fallback to the next format. An unreadable
+or invalid selection returns an error naming the artifact. Slugs are validated as
 lowercase, hyphen-separated and URL-safe; custom selections count as selected for "Done", `podcast status` and
 `podcast produce`. You can also refine a candidate or your own text with an instruction (`kürzer`, `ohne Emojis`):
 the drafter agent rewrites it into a new candidate that records the instruction. Details:
