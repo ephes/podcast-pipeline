@@ -617,15 +617,30 @@ class EpisodeWorkspaceStore:
         if candidate.format == TextFormat.markdown:
             html_path = self.layout.candidate_text_path(candidate.asset_id, candidate.candidate_id, TextFormat.html)
             artifacts[html_path] = markdown_to_deterministic_html(content)
-        # Serialize/render first, then publish JSON last: it makes candidates discoverable.
-        artifacts[path] = dumped
-        with self._state_lock(), preserve_files(list(artifacts)):
+        with self._state_lock():
             if immutable and path.exists():
                 if self.read_candidate(candidate.asset_id, candidate.candidate_id) != candidate:
                     raise ValueError("Review candidate identity cannot change; use a fresh candidate UUID.")
-                return path
-            for artifact_path, text in artifacts.items():
-                _atomic_write_text(artifact_path, text)
+                missing: dict[Path, str] = {}
+                for artifact_path, text in artifacts.items():
+                    try:
+                        mode = artifact_path.lstat().st_mode
+                    except FileNotFoundError:
+                        missing[artifact_path] = text
+                        continue
+                    if stat.S_ISREG(mode):
+                        expected = text.encode()
+                        with artifact_path.open("rb") as source:
+                            if source.read(len(expected) + 1) == expected:
+                                continue
+                    raise WorkspaceStoreError(f"Immutable candidate companion conflicts at {artifact_path}")
+                artifacts = missing
+            else:
+                # Publish JSON last: it makes candidates discoverable.
+                artifacts[path] = dumped
+            with preserve_files(list(artifacts)):
+                for artifact_path, text in artifacts.items():
+                    _atomic_write_text(artifact_path, text)
         return path
 
     def read_candidate(self, asset_id: str, candidate_id: UUID) -> Candidate:

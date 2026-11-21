@@ -125,6 +125,23 @@ def test_cli_review_protocol_error_exits_cleanly(tmp_path: Path) -> None:
     assert "Review stopped" in result.output
 
 
+def test_cli_review_reports_immutable_companion_conflict(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    assert _review(workspace).exit_code == 0
+    # Simulate interruption after candidate publication and before the resume marker.
+    (workspace / "copy" / "protocol" / "description" / "state.json").unlink()
+    candidate_dir = workspace / "copy" / "candidates" / "description"
+    html = next(candidate_dir.glob("candidate_*.html"))
+    conflict = b"Conflicting synthetic HTML"
+    html.write_bytes(conflict)
+
+    result = _review(workspace)
+
+    assert result.exit_code == 1
+    assert f"Review stopped: Immutable candidate companion conflicts at {html}" in result.stderr
+    assert html.read_bytes() == conflict
+
+
 def test_cli_review_corrupt_candidate_evidence_exits_cleanly(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     assert _review(workspace).exit_code == 0

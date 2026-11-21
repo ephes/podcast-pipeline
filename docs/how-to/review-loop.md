@@ -43,6 +43,10 @@ Notes:
   one file per UUID and the same UUID in the filename and JSON. If review stops on conflicting
   evidence, verify the canonical file against the checkpoint and archive conflicting copies
   outside the active candidate directory before retrying.
+- When review publishes an identical immutable candidate again, it restores missing text or
+  derived HTML from the saved candidate under the workspace lock. A companion with different
+  bytes stops publication and the error names the file. Verify and archive that file before
+  retrying to rebuild it from the saved candidate.
 - Review loads regular UTF-8 candidate JSON without symlinks, up to 8 MiB per file and
   64 MiB total for the asset. If the evidence exceeds a limit, archive older candidates
   outside the active directory and keep all candidates referenced by the current checkpoint.

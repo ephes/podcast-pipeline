@@ -24,7 +24,7 @@ from podcast_pipeline.review_loop_engine import (
     load_loop_protocol_state,
 )
 from podcast_pipeline.review_loop_orchestrator import ReviewSelectionConflict, run_review_loop_orchestrator
-from podcast_pipeline.workspace_store import EpisodeWorkspaceStore
+from podcast_pipeline.workspace_store import EpisodeWorkspaceStore, WorkspaceStoreError
 
 _ASSET_ID_RE = re.compile(r"^[a-z][a-z0-9_]*$")
 
@@ -229,7 +229,7 @@ def _run_and_report_review(
             creator=creator,
             reviewer=reviewer,
         )
-    except (ReviewSelectionConflict, LoopProtocolError) as exc:
+    except (ReviewSelectionConflict, LoopProtocolError, WorkspaceStoreError) as exc:
         typer.echo(f"Workspace: {root}")
         typer.echo(f"Review stopped: {exc}", err=True)
         raise typer.Exit(code=1) from exc

@@ -247,6 +247,49 @@ def test_candidate_json_is_published_last(tmp_path: Path, monkeypatch: pytest.Mo
     assert published == [".md", ".html", ".json"]
 
 
+@pytest.mark.parametrize("missing_format", [TextFormat.markdown, TextFormat.html])
+def test_identical_immutable_candidate_retry_repairs_missing_companion(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, missing_format: TextFormat
+) -> None:
+    store = EpisodeWorkspaceStore(tmp_path)
+    candidate = Candidate(asset_id="description", format=TextFormat.markdown, content="# Synthetic copy")
+    json_path = store.write_candidate(candidate, immutable=True)
+    missing = store.layout.candidate_text_path(candidate.asset_id, candidate.candidate_id, missing_format)
+    expected = missing.read_bytes()
+    missing.unlink()
+    write = workspace_store._atomic_write_text
+    published: list[Path] = []
+
+    def record(path: Path, text: str) -> None:
+        write(path, text)
+        published.append(path)
+
+    monkeypatch.setattr(workspace_store, "_atomic_write_text", record)
+    assert store.write_candidate(candidate, immutable=True) == json_path
+    assert missing.read_bytes() == expected
+    assert store.write_candidate(candidate, immutable=True) == json_path
+    assert published == [missing]
+
+
+def test_immutable_candidate_retry_rejects_conflicting_companion_before_repair(tmp_path: Path) -> None:
+    store = EpisodeWorkspaceStore(tmp_path)
+    candidate = Candidate(asset_id="description", format=TextFormat.markdown, content="# Synthetic copy")
+    json_path = store.write_candidate(candidate, immutable=True)
+    markdown = store.layout.candidate_text_path(candidate.asset_id, candidate.candidate_id, TextFormat.markdown)
+    html = store.layout.candidate_text_path(candidate.asset_id, candidate.candidate_id, TextFormat.html)
+    json_before = json_path.read_bytes()
+    markdown.unlink()
+    conflict = html.read_bytes().replace(b"\n", b"\r\n")
+    html.write_bytes(conflict)
+
+    with pytest.raises(WorkspaceStoreError, match="Immutable candidate companion conflicts") as error:
+        store.write_candidate(candidate, immutable=True)
+    assert str(html) in str(error.value)
+    assert html.read_bytes() == conflict
+    assert not markdown.exists()
+    assert json_path.read_bytes() == json_before
+
+
 @pytest.mark.parametrize("mismatch", ["candidate_id", "asset_id"])
 def test_read_candidate_binds_embedded_identity_to_requested_path(tmp_path: Path, mismatch: str) -> None:
     from uuid import uuid4
