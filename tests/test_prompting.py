@@ -4,6 +4,7 @@ import json
 import subprocess
 from hashlib import sha256
 from pathlib import Path
+from unittest.mock import Mock
 
 import pytest
 
@@ -12,8 +13,10 @@ from podcast_pipeline.agent_cli_config import AgentCliConfig
 from podcast_pipeline.agent_runners import ClaudeCodeReviewerRunner, load_episode_context_from_workspace
 from podcast_pipeline.domain.models import Candidate, ProvenanceRef
 from podcast_pipeline.prompting import (
+    PromptInputError,
     PromptRegistry,
     PromptRenderer,
+    PromptRenderResult,
     PromptStore,
     PromptTemplate,
     default_prompt_registry,
@@ -65,6 +68,48 @@ def test_prompt_renderer_injects_glossary_and_few_shot_deterministically() -> No
     assert "Few-shot examples:" in rendered_a.text
     assert "User:\nPing" in rendered_a.text
     assert "Assistant:\nPong" in rendered_a.text
+
+
+@pytest.mark.parametrize(
+    ("context", "glossary", "field"),
+    [
+        ({"name": "Pod"}, {"Mic": "\ud800"}, "glossary definition"),
+        ({"name": "Pod", "unused": "\udfff"}, {}, "context value"),
+        ({"name": "Pod", "\ud800": "unused"}, {}, "context key"),
+    ],
+)
+def test_prompt_renderer_refuses_surrogates_before_receipt(
+    monkeypatch: pytest.MonkeyPatch,
+    context: dict[str, str],
+    glossary: dict[str, str],
+    field: str,
+) -> None:
+    renderer = PromptRenderer(PromptRegistry([PromptTemplate(name="simple", template="Hello {name}")]))
+    receipt = Mock(wraps=PromptRenderResult)
+    monkeypatch.setattr("podcast_pipeline.prompting.PromptRenderResult", receipt)
+
+    with pytest.raises(ValueError, match=rf"{field}.*Unicode scalar text"):
+        renderer.render(name="simple", context=context, glossary=glossary)
+
+    receipt.assert_not_called()
+
+
+def test_direct_prompt_receipt_refuses_surrogate() -> None:
+    with pytest.raises(ValueError, match="prompt text.*Unicode scalar text"):
+        PromptRenderResult(template="simple", text="\ud800", context={}, glossary=(), few_shots=())
+
+
+def test_prompt_receipt_preserves_non_bmp_identity() -> None:
+    renderer = PromptRenderer(PromptRegistry([PromptTemplate(name="simple", template="Hello {name}")]))
+    rendered = renderer.render(
+        name="simple",
+        context={"name": "🎙", "unused": "🛰"},
+        glossary={"Mic": "🎤"},
+        few_shots=[{"input": "🗣", "output": "👋"}],
+    )
+
+    assert rendered.text.encode("utf-8").decode("utf-8").startswith("Hello 🎙")
+    assert rendered.prompt_id == "simple_f6d2a4c62785051f4cfdbbe884e8d27e09649241473be1ea77149b5f430e79bd"
 
 
 def test_prompt_store_writes_prompt_under_provenance(tmp_path: Path) -> None:
@@ -196,6 +241,36 @@ def test_render_episode_context_truncates_long_transcript() -> None:
     ctx = render_episode_context(transcript_excerpt=long_text, max_transcript_chars=100)
     assert "[...truncated]" in ctx
     assert len(ctx) < 5000
+
+
+def test_render_episode_context_admits_exact_limits_and_clips_transcript() -> None:
+    points = ["p"] * 199
+    chapters = "c"
+    summary = "s" * (65536 - len(points) - len(chapters))
+    context = render_episode_context(
+        summary=summary,
+        key_points=points,
+        chapters=chapters,
+        transcript_excerpt="hello world",
+        max_transcript_chars=5,
+    )
+    assert summary in context
+    assert context.endswith("Transcript excerpt:\nhello\n[...truncated]")
+
+
+def test_render_episode_context_ignores_blank_chapter_lines_in_item_count() -> None:
+    chapters = "Opening\n\n" * 200
+    context = render_episode_context(summary="s", chapters=chapters)
+    assert "Opening" in context
+
+    with pytest.raises(PromptInputError, match="200 items"):
+        render_episode_context(summary="s", key_points=["p"], chapters=chapters)
+
+
+def test_render_episode_context_counts_chapter_lines_with_other_items() -> None:
+    chapters = "Opening\n" * 200
+    with pytest.raises(ValueError, match="200 items"):
+        render_episode_context(chapters=chapters, key_points=["A point"], transcript_excerpt="A normal transcript.")
 
 
 def test_creator_prompt_includes_episode_context() -> None:

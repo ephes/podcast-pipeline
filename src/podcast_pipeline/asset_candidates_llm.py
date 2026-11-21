@@ -297,7 +297,7 @@ def generate_draft_candidates_llm(
             episode_summary_markdown=episode_summary.summary_markdown,
             key_points=episode_summary.key_points,
             topics=episode_summary.topics,
-            chapters=list(chapters),
+            chapters=chapters,
             num_candidates=candidates_per_asset,
             hosts=hosts,
             few_shots=tag_few_shots(asset_id, settings=settings, topics=episode_summary.topics, hosts=hosts),

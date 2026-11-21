@@ -180,3 +180,87 @@ def test_cli_draft_reports_transcript_change_during_staging_without_traceback(
     assert "Error: Transcript changed while staging chunks" in result.output
     assert not isinstance(result.exception, transcript_chunker.ChunkSourceChangedError)
     assert not store.layout.transcript_chunks_dir.exists()
+
+
+def test_cli_draft_refuses_long_chapters_before_drafter_call(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import subprocess
+
+    import podcast_pipeline.summarization_llm as summarization_llm
+    from podcast_pipeline.domain.intermediate_formats import EpisodeSummary
+
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("agents:\n  drafter:\n    command: 'false'\n", encoding="utf-8")
+    monkeypatch.setenv("PODCAST_PIPELINE_CONFIG", str(config_path))
+    monkeypatch.setattr(
+        summarization_llm,
+        "run_llm_summarization",
+        lambda **_: EpisodeSummary(summary_markdown="Summary"),
+    )
+
+    def forbidden(*args: object, **kwargs: object) -> None:
+        raise AssertionError("drafter launched")
+
+    monkeypatch.setattr(subprocess, "Popen", forbidden)
+    chapters = tmp_path / "chapters.txt"
+    chapters.write_text("".join(f"{i:02d}:00 Chapter {i}\n\n" for i in range(201)), encoding="utf-8")
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "draft",
+            "--workspace",
+            str(tmp_path / "workspace"),
+            "--transcript",
+            str(_fixture_dir() / "transcript.txt"),
+            "--chapters",
+            str(chapters),
+        ],
+    )
+
+    assert result.exit_code == 1, result.output
+    assert "Error: Supplemental episode context exceeds 200 items" in result.output
+    assert not (tmp_path / "workspace" / "copy" / "candidates").exists()
+
+
+def test_cli_review_reports_oversized_context_without_traceback(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import json
+    import subprocess
+
+    import yaml
+
+    from podcast_pipeline.prompting import PromptInputError
+
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        "agents:\n  creator:\n    command: 'false'\n  reviewer:\n    command: 'false'\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("PODCAST_PIPELINE_CONFIG", str(config_path))
+
+    def forbidden(*args: object, **kwargs: object) -> None:
+        raise AssertionError("agent launched")
+
+    monkeypatch.setattr(subprocess, "Popen", forbidden)
+    workspace = tmp_path / "workspace"
+    summary_dir = workspace / "summaries" / "episode"
+    summary_dir.mkdir(parents=True)
+    (summary_dir / "episode_summary.json").write_text(
+        json.dumps({"summary_markdown": "Summary", "key_points": [f"Point {i}" for i in range(201)]}),
+        encoding="utf-8",
+    )
+    (workspace / "episode.yaml").write_text(yaml.safe_dump({"episode_id": "ep"}), encoding="utf-8")
+    state = {"episode_id": "ep", "root_dir": str(workspace)}
+    (workspace / "state.json").write_text(json.dumps(state), encoding="utf-8")
+
+    result = CliRunner().invoke(app, ["review", "--workspace", str(workspace), "--episode-id", "ep"])
+
+    assert result.exit_code == 1, result.output
+    assert "Review stopped: Supplemental episode context exceeds 200 items" in result.output
+    assert not isinstance(result.exception, PromptInputError)
+    assert not (workspace / "copy" / "protocol").exists()

@@ -7,8 +7,17 @@ This guide shows how to run the MVP-1 creator/reviewer loop with the fake runner
 By default, `podcast review` uses the local Codex/Claude CLIs configured in `episode.yaml` or
 `~/.config/podcast-pipeline/config.yaml` and writes protocol state under `copy/protocol/<asset_id>/`.
 
+Review prompt context admits up to 65,536 characters across summary, key points, chapter text and
+host names, and up to 200 combined key points, nonblank chapter lines and hosts. Excess context stops review
+before the creator or reviewer runs. Shorten the supplemental context and retry. The transcript
+excerpt still clips at 4,000 characters and includes a truncation marker when clipped.
+
 Prompt receipts under `copy/provenance/prompts/` are addressed by a SHA-256 digest of their
 canonical JSON fields, including the template name, rendered text, context, glossary and examples.
+Prompt rendering requires Unicode scalar text in template names and sources, all context keys and
+values (including unused entries), glossary entries and few-shot examples. An unpaired surrogate
+stops rendering before a prompt receipt or model call. Valid text, including characters outside
+the Basic Multilingual Plane, keeps its existing receipt identity.
 Identical receipts reuse the same reference. Older references still resolve to their original files.
 Prompt template names must be unique within the registry. Duplicate names fail at construction.
 

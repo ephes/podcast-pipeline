@@ -20,6 +20,10 @@ from podcast_pipeline.review_loop_engine import CreatorInput, ReviewerInput
 from podcast_pipeline.workspace_store import EpisodeWorkspaceStore
 
 
+class PromptInputError(ValueError):
+    """Input that cannot be admitted to a prompt."""
+
+
 @dataclass(frozen=True)
 class GlossaryEntry:
     term: str
@@ -72,6 +76,32 @@ class PromptTemplate:
     description: str | None = None
 
 
+_SURROGATE_RE = re.compile(r"[\ud800-\udfff]")
+
+
+def _check_unicode_scalar_text(field: str, value: str) -> None:
+    if _SURROGATE_RE.search(value):
+        raise PromptInputError(f"Invalid {field}: expected Unicode scalar text")
+
+
+def _check_prompt_fields(
+    template_name: str,
+    context: Mapping[str, str],
+    glossary: Sequence[GlossaryEntry],
+    few_shots: Sequence[FewShotExample],
+) -> None:
+    _check_unicode_scalar_text("template name", template_name)
+    for key, value in context.items():
+        _check_unicode_scalar_text("context key", key)
+        _check_unicode_scalar_text("context value", value)
+    for entry in glossary:
+        _check_unicode_scalar_text("glossary term", entry.term)
+        _check_unicode_scalar_text("glossary definition", entry.definition)
+    for example in few_shots:
+        _check_unicode_scalar_text("few-shot input", example.input_text)
+        _check_unicode_scalar_text("few-shot output", example.output_text)
+
+
 @dataclass(frozen=True)
 class PromptRenderResult:
     template: str
@@ -83,6 +113,8 @@ class PromptRenderResult:
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "context", MappingProxyType(dict(self.context)))
+        _check_prompt_fields(self.template, self.context, self.glossary, self.few_shots)
+        _check_unicode_scalar_text("prompt text", self.text)
         canonical = json.dumps(self._receipt_fields(), sort_keys=True, separators=(",", ":"))
         digest = sha256(canonical.encode()).hexdigest()
         # Leave room for the digest, extension and atomic write's temporary suffix.
@@ -134,11 +166,12 @@ class PromptRenderer:
     ) -> PromptRenderResult:
         template = self._registry.get(name)
         context_str = {key: str(value) for key, value in context.items()}
-        base = template.template.format_map(context_str).rstrip()
-
         glossary_entries = _normalize_glossary(glossary)
         few_shot_entries = _normalize_few_shots(few_shots)
+        _check_prompt_fields(template.name, context_str, glossary_entries, few_shot_entries)
+        _check_unicode_scalar_text("template source", template.template)
 
+        base = template.template.format_map(context_str).rstrip()
         sections = [base]
         if glossary_entries:
             sections.append(_render_glossary(glossary_entries))
@@ -346,6 +379,27 @@ def render_reviewer_prompt(
 
 
 _MAX_TRANSCRIPT_EXCERPT_CHARS = 4000
+_MAX_EPISODE_CONTEXT_CHARS = 65536
+_MAX_EPISODE_CONTEXT_ITEMS = 200
+
+
+def _check_episode_context_size(
+    summary: str,
+    *sections: Sequence[str],
+    chapter_text: str = "",
+) -> None:
+    item_error = f"Supplemental episode context exceeds {_MAX_EPISODE_CONTEXT_ITEMS} items"
+    items = sum(len(section) for section in sections)
+    if items > _MAX_EPISODE_CONTEXT_ITEMS:
+        raise PromptInputError(item_error)
+
+    chars = len(summary) + len(chapter_text) + sum(len(value) for section in sections for value in section)
+    if chars > _MAX_EPISODE_CONTEXT_CHARS:
+        raise PromptInputError(f"Supplemental episode context exceeds {_MAX_EPISODE_CONTEXT_CHARS} characters")
+
+    chapter_lines = sum(1 for line in chapter_text.splitlines() if line.strip())
+    if items + chapter_lines > _MAX_EPISODE_CONTEXT_ITEMS:
+        raise PromptInputError(item_error)
 
 
 def _render_hosts(hosts: Sequence[str] | None) -> str:
@@ -369,6 +423,7 @@ def render_episode_context(
     hosts: Sequence[str] | None = None,
 ) -> str:
     """Render episode context (summary, chapters, transcript) into a text block for prompts."""
+    _check_episode_context_size(summary or "", key_points or (), hosts or (), chapter_text=chapters or "")
     sections: list[str] = []
 
     hosts_text = _render_hosts(hosts)
@@ -510,6 +565,7 @@ def render_asset_candidates_prompt(
     hosts: Sequence[str] | None = None,
     few_shots: Sequence[FewShotExample | Mapping[str, Any]] | None = None,
 ) -> PromptRenderResult:
+    _check_episode_context_size(episode_summary_markdown, key_points, topics, chapters, hosts or ())
     hosts_text = _render_hosts(hosts)
     context = {
         "asset_id": asset_id,
