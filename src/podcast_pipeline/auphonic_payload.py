@@ -133,10 +133,17 @@ def resolve_cleanup_superseded(episode_yaml: Mapping[str, Any]) -> bool:
 
 
 def _load_yaml_mapping(path: Path) -> dict[str, Any]:
-    if not path.exists():
-        return {}
     try:
-        loaded = yaml.load(path.read_text(encoding="utf-8"), Loader=_UniqueKeySafeLoader)
+        try:
+            stream = path.open(encoding="utf-8")
+        except FileNotFoundError:
+            return {}
+        with stream as config_file:
+            contents = config_file.read()
+    except (OSError, UnicodeDecodeError) as exc:
+        raise AuphonicConfigError(f"Cannot read Auphonic config at {path}: {exc}") from exc
+    try:
+        loaded = yaml.load(contents, Loader=_UniqueKeySafeLoader)
     except yaml.YAMLError as exc:
         raise AuphonicConfigError(f"Invalid YAML at {path}: {exc}") from exc
     if loaded is None:
