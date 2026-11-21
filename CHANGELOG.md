@@ -4,7 +4,7 @@
 
 - Reject surrogate code points in prompt inputs before rendering or computing provenance receipts, preserving receipt IDs for valid prompts.
 
-- Refuse supplemental episode context above 65,536 characters or 200 combined list entries before building asset candidate or review prompts.
+- Refuse supplemental episode context above 65,536 characters or 200 combined list entries before building asset candidate or review prompts. `podcast draft` no longer silently keeps only the first 200 chapter lines; a longer chapters file now stops candidate generation (after summarization) with an error.
 
 - Return committed transcript chunk metadata if old-backup cleanup fails and its warning handler raises an exception.
 
