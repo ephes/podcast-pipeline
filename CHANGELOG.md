@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Report incomplete CMS audio inventories separately from a confirmed absent ID.
+
 - Bound dashboard selection reads and report unreadable artifacts separately from missing selections.
 
 - Reserve full dashboard job UUIDs so collisions cannot replace retained jobs or bypass conflict checks.

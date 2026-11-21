@@ -308,3 +308,33 @@ def test_ambiguous_mutation_receipt_stops_workflow(
     expected_path = "/api/editor/media/audios/" if endpoint == "upload" else "/api/editor/episodes/"
     assert fake.requests[-1].method == "POST"
     assert fake.requests[-1].url.path == expected_path
+
+
+def test_audio_lookup_reports_absence_after_valid_terminal_page() -> None:
+    transport = httpx.MockTransport(lambda request: httpx.Response(200, json={"results": [], "next": None}))
+    with DjangoCastClient(BASE, TOKEN, transport=transport) as client:
+        assert client.find_audio(83, max_pages=1) is None
+
+
+@pytest.mark.parametrize(
+    ("body", "reason"),
+    [
+        ([], "invalid page"),
+        ({"results": {}, "next": None}, "invalid page"),
+        ({"results": []}, "invalid page"),
+        ({"results": [], "next": False}, "invalid page"),
+        ({"results": [{"id": "83"}], "next": None}, "invalid audio ID"),
+        ({"results": [{"id": 84}], "next": "https://elsewhere.test/?page=2"}, "page limit"),
+        ({"results": [], "next": "https://elsewhere.test/?page=2"}, "page limit"),
+    ],
+)
+def test_audio_lookup_reports_incomplete_inventory(body: Any, reason: str) -> None:
+    def handle(request: httpx.Request) -> httpx.Response:
+        assert request.method == "GET"
+        assert request.url.host == "cms.test"
+        assert request.url.params["page"] == "1"
+        return httpx.Response(200, json=body)
+
+    with DjangoCastClient(BASE, TOKEN, transport=httpx.MockTransport(handle)) as client:
+        with pytest.raises(CmsApiError, match=f"incomplete audio inventory.*{reason}"):
+            client.find_audio(83, max_pages=1)
