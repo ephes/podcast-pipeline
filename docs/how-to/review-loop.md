@@ -8,7 +8,7 @@ By default, `podcast review` uses the local Codex/Claude CLIs configured in `epi
 `~/.config/podcast-pipeline/config.yaml` and writes protocol state under `copy/protocol/<asset_id>/`.
 
 Review prompt context admits up to 65,536 characters across summary, key points, chapter text and
-host names, and up to 200 combined key points, chapter lines and hosts. Excess context stops review
+host names, and up to 200 combined key points, nonblank chapter lines and hosts. Excess context stops review
 before the creator or reviewer runs. Shorten the supplemental context and retry. The transcript
 excerpt still clips at 4,000 characters and includes a truncation marker when clipped.
 

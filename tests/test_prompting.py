@@ -13,6 +13,7 @@ from podcast_pipeline.agent_cli_config import AgentCliConfig
 from podcast_pipeline.agent_runners import ClaudeCodeReviewerRunner, load_episode_context_from_workspace
 from podcast_pipeline.domain.models import Candidate, ProvenanceRef
 from podcast_pipeline.prompting import (
+    PromptInputError,
     PromptRegistry,
     PromptRenderer,
     PromptRenderResult,
@@ -255,6 +256,15 @@ def test_render_episode_context_admits_exact_limits_and_clips_transcript() -> No
     )
     assert summary in context
     assert context.endswith("Transcript excerpt:\nhello\n[...truncated]")
+
+
+def test_render_episode_context_ignores_blank_chapter_lines_in_item_count() -> None:
+    chapters = "Opening\n\n" * 200
+    context = render_episode_context(summary="s", chapters=chapters)
+    assert "Opening" in context
+
+    with pytest.raises(PromptInputError, match="200 items"):
+        render_episode_context(summary="s", key_points=["p"], chapters=chapters)
 
 
 def test_render_episode_context_counts_chapter_lines_with_other_items() -> None:

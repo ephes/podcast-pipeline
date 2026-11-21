@@ -397,7 +397,8 @@ def _check_episode_context_size(
     if chars > _MAX_EPISODE_CONTEXT_CHARS:
         raise PromptInputError(f"Supplemental episode context exceeds {_MAX_EPISODE_CONTEXT_CHARS} characters")
 
-    if chapter_text and items + len(chapter_text.splitlines()) > _MAX_EPISODE_CONTEXT_ITEMS:
+    chapter_lines = sum(1 for line in chapter_text.splitlines() if line.strip())
+    if items + chapter_lines > _MAX_EPISODE_CONTEXT_ITEMS:
         raise PromptInputError(item_error)
 
 
