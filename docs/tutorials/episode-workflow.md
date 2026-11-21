@@ -587,6 +587,10 @@ Without a usable manifest, status looks for `chunk_*.txt` names in at most 8,192
 extra entry checked to detect overflow. An oversized or unreadable inventory displays “Count incomplete”
 and returns `null` in `/api/status` at `stages.chunks`. A missing chunk directory reports zero.
 
+Saving or clearing an asset's editorial notes validates the stored `episode.yaml` first. If its
+`editorial_notes` value is malformed, the dashboard returns HTTP 400 and preserves the file for repair.
+An absent notes field starts empty. An edit to a valid notes map preserves the other assets' entries.
+
 The dashboard also runs each long job single-flight:
 
 - While a `produce`, `transcribe`, `draft`, `summarize` or `candidates` job, or a `regenerate`, `refine` or `review`

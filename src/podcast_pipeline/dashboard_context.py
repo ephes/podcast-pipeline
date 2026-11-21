@@ -449,9 +449,7 @@ class DashboardContext:
 
     def set_editorial_notes(self, asset_id: str, notes: str) -> None:
         with self.store.update_episode_yaml() as data:
-            editorial = data.get("editorial_notes") or {}
-            if not isinstance(editorial, dict):
-                editorial = {}
+            editorial = data.get("editorial_notes", {})
             if notes:
                 editorial[asset_id] = notes
             else:

@@ -4,10 +4,54 @@ from threading import Event
 from typing import Any
 
 import pytest
+from starlette.testclient import TestClient
 
 from podcast_pipeline.dashboard_context import DashboardContext
+from podcast_pipeline.entrypoints.dashboard_web import create_dashboard_app
 from podcast_pipeline.entrypoints.ingest import run_ingest
 from podcast_pipeline.workspace_store import EpisodeWorkspaceStore, WorkspaceStoreError
+from tests.session_support import SESSION_HEADERS, SESSION_TOKEN
+
+
+@pytest.mark.parametrize("method", ["PUT", "DELETE"])
+@pytest.mark.parametrize("invalid_notes", ["[]", "false", "{description: [unexpected]}"])
+def test_asset_notes_refuse_invalid_persisted_map(tmp_path: Path, method: str, invalid_notes: str) -> None:
+    ctx = DashboardContext(workspace=tmp_path)
+    episode = ctx.layout.episode_yaml
+    original = f"# Preserve this comment\nepisode_id: synthetic\ncustom: keep\neditorial_notes: {invalid_notes}\n"
+    episode.write_bytes(original.encode())
+    with TestClient(
+        create_dashboard_app(ctx=ctx, session_token=SESSION_TOKEN),
+        base_url="http://127.0.0.1",
+        headers=SESSION_HEADERS,
+        raise_server_exceptions=False,
+    ) as client:
+        response = client.request(
+            method,
+            "/api/assets/description/notes",
+            json={"notes": "updated"} if method == "PUT" else None,
+            headers={"Content-Type": "application/json"},
+        )
+    assert episode.read_bytes() == original.encode()
+    assert response.status_code == 400
+    assert "editorial_notes" in response.json()["error"]
+
+
+def test_asset_notes_update_preserves_other_entries(tmp_path: Path) -> None:
+    ctx = DashboardContext(workspace=tmp_path)
+    ctx.store.write_episode_yaml(
+        {"episode_id": "synthetic", "custom": "keep", "editorial_notes": {"description": "old", "shownotes": "keep"}}
+    )
+    with TestClient(
+        create_dashboard_app(ctx=ctx, session_token=SESSION_TOKEN),
+        base_url="http://127.0.0.1",
+        headers=SESSION_HEADERS,
+    ) as client:
+        response = client.put("/api/assets/description/notes", json={"notes": "updated"})
+    assert response.status_code == 200
+    saved = ctx.store.read_episode_yaml()
+    assert saved["editorial_notes"] == {"description": "updated", "shownotes": "keep"}
+    assert saved["custom"] == "keep"
 
 
 def test_stale_document_write_is_rejected(tmp_path: Path) -> None:

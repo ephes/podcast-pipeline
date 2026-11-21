@@ -4,6 +4,8 @@
 
 - Use the published chunk manifest for dashboard counts and flag incomplete fallback inventories.
 
+- Return a validation error when dashboard note edits encounter malformed stored notes, preserving the episode file.
+
 - Apply bounded JSON admission to CMS reads and report unreadable error bodies using the HTTP status.
 
 - Report incomplete CMS audio inventories separately from a confirmed absent ID.
