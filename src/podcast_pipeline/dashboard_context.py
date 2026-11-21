@@ -498,8 +498,11 @@ class DashboardContext:
         return None
 
     def create_job(self, stage: str) -> BackgroundJob:
+        """Reserve a job ID and insert the record. Caller holds the context lock."""
         self.prune_jobs()
-        job_id = str(uuid.uuid4())[:8]
+        job_id = str(uuid.uuid4())
+        while job_id in self.jobs:
+            job_id = str(uuid.uuid4())
         job = BackgroundJob(job_id=job_id, stage=stage)
         self.jobs[job_id] = job
         return job
@@ -507,9 +510,11 @@ class DashboardContext:
     def finish_job(self, job: BackgroundJob, status: str) -> None:
         """Mark terminal status and trim completed history. Caller holds the context lock."""
         job.status = status
+        if self.jobs.get(job.job_id) is not job:
+            return
         # A long-running job that just finished is the newest terminal result,
         # regardless of when it was admitted.
-        self.jobs.pop(job.job_id, None)
+        del self.jobs[job.job_id]
         self.jobs[job.job_id] = job
         self.prune_jobs()
 

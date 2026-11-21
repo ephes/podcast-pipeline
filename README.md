@@ -152,6 +152,7 @@ Each job retains the latest 128 KiB / 1024 progress entries; oversized writes re
 JSON/SSE responses include an earlier-progress-truncated notice when history was evicted.
 SSE progress IDs increase monotonically and support `Last-Event-ID` reconnects across eviction.
 A cursor ahead of the job's newest event replays the retained history and resumes live progress.
+Dashboard job URLs use full UUIDs, reserved under the admission lock while records are retained.
 The dashboard retains at most 64 terminal jobs plus all running jobs; evicted job URLs return 404.
 Both local UIs admit an explicit Host port only as one to five ASCII decimal digits in 1..65535.
 Malformed ports return the existing 403 Forbidden host response before reading a body, including

@@ -1,11 +1,13 @@
 import threading
 from pathlib import Path
 from typing import Any
+from uuid import UUID
 
 import pytest
 from starlette.testclient import TestClient
 
-from podcast_pipeline.dashboard_context import DashboardContext
+from podcast_pipeline import dashboard_context
+from podcast_pipeline.dashboard_context import BackgroundJob, DashboardContext
 from podcast_pipeline.domain.models import Candidate
 from podcast_pipeline.entrypoints import dashboard_web
 from podcast_pipeline.workspace_store import EpisodeWorkspaceStore
@@ -85,6 +87,37 @@ def test_conflicting_jobs_are_rejected_before_worker_start(
         assert client.post(blocked, json=blocked_body).status_code == 200
     for thread in threads:
         thread.join(5)
+
+
+def test_jobs_with_shared_uuid_prefix_remain_addressable(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    first_id = UUID("12345678-0000-4000-8000-000000000001")
+    second_id = UUID("12345678-0000-4000-8000-000000000002")
+    ids = iter((first_id, first_id, second_id))
+    monkeypatch.setattr(dashboard_context.uuid, "uuid4", lambda: next(ids))
+    ctx = DashboardContext(workspace=tmp_path)
+
+    with ctx.lock:
+        draft = ctx.create_job("draft")
+        produce = ctx.create_job("produce")
+        assert ctx.jobs[draft.job_id] is draft
+        assert ctx.jobs[produce.job_id] is produce
+        assert ctx.running_job("transcribe") is draft
+
+        ctx.finish_job(draft, "completed")
+        assert ctx.jobs[draft.job_id] is draft
+        assert ctx.running_job("produce") is produce
+
+
+def test_finish_job_cannot_replace_another_record(tmp_path: Path) -> None:
+    ctx = DashboardContext(workspace=tmp_path)
+
+    with ctx.lock:
+        active = ctx.create_job("draft")
+        stale = BackgroundJob(job_id=active.job_id, stage="produce")
+        ctx.finish_job(stale, "completed")
+        assert stale.status == "completed"
+        assert ctx.jobs[active.job_id] is active
+        assert ctx.running_job("draft") is active
 
 
 def test_different_assets_remain_independent(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
