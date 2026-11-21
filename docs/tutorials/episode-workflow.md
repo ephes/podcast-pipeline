@@ -581,6 +581,16 @@ tag updates retain the equivalent control's focus, and background saves preserve
 Composing or already-handled Enter in tag/refinement inputs never submits; committed Enter and explicit
 buttons still work. See [standalone picker limits](../reference/configuration.md#standalone-picker-limits).
 
+The dashboard counts chunks from the published manifest when it passes structural validation. This status
+counts the entries recorded at publication. Drafting separately verifies the source and chunk contents.
+Without a usable manifest, status looks for `chunk_*.txt` names in at most 8,192 directory entries, with one
+extra entry checked to detect overflow. An oversized or unreadable inventory displays “Count incomplete”
+and returns `null` in `/api/status` at `stages.chunks`. A missing chunk directory reports zero.
+
+Saving or clearing an asset's editorial notes validates the stored `episode.yaml` first. If its
+`editorial_notes` value is malformed, the dashboard returns HTTP 400 and preserves the file for repair.
+An absent notes field starts empty. An edit to a valid notes map preserves the other assets' entries.
+
 The dashboard also runs each long job single-flight:
 
 - While a `produce`, `transcribe`, `draft`, `summarize` or `candidates` job, or a `regenerate`, `refine` or `review`

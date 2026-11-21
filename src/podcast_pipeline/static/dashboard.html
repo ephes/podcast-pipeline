@@ -587,7 +587,11 @@ function renderStatus() {
   elements.statusGrid.innerHTML = [
     statusCard("Episode YAML", stages.episode_yaml ? "Ready" : "Missing", stages.episode_yaml ? "ok" : "missing"),
     statusCard("Transcript", stages.transcript ? "Ready" : "Missing", stages.transcript ? "ok" : "missing"),
-    statusCard("Chunks", stages.chunks > 0 ? `${stages.chunks} chunks` : "None", stages.chunks > 0 ? "ok" : "missing"),
+    statusCard(
+      "Chunks",
+      stages.chunks === null ? "Count incomplete" : stages.chunks > 0 ? `${stages.chunks} chunks` : "None",
+      stages.chunks === null ? "partial" : stages.chunks > 0 ? "ok" : "missing"
+    ),
     statusCard("Summary", stages.summary ? "Ready" : "Missing", stages.summary ? "ok" : "missing"),
     statusCard("Candidates", stages.candidates > 0 ? `${stages.candidates} total` : "None", stages.candidates > 0 ? "ok" : "missing"),
     statusCard(

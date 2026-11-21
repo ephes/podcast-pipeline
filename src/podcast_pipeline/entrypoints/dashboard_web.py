@@ -40,6 +40,7 @@ from podcast_pipeline.local_web_guard import (
     session_bootstrap_cookie,
     session_url,
 )
+from podcast_pipeline.workspace_store import WorkspaceStoreError
 
 _SHUTDOWN_TIMEOUT_SECONDS = 60 * 60  # 1 hour
 _DASHBOARD_HTML_PATH = Path(__file__).parent.parent / "static" / "dashboard.html"
@@ -336,13 +337,19 @@ class _DashboardApi:
         if not isinstance(notes, str):
             return JSONResponse({"error": "notes must be a string"}, status_code=400)
 
-        await run_in_threadpool(self._locked_call, self.ctx.set_editorial_notes, asset_id, notes)
+        try:
+            await run_in_threadpool(self._locked_call, self.ctx.set_editorial_notes, asset_id, notes)
+        except WorkspaceStoreError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
         return JSONResponse({"ok": True})
 
     def handle_delete_notes(self, request: Request) -> Response:
         asset_id = request.path_params["asset_id"]
-        with self.ctx.lock:
-            self.ctx.clear_editorial_notes(asset_id)
+        try:
+            with self.ctx.lock:
+                self.ctx.clear_editorial_notes(asset_id)
+        except WorkspaceStoreError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
         return JSONResponse({"ok": True})
 
     async def handle_put_tags(self, request: Request) -> Response:

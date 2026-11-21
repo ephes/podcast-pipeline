@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from podcast_pipeline.control_json import load_control_json
 from podcast_pipeline.domain.intermediate_formats import TranscriptChunkMeta
 from podcast_pipeline.file_inputs import read_regular_utf8
 from podcast_pipeline.workspace_store import EpisodeWorkspaceLayout, EpisodeWorkspaceStore
@@ -321,6 +322,15 @@ def discover_complete_chunk_ids(
         return _validated_chunk_ids(layout.transcript_chunks_dir, layout=layout, config=config, limits=limits) or []
 
 
+def read_published_chunk_count(layout: EpisodeWorkspaceLayout) -> int | None:
+    """Count the published manifest's entries without reading the source or chunk files."""
+    try:
+        ids, _, _ = _read_chunk_manifest(layout.transcript_chunks_dir, config=None, limits=DEFAULT_LIMITS)
+        return len(ids)
+    except (OSError, ValueError, KeyError):
+        return None
+
+
 def _recover_chunks(layout: EpisodeWorkspaceLayout, limits: ChunkerLimits) -> None:
     """Restore only one unambiguous validated backup; never promote staging."""
     destination = layout.transcript_chunks_dir
@@ -344,36 +354,47 @@ def _recover_chunks(layout: EpisodeWorkspaceLayout, limits: ChunkerLimits) -> No
     os.replace(candidate, destination)
 
 
+def _read_chunk_manifest(
+    directory: Path, *, config: ChunkerConfig | None, limits: ChunkerLimits
+) -> tuple[list[int], dict[str, str], str]:
+    manifest = load_control_json(read_regular_utf8(directory / "complete.json", max_bytes=_MANIFEST_BYTES))
+    if not isinstance(manifest, dict) or type(manifest.get("version")) is not int or manifest["version"] != 1:
+        raise ValueError("Invalid chunk manifest version")
+    if not _matches_config(manifest["config"], config):
+        raise ValueError("Invalid or changed chunk configuration")
+    source_digest = manifest["source_sha256"]
+    if not isinstance(source_digest, str) or not re.fullmatch(r"[0-9a-f]{64}", source_digest):
+        raise ValueError("Invalid chunk manifest source digest")
+    ids = manifest["chunk_ids"]
+    if not isinstance(ids, list) or len(ids) > limits.chunks or any(type(i) is not int for i in ids):
+        raise ValueError("Invalid chunk manifest IDs")
+    if ids != list(range(1, len(ids) + 1)):
+        raise ValueError("Invalid chunk manifest ID sequence")
+    files = manifest["files"]
+    expected = {f"chunk_{i:04d}{ext}" for i in ids for ext in (".txt", ".json")}
+    if not isinstance(files, dict) or files.keys() != expected:
+        raise ValueError("Invalid chunk manifest filenames")
+    if any(not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest) for digest in files.values()):
+        raise ValueError("Invalid chunk manifest file digest")
+    return ids, files, source_digest
+
+
 def _validated_chunk_ids(
     directory: Path, *, layout: EpisodeWorkspaceLayout, config: ChunkerConfig | None, limits: ChunkerLimits
 ) -> list[int] | None:
     try:
-        manifest = json.loads(read_regular_utf8(directory / "complete.json", max_bytes=_MANIFEST_BYTES))
+        ids, files, source_digest = _read_chunk_manifest(directory, config=config, limits=limits)
         source = _read_source(layout.transcript_dir / "transcript.txt", limits).encode("utf-8")
         _tokenize(source.decode("utf-8"), limits)
-        ids = manifest["chunk_ids"]
-        if not _matches_config(manifest["config"], config):
-            return None
-        if (
-            type(manifest["version"]) is not int
-            or manifest["version"] != 1
-            or manifest["source_sha256"] != hashlib.sha256(source).hexdigest()
-        ):
-            return None
-        if not isinstance(ids, list) or len(ids) > limits.chunks or any(type(i) is not int for i in ids):
-            return None
-        if ids != list(range(1, len(ids) + 1)):
-            return None
-        expected = {f"chunk_{i:04d}{ext}" for i in ids for ext in (".txt", ".json")}
-        if set(manifest["files"]) != expected:
+        if source_digest != hashlib.sha256(source).hexdigest():
             return None
         output_bytes = 0
-        for name in sorted(expected):
+        for name in sorted(files):
             ceiling = limits.output_bytes - output_bytes if name.endswith(".txt") else _META_BYTES
             data = read_regular_utf8(directory / name, max_bytes=ceiling).encode("utf-8")
             if name.endswith(".txt"):
                 output_bytes += len(data)
-            if hashlib.sha256(data).hexdigest() != manifest["files"][name]:
+            if hashlib.sha256(data).hexdigest() != files[name]:
                 return None
         return ids
     except (OSError, ValueError, KeyError, TypeError):
