@@ -56,8 +56,9 @@ without single-letter fragments. Combining marks that NFC cannot compose remain 
 
 ## CMS identifier migration
 
-CMS identifiers hash the canonical API source plus page ID (falling back to link,
-then title). The source uses HTTPX URL normalization (including host case and default
+CMS identifiers hash the canonical API source plus page ID. The exporter accepts
+integers and strings that are nonblank after trimming. A missing or unsupported page ID
+falls back to the public link, then the title. The source uses HTTPX URL normalization (including host case and default
 ports), removes credentials, query parameters and fragments, and strips trailing
 path slashes. Different API paths or origins identify different sources; filters and
 requested counts do not change IDs. Repeat exports from one source keep stable IDs.
