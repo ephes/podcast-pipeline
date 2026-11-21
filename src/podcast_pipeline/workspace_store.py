@@ -687,23 +687,31 @@ class EpisodeWorkspaceStore:
         else:
             _atomic_write_text(path, content)
         # Only once the new selection is published: drop files of superseded formats.
-        for superseded in TextFormat:
-            stale = self.layout.selected_text_path(asset_id, superseded)
-            if stale in published:
-                continue
-            try:
-                stale.unlink(missing_ok=True)
-            except OSError as exc:
-                raise WorkspaceStoreError(f"Failed to remove superseded selected text at {stale}: {exc}") from exc
+        self._remove_selected_text(asset_id, keep=published)
         return path
 
     def clear_selected_text(self, asset_id: str) -> None:
+        self._remove_selected_text(asset_id, keep=set())
+
+    def _remove_selected_text(self, asset_id: str, *, keep: set[Path]) -> None:
+        removed = False
         for fmt in TextFormat:
             path = self.layout.selected_text_path(asset_id, fmt)
+            if path in keep:
+                continue
             try:
-                path.unlink(missing_ok=True)
+                path.unlink()
+            except FileNotFoundError:
+                continue
             except OSError as exc:
                 raise WorkspaceStoreError(f"Failed to remove selected text at {path}: {exc}") from exc
+            removed = True
+        if removed:
+            directory = self.layout.copy_selected_dir
+            try:
+                _fsync_dir(directory, required=True)
+            except OSError as exc:
+                raise WorkspaceStoreError(f"Selection deletion durability unconfirmed at {directory}: {exc}") from exc
 
     def delete_candidate_files(self, asset_id: str, candidate_id: UUID) -> None:
         paths = {self.layout.candidate_json_path(asset_id, candidate_id)}

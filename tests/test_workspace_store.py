@@ -129,6 +129,53 @@ def test_store_reads_writes_copy_artifacts(tmp_path: Path) -> None:
     assert provenance_path.exists()
 
 
+@pytest.mark.parametrize("clear", [False, True], ids=["change-format", "clear"])
+@pytest.mark.parametrize("fail_sync", [False, True], ids=["success", "sync-failure"])
+def test_selection_syncs_removed_formats_before_state_commit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, clear: bool, fail_sync: bool
+) -> None:
+    store = EpisodeWorkspaceStore(tmp_path)
+    workspace = EpisodeWorkspace(episode_id="ep_001", root_dir=str(tmp_path))
+    store.write_state(workspace)
+    state_before = store.layout.state_json.read_bytes()
+    store.write_selected_text("description", TextFormat.markdown, "# Before")
+    paths = {fmt: store.layout.selected_text_path("description", fmt) for fmt in TextFormat}
+    before = {fmt: paths[fmt].read_bytes() for fmt in (TextFormat.markdown, TextFormat.html)}
+    expected = {} if clear else {TextFormat.plain: b"After\n"}
+    fsync_dir = workspace_store._fsync_dir
+    synced: list[Path] = []
+
+    def sync(path: Path, *, required: bool = False) -> None:
+        if path == store.layout.copy_selected_dir and required:
+            files = {fmt: selected.read_bytes() for fmt, selected in paths.items() if selected.exists()}
+            if files == expected:
+                assert store.layout.state_json.read_bytes() == state_before
+                synced.append(path)
+                if fail_sync:
+                    raise OSError("synthetic selection deletion sync failure")
+        fsync_dir(path, required=required)
+
+    def update(current: EpisodeWorkspace) -> EpisodeWorkspace:
+        if clear:
+            store.clear_selected_text("description")
+        else:
+            store.write_selected_text("description", TextFormat.plain, "After")
+        return current.model_copy(update={"episode_id": "ep_updated"})
+
+    monkeypatch.setattr(workspace_store, "_fsync_dir", sync)
+    if fail_sync:
+        with pytest.raises(WorkspaceStoreError, match="synthetic selection deletion sync failure"):
+            store.update_state(update, default=workspace, artifact_paths=list(paths.values()))
+        assert store.layout.state_json.read_bytes() == state_before
+    else:
+        store.update_state(update, default=workspace, artifact_paths=list(paths.values()))
+        assert store.read_state().episode_id == "ep_updated"
+    assert synced == [store.layout.copy_selected_dir]
+    assert {fmt: path.read_bytes() for fmt, path in paths.items() if path.exists()} == (
+        before if fail_sync else expected
+    )
+
+
 def test_store_rejects_invalid_review_json(tmp_path: Path) -> None:
     store = EpisodeWorkspaceStore(tmp_path)
     path = store.layout.review_iteration_json_path("description", 1)
