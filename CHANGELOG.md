@@ -4,6 +4,8 @@
 
 - Use the public link or title for CMS example identity when the page ID is missing or is neither an integer nor a nonblank string.
 
+- Reject blank saved chapter titles with an indexed configuration error before building CMS chapter text.
+
 - Reject duplicate keys in the global YAML configuration before building an Auphonic payload.
 
 - Report global Auphonic configuration read and UTF-8 decoding errors with the file path.

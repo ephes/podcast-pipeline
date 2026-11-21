@@ -136,6 +136,10 @@ rounding. YAML overrides and workspace chapters follow the same strictly increas
 sequence rule; duplicate, decreasing and unrepresentable times fail plan construction
 before HTTP. Inputs are never sorted or repaired.
 
+Titles from `auphonic.chapters` and saved `state.json` chapters must contain text.
+The formatter joins words with single spaces. A blank title stops plan construction
+before HTTP, and the configuration error reports the chapter's 1-based position.
+
 ## Host text boundaries
 
 Host linking uses Python's HTML tokenizer and source positions. It inserts a link
