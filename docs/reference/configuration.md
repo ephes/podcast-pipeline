@@ -65,8 +65,11 @@ agents:
 
 ## Auphonic presets (local only)
 
-`podcast produce --dry-run` resolves Auphonic preset ids from the same config file. Define preset keys once and
-reference them per episode:
+`podcast produce` and `podcast produce --dry-run` reject duplicate keys in any mapping in the global config
+before assembling the payload. YAML anchors and merges still work, including explicit overrides of inherited
+keys. Use one `<<` key with a list to merge several mappings.
+
+Define preset keys in the global config and reference them per episode:
 
 ```yaml
 auphonic:

@@ -5,9 +5,12 @@ from typing import Any
 
 import pytest
 import yaml
+from typer.testing import CliRunner
 
 from podcast_pipeline.auphonic_payload import AuphonicConfigError, build_auphonic_payload
 from podcast_pipeline.domain.models import TextFormat
+from podcast_pipeline.entrypoints import produce
+from podcast_pipeline.entrypoints.cli import app
 from podcast_pipeline.workspace_store import EpisodeWorkspaceLayout
 
 # One speaker stem so payload tests that focus on metadata or presets build a valid multitrack production.
@@ -387,6 +390,56 @@ def test_payload_rejects_invalid_global_yaml(
             episode_yaml={"auphonic": {"preset": "main"}},
             workspace=workspace,
         )
+
+
+@pytest.mark.parametrize("dry_run", [True, False], ids=["preview", "production"])
+@pytest.mark.parametrize(
+    "config_yaml",
+    [
+        "auphonic: {presets: {main: first, main: second}}",
+        "auphonic: {tracks: [], tracks: []}",
+        "base: &base {main: first, main: second}\nauphonic: {presets: {<<: *base}}",
+        "auphonic: {<<: {preset: first}, <<: {preset: second}}",
+    ],
+    ids=["preset", "tracks", "merge-source", "merge-key"],
+)
+def test_produce_rejects_duplicate_global_config_keys(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, dry_run: bool, config_yaml: str
+) -> None:
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(config_yaml, encoding="utf-8")
+    monkeypatch.setenv("PODCAST_PIPELINE_CONFIG", str(config_path))
+    (tmp_path / "episode.yaml").write_text(
+        yaml.safe_dump({"episode_id": "ep_test", "auphonic": {"preset": "main", **_STEMS}}), encoding="utf-8"
+    )
+
+    def unexpected_credentials() -> Any:
+        raise AssertionError("Invalid config must stop before loading credentials")
+
+    monkeypatch.setattr(produce, "load_auphonic_credentials", unexpected_credentials)
+    args = ["produce", "--workspace", str(tmp_path)]
+    if dry_run:
+        args.append("--dry-run")
+    result = CliRunner().invoke(app, args, terminal_width=240, env={"COLUMNS": "240"})
+
+    assert result.exit_code == 2
+    assert f"Invalid YAML at {config_path}" in result.output
+    assert "duplicate key" in result.output
+
+
+def test_payload_preserves_yaml_merge_precedence(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        "defaults: &defaults {preset: default, cleanup_superseded: false}\n"
+        "common: &common {<<: *defaults, preset: common}\n"
+        "auphonic: {<<: [*common, {preset: other}], presets: {common: preset_123}}\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("PODCAST_PIPELINE_CONFIG", str(config_path))
+
+    payload = build_auphonic_payload(episode_yaml={"auphonic": _STEMS}, workspace=tmp_path)
+
+    assert payload["preset"] == "preset_123"
 
 
 def test_payload_parses_selected_itunes_keywords_from_markdown_list(
