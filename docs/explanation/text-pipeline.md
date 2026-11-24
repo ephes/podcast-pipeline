@@ -201,6 +201,9 @@ and a `files` map of text/metadata basenames to SHA-256 digests. Chunks are writ
 directory, then the previous directory is moved aside and the completed directory renamed into place.
 A handled publication error triggers an attempt to restore the previous directory. Discovery rejects legacy prefixes,
 missing or changed members and sets whose source no longer matches `transcript/transcript.txt`.
+Discovery and backup recovery also validate each metadata file against the chunk schema. Its
+`chunk_id` and workspace-relative `text_relpath` must match its manifest slot and canonical text path,
+even when the file matches the recorded digest.
 Publication and discovery share the existing stable workspace-directory lock with state/YAML writers.
 Staging happens outside the lock; the source is read again under the lock before swapping. Changed
 source refuses publication with `ChunkSourceChangedError` (a `ValueError`) and preserves the current set. Swap, rollback and old-set retirement stay

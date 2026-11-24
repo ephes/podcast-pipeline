@@ -391,12 +391,21 @@ def _validated_chunk_ids(
         if source_digest != hashlib.sha256(source).hexdigest():
             return None
         output_bytes = 0
-        for name in sorted(files):
-            ceiling = limits.output_bytes - output_bytes if name.endswith(".txt") else _META_BYTES
-            data = read_regular_utf8(directory / name, max_bytes=ceiling).encode("utf-8")
-            if name.endswith(".txt"):
-                output_bytes += len(data)
-            if hashlib.sha256(data).hexdigest() != files[name]:
+        for chunk_id in ids:
+            meta_name = layout.transcript_chunk_meta_json_path(chunk_id).name
+            raw_meta = read_regular_utf8(directory / meta_name, max_bytes=_META_BYTES)
+            if hashlib.sha256(raw_meta.encode("utf-8")).hexdigest() != files[meta_name]:
+                return None
+            meta = TranscriptChunkMeta.model_validate(load_control_json(raw_meta))
+            text_path = layout.transcript_chunk_text_path(chunk_id)
+            if meta.chunk_id != chunk_id or meta.text_relpath != text_path.relative_to(layout.root).as_posix():
+                return None
+
+            data = read_regular_utf8(directory / text_path.name, max_bytes=limits.output_bytes - output_bytes).encode(
+                "utf-8"
+            )
+            output_bytes += len(data)
+            if hashlib.sha256(data).hexdigest() != files[text_path.name]:
                 return None
         return ids
     except (OSError, ValueError, KeyError, TypeError):
