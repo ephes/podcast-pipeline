@@ -39,7 +39,8 @@ editor API (DRF token auth). That run showed what the API needs and where it sto
 
   Two capabilities are detected from the API's answers: `transcript_diarization_mode=enabled` on the upload (a
   file-less upload confirms support only from the documented missing-file diagnostic and stops on ambiguous
-  validation), and an episode `contributors` field `[{"slug": ..., "role": "host"|"guest"}]` (sent in a
+  validation; django-cast emits that diagnostic as a fixed, untranslated string in `api/editor/media.py`, so the
+  exact-message match does not depend on the site language), and an episode `contributors` field `[{"slug": ..., "role": "host"|"guest"}]` (sent in a
   follow-up `PATCH` once episode responses contain `contributors`).
   Until then `cms-draft` ends with the numbered manual steps in the order they must happen: add the further formats,
   set the diarization mode, add the contributors, then "Generate transcript", each with its Wagtail URL. If
