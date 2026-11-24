@@ -817,7 +817,9 @@ A `converged` label alone, a missing final review or a contradictory decision is
 Selection readiness requires the canonical, nonblank selected file in the recorded candidate's
 format and matching its content in `state.json`; unrelated stems, superseded formats and stale
 text do not count. Custom text uses the asset's canonical custom format and its manual-selection
-provenance marker. Curated tags keep their markdown selection convention.
+provenance marker. When a tag asset has no candidate selection recorded, status accepts the
+picker's canonical Markdown, including its heading-only output for an explicitly empty selection.
+iTunes keywords in that file must be comma-free.
 Status lines and CLI picker previews escape terminal controls (including ESC, OSC payload delimiters,
 CR and C1) as visible text. Status lines are capped at 1,000 characters and candidate previews at 72;
 these display limits never change the stored copy or review evidence.

@@ -8,7 +8,12 @@ from typer.testing import CliRunner
 from podcast_pipeline.domain.models import Candidate, EpisodeWorkspace, TextFormat
 from podcast_pipeline.entrypoints import status
 from podcast_pipeline.entrypoints.cli import app
-from podcast_pipeline.pick_core import custom_selection_format, save_candidate_selection, save_custom_selection
+from podcast_pipeline.pick_core import (
+    custom_selection_format,
+    save_candidate_selection,
+    save_custom_selection,
+    write_selected_tags,
+)
 from podcast_pipeline.workspace_store import EpisodeWorkspaceStore
 
 
@@ -73,3 +78,50 @@ def test_status_accepts_real_candidate_and_custom_selections(
     assert result.exit_code == 0, result.output
     assert "copy/selected: ok" in result.output
     assert before == {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        "This is arbitrary prose.\n",
+        "# CMS tags\n\n- Type hints\n",
+        "# iTunes keywords\n\n- Type hints\n- type hints\n",
+        "# iTunes keywords\n\n- Type hints, Async IO\n",
+        "# iTunes keywords\n\n- Type hints\nUnexpected text\n",
+    ],
+    ids=["prose", "wrong-heading", "duplicate", "comma", "trailing-prose"],
+)
+def test_status_refuses_noncanonical_unrecorded_tags(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, content: str
+) -> None:
+    asset_id = "itunes_keywords"
+    monkeypatch.setattr(status, "_required_asset_ids", lambda: (asset_id,))
+    store = EpisodeWorkspaceStore(tmp_path)
+    store.write_state(EpisodeWorkspace(episode_id="synthetic", root_dir="."))
+    store.write_selected_text(asset_id, TextFormat.markdown, content)
+
+    result = CliRunner().invoke(app, ["status", "--workspace", str(tmp_path)])
+    assert result.exit_code == 0, result.output
+    assert "copy/selected: missing" in result.output
+
+
+@pytest.mark.parametrize("tags", [[], ["Type hints", "Async IO"]])
+def test_status_accepts_curated_tags_without_candidate_record(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, tags: list[str]
+) -> None:
+    asset_id = "itunes_keywords"
+    monkeypatch.setattr(status, "_required_asset_ids", lambda: (asset_id,))
+    store = EpisodeWorkspaceStore(tmp_path)
+    state, error = write_selected_tags(
+        store=store,
+        workspace_state=EpisodeWorkspace(episode_id="synthetic", root_dir="."),
+        asset_id=asset_id,
+        tags=tags,
+        max_tags=12,
+    )
+    assert error is None
+    assert not state.assets
+
+    result = CliRunner().invoke(app, ["status", "--workspace", str(tmp_path)])
+    assert result.exit_code == 0, result.output
+    assert "copy/selected: ok" in result.output

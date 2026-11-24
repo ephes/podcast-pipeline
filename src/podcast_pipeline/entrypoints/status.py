@@ -28,7 +28,7 @@ from podcast_pipeline.pick_core import (
 from podcast_pipeline.review_loop_engine import LoopOutcome, parse_loop_protocol_state, unique_json_members
 from podcast_pipeline.review_loop_engine import LoopProtocolState as _ProtocolState
 from podcast_pipeline.tag_assets import TAG_ASSET_IDS, render_selected_tags_markdown
-from podcast_pipeline.tag_parsing import parse_tag_list
+from podcast_pipeline.tag_parsing import itunes_keyword_delimiter_error, parse_tag_list
 from podcast_pipeline.terminal_text import terminal_text
 from podcast_pipeline.workspace_store import EpisodeWorkspaceLayout
 
@@ -351,7 +351,10 @@ def _selected_text_agrees(
             and text == render_selected_tags_markdown(asset_id, parse_tag_list(expected))
         )
     if asset_id in TAG_ASSET_IDS:
-        return True
+        tags = parse_tag_list(text)
+        if asset_id == AssetKind.itunes_keywords.value and itunes_keyword_delimiter_error(tags) is not None:
+            return False
+        return fmt == TextFormat.markdown and text == render_selected_tags_markdown(asset_id, tags)
     return text == normalize_custom_selection_text(asset_id, text) + "\n"
 
 

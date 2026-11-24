@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Validate curated tag Markdown in `podcast status` when no candidate selection is recorded.
+
 - Count only regular workspace files as chunk, chunk-summary and candidate evidence in `podcast status`.
 
 - Enforce the transcript token limit during chunk discovery and backup recovery without building a byte-offset index.
