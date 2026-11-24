@@ -48,14 +48,13 @@ class _Inspection:
     bytes_read: int = 0
 
     def paths(self, directory: Path, pattern: str = "*", *, regular_only: bool = False) -> Iterator[Path]:
-        parent = self.layout.root
-        for part in directory.relative_to(parent).parts:
-            parent /= part
-            try:
-                if not stat.S_ISDIR(parent.lstat().st_mode):
-                    return
-            except FileNotFoundError:
+        # Inventory counts (regular_only) admit only real directories down to regular files.
+        # Other scans still follow redirected directories so that their evidence is refused loudly when read.
+        if regular_only:
+            if not self._is_real_directory(directory):
                 return
+        elif not directory.exists():
+            return
         with os.scandir(directory) as entries:
             for entry in entries:
                 self.entries += 1
@@ -63,6 +62,17 @@ class _Inspection:
                     raise _IncompleteInspection("directory entry limit exceeded")
                 if fnmatchcase(entry.name, pattern) and (not regular_only or entry.is_file(follow_symlinks=False)):
                     yield directory / entry.name
+
+    def _is_real_directory(self, directory: Path) -> bool:
+        parent = self.layout.root
+        for part in directory.relative_to(parent).parts:
+            parent /= part
+            try:
+                if not stat.S_ISDIR(parent.lstat().st_mode):
+                    return False
+            except FileNotFoundError:
+                return False
+        return True
 
     def read_text(self, path: Path) -> str:
         remaining = MAX_STATUS_TOTAL_BYTES - self.bytes_read
