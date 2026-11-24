@@ -310,12 +310,15 @@ def _find_existing_episode(
     episode = client.get_episode(int(post["id"]))
     if episode is None:
         raise CmsApiError(f"Episode {post['id']} with slug {slug!r} disappeared while it was read; re-run.")
+    if episode["id"] != post["id"] or _parent_id(episode) != parent_id or episode.get("slug") != slug:
+        raise CmsApiError("Slug lookup changed while reading episode details. Check the draft in Wagtail and re-run.")
     return episode
 
 
 def _parent_id(episode: dict[str, Any]) -> int | None:
     parent = episode.get("parent")
-    return parent.get("id") if isinstance(parent, dict) else None
+    parent_id = parent.get("id") if isinstance(parent, dict) else None
+    return parent_id if type(parent_id) is int and parent_id > 0 else None
 
 
 def _refuse_live(episode: dict[str, Any]) -> None:

@@ -251,6 +251,41 @@ def test_deleted_bound_episode_falls_back_to_slug(
     assert fake.episodes[142]["podcast_audio"] == {"id": 83}
 
 
+@pytest.mark.parametrize("publish", [False, True], ids=["draft", "publish"])
+@pytest.mark.parametrize("changed", ["parent", "slug"])
+def test_slug_lookup_refuses_changed_episode_detail(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake: FakeCast, changed: str, publish: bool
+) -> None:
+    workspace = _workspace(tmp_path, extra_formats=False)
+    _config(tmp_path, monkeypatch)
+    _run(workspace)
+    state_path = workspace / "cms/draft.json"
+    state_path.unlink()
+    fake.requests.clear()
+    original = fake.handle
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        response = original(request)
+        if request.url.path == "/api/editor/posts/" and response.status_code == 200:
+            episode = fake.episodes[141]
+            if changed == "parent":
+                episode["parent"] = {"id": PODCAST_ID + 1}
+            else:
+                episode["page_slug"] = episode["slug"]
+                episode["slug"] = "renamed-draft"
+        return response
+
+    monkeypatch.setattr(fake, "handle", handle)
+    with pytest.raises(typer.BadParameter, match="Slug lookup changed.*re-run"):
+        if publish:
+            entry.run_cms_publish(workspace=workspace, yes=True)
+        else:
+            _run(workspace)
+    assert fake.calls("GET", "/api/editor/episodes/141/")
+    assert not [request for request in fake.requests if request.method in {"POST", "PATCH"}]
+    assert not state_path.exists()
+
+
 def test_transcript_checkpoint_identifies_remote_success(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake: FakeCast
 ) -> None:

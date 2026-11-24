@@ -391,7 +391,9 @@ write. Malformed successful API identities also stop the run; check Wagtail for 
 To reset deliberately, move `cms/draft.json` to a backup after recording any unattached Audio ID for manual
 cleanup/recovery. Reset abandons automatic reuse of those IDs. Alternatively clear both IDs to null when
 abandoning them; a stale parent with no IDs is harmless. A missing stored episode under a matching recorded
-parent falls back to slug lookup; a moved episode or unverifiable legacy episode requires the explicit reset.
+parent falls back to slug lookup; a moved stored episode or unverifiable legacy episode requires the explicit reset.
+When falling back to slug lookup, both commands verify the returned episode ID, parent and latest draft slug
+against the lookup before any remote write. If these disagree, check the draft in Wagtail and rerun to rediscover it.
 
 
 ### CMS preview and publication boundaries

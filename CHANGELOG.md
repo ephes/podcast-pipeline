@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Stop CMS draft updates and publishing if the episode detail no longer matches the fallback slug lookup.
+
 - Bound expanded episode YAML node count and depth before loading the model, and reject cyclic aliases.
 
 - Reject duplicate episode YAML mapping keys before applying workspace updates, reporting the location without printing the key.
