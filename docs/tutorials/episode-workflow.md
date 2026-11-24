@@ -497,9 +497,11 @@ the endpoint as soon as a django-cast release offers it, and until then lists th
 2. **Diarization mode.** Speaker labels need `transcript_diarization_mode` = Enabled on the Audio. The upload API
    rejects `enabled` today, and `inherit` follows the site's Voxhelm settings (on python-podcast.de these currently
    switch diarization off even though the environment enables it). Before uploading, `cms-draft` probes with a
-   file-less upload request (it creates nothing): if `enabled` is accepted it is sent with the upload; otherwise the
-   Audio is uploaded with the site default and the mode is set with the audio `PATCH` above, or listed as "Set
-   Transcript diarization mode to Enabled" in the audio editor. The Audio's current mode is read from the editor
+   file-less upload request. The editor's `required` diagnostic "Submit one audio file." in `non_field_errors`
+   confirms support and `enabled` is sent with the upload. An explicit mode rejection uploads with the site
+   default and sets the mode with the audio `PATCH` above, or lists "Set Transcript diarization mode to Enabled"
+   in the audio editor. Ambiguous validation, including an empty error map or a collection error, stops before
+   upload and reports that support is indeterminate. The Audio's current mode is read from the editor
    audio list on every run, so a mode set by hand counts, and a mode set through the API counts only when the
    response reports it. When the Audio is not in the list, checking its formats and its mode are manual steps
    (nothing is uploaded blindly).
@@ -521,6 +523,10 @@ the endpoint as soon as a django-cast release offers it, and until then lists th
 confirmation (`--yes` skips the question) and publishes it with `POST api/editor/episodes/<id>/publish/` and the
 draft's revision in `If-Match`, so a revision edited after the summary was shown is not published. The token needs the
 `publish` scope if it is scoped.
+
+Episode detail, update and publish responses must identify the requested episode. A detail mismatch stops the
+workflow before it uses the response. If an update or publish response identifies a different episode, check the
+requested episode in Wagtail before retrying because the result of the write is uncertain.
 
 Security: the token is read from the environment variable named by `cms.token_env` (default
 `PODCAST_PIPELINE_CMS_TOKEN`) and sent as `Authorization: Token <key>`. `cms.base_url` must be `https://`; every
