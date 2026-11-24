@@ -38,8 +38,8 @@ editor API (DRF token auth). That run showed what the API needs and where it sto
   - `POST api/editor/episodes/<id>/transcript/` to enqueue Voxhelm transcript generation for the episode's audio.
 
   Two capabilities are detected from the API's answers: `transcript_diarization_mode=enabled` on the upload (a
-  file-less upload request is rejected for the mode while unsupported, and for the missing file once supported;
-  nothing is created), and an episode `contributors` field `[{"slug": ..., "role": "host"|"guest"}]` (sent in a
+  file-less upload confirms support only from the documented missing-file diagnostic and stops on ambiguous
+  validation), and an episode `contributors` field `[{"slug": ..., "role": "host"|"guest"}]` (sent in a
   follow-up `PATCH` once episode responses contain `contributors`).
   Until then `cms-draft` ends with the numbered manual steps in the order they must happen: add the further formats,
   set the diarization mode, add the contributors, then "Generate transcript", each with its Wagtail URL. If

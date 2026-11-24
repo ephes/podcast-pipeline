@@ -6,6 +6,7 @@ import json
 import warnings
 from pathlib import Path
 from typing import Any
+from urllib.parse import parse_qs
 
 import httpx
 import pytest
@@ -360,6 +361,72 @@ def test_wrong_episode_identity_stops_workflow(
     output = capsys.readouterr().out
     assert "Updated draft episode" not in output
     assert "Published episode" not in output
+
+
+@pytest.mark.parametrize(
+    ("errors", "upload_mode"),
+    [
+        pytest.param(
+            {"non_field_errors": [{"code": "required", "message": "Submit one audio file."}]},
+            "enabled",
+            id="missing-file",
+        ),
+        pytest.param(
+            {"transcript_diarization_mode": [{"code": "invalid_choice", "message": "Choose a mode."}]},
+            "inherit",
+            id="rejected-mode",
+        ),
+        pytest.param({"collection": [{"code": "invalid", "message": "PRIVATE_SENTINEL"}]}, None, id="collection"),
+        pytest.param({}, None, id="empty"),
+        pytest.param(
+            {"non_field_errors": [{"code": "required", "message": "PRIVATE_SENTINEL"}]},
+            None,
+            id="other-required-error",
+        ),
+        pytest.param(
+            {
+                "non_field_errors": [{"code": "required", "message": "Submit one audio file."}],
+                "collection": [{"code": "invalid"}],
+            },
+            None,
+            id="mixed-errors",
+        ),
+        pytest.param({"transcript_diarization_mode": []}, None, id="empty-mode-error"),
+    ],
+)
+def test_diarization_probe_requires_positive_evidence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    fake: FakeCast,
+    errors: dict[str, Any],
+    upload_mode: str | None,
+) -> None:
+    workspace = _workspace(tmp_path, extra_formats=False)
+    _config(tmp_path, monkeypatch)
+    fake.accept_enabled_diarization = True
+    original = fake._upload
+
+    def upload(request: httpx.Request) -> httpx.Response:
+        if request.headers["Content-Type"] == "application/x-www-form-urlencoded":
+            assert parse_qs(request.read().decode()) == {
+                "transcript_diarization_mode": ["enabled"],
+                "collection": ["1"],
+            }
+            return httpx.Response(400, json={"code": "validation_error", "errors": errors})
+        return original(request)
+
+    monkeypatch.setattr(fake, "_upload", upload)
+    if upload_mode is None:
+        with pytest.raises(typer.BadParameter, match="HTTP 400.*upload diarization support is indeterminate") as exc:
+            _run(workspace)
+        assert "PRIVATE_SENTINEL" not in str(exc.value)
+        assert len(fake.calls("POST", "/api/editor/media/audios/")) == 1
+        assert not fake.audios and not fake.episodes
+        assert not (workspace / "cms/draft.json").exists()
+    else:
+        _run(workspace)
+        assert len(fake.calls("POST", "/api/editor/media/audios/")) == 2
+        assert fake.audios[83]["mode"] == upload_mode
 
 
 def test_audio_lookup_reports_absence_after_valid_terminal_page() -> None:

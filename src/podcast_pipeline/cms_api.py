@@ -244,8 +244,8 @@ class DjangoCastClient:
     def supports_upload_diarization_mode(self, mode: str, *, collection: int | None) -> bool:
         """Whether an audio upload accepts ``transcript_diarization_mode=mode``, probed without a file.
 
-        django-cast checks the diarization mode before it requires a file, so the file-less request is
-        rejected either for the mode (not supported) or for the missing file (supported); nothing is created.
+        django-cast checks the diarization mode before it requires a file. A missing-file diagnostic
+        confirms support, a mode rejection confirms lack of support, and other validation is inconclusive.
         """
         data = {"transcript_diarization_mode": mode}
         if collection is not None:
@@ -262,8 +262,17 @@ class DjangoCastClient:
             body = load_control_json(response.content)
         except ValueError:
             raise CmsApiError(f"POST {AUDIOS_PATH} failed with HTTP {response.status_code}") from None
-        errors = body.get("errors") if isinstance(body, dict) else None
-        return isinstance(errors, Mapping) and "transcript_diarization_mode" not in errors
+        errors = body.get("errors") if isinstance(body, dict) and body.get("code") == "validation_error" else None
+        if isinstance(errors, dict) and len(errors) == 1:
+            match errors:
+                case {"non_field_errors": [{"code": "required", "message": "Submit one audio file."}]}:
+                    return True
+                case {"transcript_diarization_mode": [{"code": "unsupported" | "invalid_choice"}]}:
+                    return False
+        raise CmsApiError(
+            f"POST {AUDIOS_PATH} failed with HTTP 400: upload diarization support is indeterminate. "
+            "Check the editor API and audio collection configuration."
+        )
 
     def set_audio_diarization_mode(self, audio_id: int, mode: str) -> dict[str, Any]:
         path = AUDIO_DETAIL_PATH.format(id=audio_id)
