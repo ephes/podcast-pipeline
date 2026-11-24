@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Bound expanded episode YAML node count and depth before loading the model, and reject cyclic aliases.
+
 - Reject duplicate episode YAML mapping keys before applying workspace updates, reporting the location without printing the key.
 
 - Reject surrogate code points in prompt inputs before rendering or computing provenance receipts, preserving receipt IDs for valid prompts.

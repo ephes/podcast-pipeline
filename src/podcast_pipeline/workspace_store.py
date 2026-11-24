@@ -19,6 +19,7 @@ from uuid import UUID
 
 import yaml
 from pydantic import ValidationError
+from yaml.nodes import MappingNode, Node, SequenceNode
 
 from podcast_pipeline.auphonic_history import record_new_production
 from podcast_pipeline.domain.episode_yaml import EpisodeYaml, try_load_episode_yaml
@@ -230,9 +231,52 @@ def _read_json(path: Path) -> Any:
         raise WorkspaceStoreError(f"Invalid JSON at {path}: {exc}") from exc
 
 
+_EPISODE_YAML_MAX_NODES = 100_000
+_EPISODE_YAML_MAX_DEPTH = 64
+
+
+class _EpisodeYamlLoader(UniqueKeySafeLoader):
+    def get_single_node(self) -> Node | None:
+        try:
+            root = super().get_single_node()
+        except RecursionError:
+            raise yaml.YAMLError("YAML depth limit exceeded") from None
+        if root is not None:
+            _admit_episode_yaml_graph(root)
+        return root
+
+
+def _admit_episode_yaml_graph(root: Node) -> None:
+    # Count every use of an alias before SafeLoader can expand merge keys.
+    occurrences = 0
+    active: set[Node] = set()
+
+    def visit(node: Node, depth: int) -> None:
+        nonlocal occurrences
+        occurrences += 1
+        if occurrences > _EPISODE_YAML_MAX_NODES:
+            raise yaml.YAMLError("YAML node limit exceeded")
+        if depth > _EPISODE_YAML_MAX_DEPTH:
+            raise yaml.YAMLError("YAML depth limit exceeded")
+        if node in active:
+            raise yaml.YAMLError("YAML alias cycle")
+        if isinstance(node, (MappingNode, SequenceNode)):
+            active.add(node)
+            if isinstance(node, MappingNode):
+                for key, value in node.value:
+                    visit(key, depth + 1)
+                    visit(value, depth + 1)
+            else:
+                for item in node.value:
+                    visit(item, depth + 1)
+            active.remove(node)
+
+    visit(root, 1)
+
+
 def _read_yaml_mapping(path: Path) -> dict[str, Any]:
     try:
-        loaded = yaml.load(_read_text(path), Loader=UniqueKeySafeLoader)
+        loaded = yaml.load(_read_text(path), Loader=_EpisodeYamlLoader)
     except DuplicateYamlKeyError as exc:
         mark = exc.problem_mark
         assert mark is not None

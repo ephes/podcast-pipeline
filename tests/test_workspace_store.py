@@ -121,6 +121,38 @@ def test_episode_yaml_preserves_legacy_merge_precedence(tmp_path: Path) -> None:
     }
 
 
+@pytest.mark.parametrize(
+    ("extension", "limit", "maximum", "error"),
+    [
+        (
+            "a: &a [1, 2]\nb: &b [*a, *a]\nc: &c [*b, *b]\nd: [*c, *c]\n",
+            "_EPISODE_YAML_MAX_NODES",
+            40,
+            "node limit",
+        ),
+        ("extra: [[[[1]]]]\n", "_EPISODE_YAML_MAX_DEPTH", 4, "depth limit"),
+        ("extra: &cycle [*cycle]\n", "_EPISODE_YAML_MAX_DEPTH", 64, "alias cycle"),
+    ],
+)
+def test_episode_yaml_refuses_excessive_graph_before_hydration(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, extension: str, limit: str, maximum: int, error: str
+) -> None:
+    store = EpisodeWorkspaceStore(tmp_path)
+    path = store.layout.episode_yaml
+    raw = "episode_id: synthetic\n" + extension
+    path.write_text(raw, encoding="utf-8")
+    monkeypatch.setattr(workspace_store, limit, maximum, raising=False)
+
+    def unexpected_hydration(raw: object) -> None:
+        pytest.fail("episode YAML was hydrated before admission")
+
+    monkeypatch.setattr(workspace_store, "try_load_episode_yaml", unexpected_hydration)
+    with pytest.raises(WorkspaceStoreError, match=error):
+        with store.update_episode_yaml():
+            pytest.fail("episode YAML update reached its body")
+    assert path.read_text(encoding="utf-8") == raw
+
+
 def test_store_reads_writes_state_json(tmp_path: Path) -> None:
     store = EpisodeWorkspaceStore(tmp_path)
     created_at = datetime(2025, 1, 1, 0, 0, 0, tzinfo=UTC)
