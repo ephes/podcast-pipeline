@@ -522,6 +522,10 @@ confirmation (`--yes` skips the question) and publishes it with `POST api/editor
 draft's revision in `If-Match`, so a revision edited after the summary was shown is not published. The token needs the
 `publish` scope if it is scoped.
 
+Episode detail, update and publish responses must identify the requested episode. A detail mismatch stops the
+workflow before it uses the response. If an update or publish response identifies a different episode, check the
+requested episode in Wagtail before retrying because the result of the write is uncertain.
+
 Security: the token is read from the environment variable named by `cms.token_env` (default
 `PODCAST_PIPELINE_CMS_TOKEN`) and sent as `Authorization: Token <key>`. `cms.base_url` must be `https://`; every
 request goes to it, and redirects are never followed (a redirect fails the run), so the token is never sent anywhere

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Reject CMS episode detail, update and publish responses with a different episode ID, and direct users to Wagtail to reconcile uncertain writes.
+
 - Require a bounded regular CMS recovery file and reject duplicate JSON members before using stored checkpoint data.
 
 - Stop CMS draft updates and publishing if the episode detail no longer matches the fallback slug lookup.

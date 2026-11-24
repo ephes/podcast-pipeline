@@ -311,6 +311,57 @@ def test_ambiguous_mutation_receipt_stops_workflow(
     assert fake.requests[-1].url.path == expected_path
 
 
+@pytest.mark.parametrize(
+    ("method", "path"),
+    [
+        ("GET", "/api/editor/episodes/141/"),
+        ("PATCH", "/api/editor/episodes/141/"),
+        ("POST", "/api/editor/episodes/141/publish/"),
+    ],
+)
+def test_wrong_episode_identity_stops_workflow(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    fake: FakeCast,
+    capsys: pytest.CaptureFixture[str],
+    method: str,
+    path: str,
+) -> None:
+    workspace = _workspace(tmp_path, extra_formats=False)
+    _config(tmp_path, monkeypatch)
+    _run(workspace)
+    state_path = workspace / "cms/draft.json"
+    checkpoint = state_path.read_bytes()
+    fake.episodes[142] = {**fake.episodes[141], "id": 142}
+    fake.requests.clear()
+    capsys.readouterr()
+    original = fake.handle
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        response = original(request)
+        if request.method == method and request.url.path == path and response.status_code == 200:
+            return httpx.Response(200, json={**response.json(), "id": 142})
+        return response
+
+    monkeypatch.setattr(fake, "handle", handle)
+    with pytest.raises(typer.BadParameter, match=rf"{method} {path[1:]} returned a mismatched episode id") as exc:
+        if method == "POST":
+            entry.run_cms_publish(workspace=workspace, yes=True)
+        else:
+            _run(workspace)
+
+    assert state_path.read_bytes() == checkpoint
+    assert fake.requests[-1].method == method
+    assert fake.requests[-1].url.path == path
+    writes = [(request.method, request.url.path) for request in fake.requests if request.method in {"POST", "PATCH"}]
+    assert writes == ([] if method == "GET" else [(method, path)])
+    if method != "GET":
+        assert "check Wagtail for the remote outcome before retrying" in str(exc.value)
+    output = capsys.readouterr().out
+    assert "Updated draft episode" not in output
+    assert "Published episode" not in output
+
+
 def test_audio_lookup_reports_absence_after_valid_terminal_page() -> None:
     transport = httpx.MockTransport(lambda request: httpx.Response(200, json={"results": [], "next": None}))
     with DjangoCastClient(BASE, TOKEN, transport=transport) as client:

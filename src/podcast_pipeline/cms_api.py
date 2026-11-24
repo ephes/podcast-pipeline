@@ -169,7 +169,9 @@ class DjangoCastClient:
         return self._json_or_none("GET", POST_LOOKUP_PATH, params={"parent": str(parent_id), "slug": slug})
 
     def get_episode(self, episode_id: int) -> dict[str, Any] | None:
-        return self._json_or_none("GET", EPISODE_DETAIL_PATH.format(id=episode_id), revision=True)
+        return self._json_or_none(
+            "GET", EPISODE_DETAIL_PATH.format(id=episode_id), revision=True, expected_episode_id=episode_id
+        )
 
     def upload_audio(self, upload: AudioUpload) -> dict[str, Any]:
         """Create an Audio from one file (django-cast accepts exactly one file per upload)."""
@@ -207,12 +209,19 @@ class DjangoCastClient:
     def update_episode(self, episode_id: int, payload: Mapping[str, Any], *, base_revision_id: int) -> dict[str, Any]:
         """PATCH the draft; refused when it changed since ``base_revision_id`` or went live."""
         body = {**payload, "base_revision_id": base_revision_id, "require_unpublished": True}
-        return self._dict("PATCH", EPISODE_DETAIL_PATH.format(id=episode_id), revision=True, json=body)
+        return self._dict(
+            "PATCH",
+            EPISODE_DETAIL_PATH.format(id=episode_id),
+            revision=True,
+            expected_episode_id=episode_id,
+            json=body,
+        )
 
     def publish_episode(self, episode_id: int, *, revision_id: int) -> dict[str, Any]:
         return self._dict(
             "POST",
             EPISODE_PUBLISH_PATH.format(id=episode_id),
+            expected_episode_id=episode_id,
             headers={"If-Match": f'"{revision_id}"'},
         )
 
@@ -277,17 +286,29 @@ class DjangoCastClient:
             raise CmsApiError(f"Could not read {audio_file.path}: {exc}") from exc
         return _identity(_checked(response, method, path), method, path)
 
-    def _dict(self, method: str, path: str, *, revision: bool = False, **kwargs: Any) -> dict[str, Any]:
-        return _identity(self._json(method, path, **kwargs), method, path, revision=revision)
+    def _dict(
+        self, method: str, path: str, *, revision: bool = False, expected_episode_id: int | None = None, **kwargs: Any
+    ) -> dict[str, Any]:
+        return _identity(
+            self._json(method, path, **kwargs),
+            method,
+            path,
+            revision=revision,
+            expected_episode_id=expected_episode_id,
+        )
 
     def _json(self, method: str, path: str, **kwargs: Any) -> Any:
         return _checked(self._send(method, path, **kwargs), method, path)
 
-    def _json_or_none(self, method: str, path: str, *, revision: bool = False, **kwargs: Any) -> dict[str, Any] | None:
+    def _json_or_none(
+        self, method: str, path: str, *, revision: bool = False, expected_episode_id: int | None = None, **kwargs: Any
+    ) -> dict[str, Any] | None:
         response = self._send(method, path, **kwargs)
         if response.status_code == 404:
             return None
-        return _identity(_checked(response, method, path), method, path, revision=revision)
+        return _identity(
+            _checked(response, method, path), method, path, revision=revision, expected_episode_id=expected_episode_id
+        )
 
     def _send(self, method: str, path: str, **kwargs: Any) -> httpx.Response:
         try:
@@ -365,7 +386,9 @@ def _expect_dict(data: Any, method: str, path: str) -> dict[str, Any]:
     return data
 
 
-def _identity(data: Any, method: str, path: str, *, revision: bool = False) -> dict[str, Any]:
+def _identity(
+    data: Any, method: str, path: str, *, revision: bool = False, expected_episode_id: int | None = None
+) -> dict[str, Any]:
     result = _expect_dict(data, method, path)
     for field in ("id", "latest_revision_id") if revision else ("id",):
         if type(result.get(field)) is not int or result[field] < 1:
@@ -373,6 +396,11 @@ def _identity(data: Any, method: str, path: str, *, revision: bool = False) -> d
                 f"{method} {path} returned an invalid {field}; expected a positive integer. "
                 "Do not retry writes blindly: check Wagtail for the remote outcome first."
             )
+    if expected_episode_id is not None and result["id"] != expected_episode_id:
+        message = f"{method} {path} returned a mismatched episode id"
+        if method in {"POST", "PATCH"}:
+            message += "; check Wagtail for the remote outcome before retrying."
+        raise CmsApiError(message)
     return result
 
 
