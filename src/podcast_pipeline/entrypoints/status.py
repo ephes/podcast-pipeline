@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import stat
 from collections.abc import Iterator
 from dataclasses import dataclass
 from fnmatch import fnmatchcase
@@ -27,7 +28,7 @@ from podcast_pipeline.pick_core import (
 from podcast_pipeline.review_loop_engine import LoopOutcome, parse_loop_protocol_state, unique_json_members
 from podcast_pipeline.review_loop_engine import LoopProtocolState as _ProtocolState
 from podcast_pipeline.tag_assets import TAG_ASSET_IDS, render_selected_tags_markdown
-from podcast_pipeline.tag_parsing import parse_tag_list
+from podcast_pipeline.tag_parsing import itunes_keyword_delimiter_error, parse_tag_list
 from podcast_pipeline.terminal_text import terminal_text
 from podcast_pipeline.workspace_store import EpisodeWorkspaceLayout
 
@@ -46,16 +47,32 @@ class _Inspection:
     entries: int = 0
     bytes_read: int = 0
 
-    def paths(self, directory: Path, pattern: str = "*") -> Iterator[Path]:
-        if not directory.exists():
+    def paths(self, directory: Path, pattern: str = "*", *, regular_only: bool = False) -> Iterator[Path]:
+        # Inventory counts (regular_only) admit only real directories down to regular files.
+        # Other scans still follow redirected directories so that their evidence is refused loudly when read.
+        if regular_only:
+            if not self._is_real_directory(directory):
+                return
+        elif not directory.exists():
             return
         with os.scandir(directory) as entries:
             for entry in entries:
                 self.entries += 1
                 if self.entries > MAX_STATUS_ENTRIES:
                     raise _IncompleteInspection("directory entry limit exceeded")
-                if fnmatchcase(entry.name, pattern):
+                if fnmatchcase(entry.name, pattern) and (not regular_only or entry.is_file(follow_symlinks=False)):
                     yield directory / entry.name
+
+    def _is_real_directory(self, directory: Path) -> bool:
+        parent = self.layout.root
+        for part in directory.relative_to(parent).parts:
+            parent /= part
+            try:
+                if not stat.S_ISDIR(parent.lstat().st_mode):
+                    return False
+            except FileNotFoundError:
+                return False
+        return True
 
     def read_text(self, path: Path) -> str:
         remaining = MAX_STATUS_TOTAL_BYTES - self.bytes_read
@@ -278,9 +295,7 @@ def _required_asset_ids() -> tuple[str, ...]:
 
 
 def _glob_count(path: Path, pattern: str, inspection: _Inspection) -> int:
-    if not path.exists():
-        return 0
-    return sum(1 for _ in inspection.paths(path, pattern))
+    return sum(1 for _ in inspection.paths(path, pattern, regular_only=True))
 
 
 def _candidate_assets(layout: EpisodeWorkspaceLayout, inspection: _Inspection) -> set[str]:
@@ -346,7 +361,10 @@ def _selected_text_agrees(
             and text == render_selected_tags_markdown(asset_id, parse_tag_list(expected))
         )
     if asset_id in TAG_ASSET_IDS:
-        return True
+        tags = parse_tag_list(text)
+        if asset_id == AssetKind.itunes_keywords.value and itunes_keyword_delimiter_error(tags) is not None:
+            return False
+        return fmt == TextFormat.markdown and text == render_selected_tags_markdown(asset_id, tags)
     return text == normalize_custom_selection_text(asset_id, text) + "\n"
 
 

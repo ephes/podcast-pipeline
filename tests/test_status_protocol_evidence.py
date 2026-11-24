@@ -115,3 +115,22 @@ def test_status_accepts_engine_histories(tmp_path: Path, protocol: tuple[Path, d
     result = CliRunner().invoke(app, ["status", "--workspace", str(tmp_path / "workspace")])
     assert result.exit_code == 0, result.output
     assert f"Outcome: {outcome}" in result.output
+
+
+@pytest.mark.parametrize("redirected", ["copy/protocol", "copy/protocol/description"])
+def test_status_refuses_redirected_protocol_directory(
+    tmp_path: Path, protocol: tuple[Path, dict[str, Any]], redirected: str
+) -> None:
+    workspace = tmp_path / "workspace"
+    result = CliRunner().invoke(app, ["status", "--workspace", str(workspace)])
+    assert result.exit_code == 0, result.output
+    link = workspace / redirected
+    target = tmp_path / "redirected-target"
+    link.rename(target)
+    link.symlink_to(target, target_is_directory=True)
+
+    result = CliRunner().invoke(app, ["status", "--workspace", str(workspace)])
+
+    assert result.exit_code != 0, result.output
+    assert "Invalid protocol state" in result.output
+    assert "No protocol state files found" not in result.output

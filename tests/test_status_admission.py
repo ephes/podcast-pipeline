@@ -9,6 +9,7 @@ from typing import Any
 import pytest
 from typer.testing import CliRunner
 
+from podcast_pipeline.domain.models import Candidate, TextFormat
 from podcast_pipeline.entrypoints import status
 from podcast_pipeline.entrypoints.cli import app
 
@@ -89,3 +90,56 @@ def test_status_charges_refused_read_by_file_size(tmp_path: Path) -> None:
     with pytest.raises(ValueError):
         inspection.read_text(path)
     assert inspection.bytes_read == 1
+
+
+@pytest.mark.parametrize("kind", ["directory", "symlink", "fifo", "symlink-parent"])
+def test_status_counts_only_regular_workspace_artifacts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kind: str
+) -> None:
+    monkeypatch.setattr(status, "_required_asset_ids", lambda: ("description",))
+    chunks = tmp_path / "transcript/chunks"
+    candidate_dir = tmp_path / "copy/candidates/description"
+    for directory in (chunks, candidate_dir):
+        directory.mkdir(parents=True)
+    chunk = chunks / "chunk_0001.txt"
+    evidence = Candidate(asset_id="description", format=TextFormat.markdown, content="Synthetic candidate")
+    candidate = candidate_dir / f"candidate_{evidence.candidate_id}.json"
+    contents = {chunk: "Synthetic transcript chunk", candidate: evidence.model_dump_json()}
+    target = tmp_path / "target"
+    target.write_text(evidence.model_dump_json())
+    for path, content in contents.items():
+        if kind == "directory":
+            path.mkdir()
+        elif kind == "symlink":
+            path.symlink_to(target)
+        elif kind == "fifo":
+            os.mkfifo(path)
+        else:
+            moved = path.parent.with_name(path.parent.name + "-moved")
+            path.parent.rename(moved)
+            (moved / path.name).write_text(content)
+            path.parent.symlink_to(moved, target_is_directory=True)
+
+    runner = CliRunner()
+    args = ["status", "--workspace", str(tmp_path)]
+    result = runner.invoke(app, args)
+    assert result.exit_code == 0, result.output
+    assert "transcript/chunks/*.txt: missing" in result.output
+    assert "copy/candidates: missing for description" in result.output
+    assert "blocked (no candidates): description" in result.output
+
+    for path, content in contents.items():
+        if kind == "directory":
+            path.rmdir()
+        elif kind == "symlink-parent":
+            moved = path.parent.readlink()
+            path.parent.unlink()
+            moved.rename(path.parent)
+        else:
+            path.unlink()
+        path.write_text(content)
+    result = runner.invoke(app, args)
+    assert result.exit_code == 0, result.output
+    assert "transcript/chunks/*.txt: ok (1 file(s))" in result.output
+    assert "copy/candidates: ok" in result.output
+    assert "needs pick: description" in result.output

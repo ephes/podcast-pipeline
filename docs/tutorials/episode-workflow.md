@@ -806,6 +806,9 @@ workspace files (no symlink components), at most 8 MiB each and 64 JSON containe
 An inspection admits at most 10,000 directory entries (including ignored names and repeated scans)
 and 32 MiB of file contents. Exceeding an aggregate limit reports **inspection incomplete** with
 exit code 1 and omits the checklist; split or clean up the workspace before retrying.
+Chunk, chunk-summary and candidate inventory counts use regular files in workspace directories.
+Directories, symlinks and special files matching an artifact name leave that evidence missing
+unless a regular file also matches.
 Invalid state blocks selection readiness; invalid review evidence stops status with a concise error.
 Review protocol folders must match a supported asset ID and supply unique evidence for that asset.
 Status uses the review engine's persisted protocol contract: contiguous strict integer iterations,
@@ -814,7 +817,9 @@ A `converged` label alone, a missing final review or a contradictory decision is
 Selection readiness requires the canonical, nonblank selected file in the recorded candidate's
 format and matching its content in `state.json`; unrelated stems, superseded formats and stale
 text do not count. Custom text uses the asset's canonical custom format and its manual-selection
-provenance marker. Curated tags keep their markdown selection convention.
+provenance marker. When a tag asset has no candidate selection recorded, status accepts the
+picker's canonical Markdown, including its heading-only output for an explicitly empty selection.
+iTunes keywords in that file must be comma-free.
 Status lines and CLI picker previews escape terminal controls (including ESC, OSC payload delimiters,
 CR and C1) as visible text. Status lines are capped at 1,000 characters and candidate previews at 72;
 these display limits never change the stored copy or review evidence.
