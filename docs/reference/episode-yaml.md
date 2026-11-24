@@ -3,6 +3,9 @@
 `episode.yaml` lives in the workspace root and stores per-episode metadata for inputs, audio sources, and agent
 configuration.
 
+Workspace reads and updates reject repeated keys in any mapping, including nested settings. The error
+reports the file, line and column. Explicit overrides of YAML merge defaults retain YAML merge precedence.
+
 ## Schema sources
 
 - Model: `src/podcast_pipeline/domain/episode_yaml.py`

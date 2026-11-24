@@ -30,6 +30,7 @@ from podcast_pipeline.domain.models import (
     TextFormat,
 )
 from podcast_pipeline.markdown_html import markdown_to_deterministic_html
+from podcast_pipeline.yaml_inputs import DuplicateYamlKeyError, UniqueKeySafeLoader
 
 
 class WorkspaceStoreError(RuntimeError):
@@ -231,7 +232,13 @@ def _read_json(path: Path) -> Any:
 
 def _read_yaml_mapping(path: Path) -> dict[str, Any]:
     try:
-        loaded = yaml.safe_load(_read_text(path))
+        loaded = yaml.load(_read_text(path), Loader=UniqueKeySafeLoader)
+    except DuplicateYamlKeyError as exc:
+        mark = exc.problem_mark
+        assert mark is not None
+        raise WorkspaceStoreError(
+            f"Duplicate YAML key at {path}, line {mark.line + 1}, column {mark.column + 1}"
+        ) from None
     except yaml.YAMLError as exc:
         raise WorkspaceStoreError(f"Invalid YAML at {path}: {exc}") from exc
 

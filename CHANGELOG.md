@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Reject duplicate episode YAML mapping keys before applying workspace updates, reporting the location without printing the key.
+
 - Reject surrogate code points in prompt inputs before rendering or computing provenance receipts, preserving receipt IDs for valid prompts.
 
 - Refuse supplemental episode context above 65,536 characters or 200 combined list entries before building asset candidate or review prompts. `podcast draft` no longer silently keeps only the first 200 chapter lines; a longer chapters file now stops candidate generation (after summarization) with an error.

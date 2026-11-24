@@ -85,6 +85,42 @@ def test_store_reads_writes_episode_yaml(tmp_path: Path) -> None:
     assert loaded["sources"]["reaper_media_dir"] == "/tmp"
 
 
+def test_episode_yaml_duplicate_track_setting_refuses_update(tmp_path: Path) -> None:
+    store = EpisodeWorkspaceStore(tmp_path)
+    path = store.layout.episode_yaml
+    raw = (
+        "episode_id: synthetic\n"
+        "auphonic:\n"
+        "  tracks:\n"
+        "    - settings:\n"
+        "        synthetic_setting: true\n"
+        "        synthetic_setting: false\n"
+    )
+    path.write_text(raw, encoding="utf-8")
+
+    with pytest.raises(WorkspaceStoreError, match=r"Duplicate YAML key.*line 6, column 9") as error:
+        with store.update_episode_yaml() as data:
+            data["hosts"] = ["Synthetic host"]
+    assert "synthetic_setting" not in str(error.value)
+    assert path.read_text(encoding="utf-8") == raw
+
+
+def test_episode_yaml_preserves_legacy_merge_precedence(tmp_path: Path) -> None:
+    store = EpisodeWorkspaceStore(tmp_path)
+    store.layout.episode_yaml.write_text(
+        "episode_id: synthetic\n"
+        "defaults: &defaults {synthetic_setting: true, other_setting: true}\n"
+        "auphonic:\n"
+        "  tracks:\n"
+        "    - settings: {<<: *defaults, synthetic_setting: false}\n",
+        encoding="utf-8",
+    )
+    assert store.read_episode_yaml()["auphonic"]["tracks"][0]["settings"] == {
+        "synthetic_setting": False,
+        "other_setting": True,
+    }
+
+
 def test_store_reads_writes_state_json(tmp_path: Path) -> None:
     store = EpisodeWorkspaceStore(tmp_path)
     created_at = datetime(2025, 1, 1, 0, 0, 0, tzinfo=UTC)
