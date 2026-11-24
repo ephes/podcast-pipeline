@@ -52,6 +52,73 @@ def test_invalid_recovery_fields_stop_before_mutation(
     assert path.read_bytes() == before
 
 
+@pytest.mark.parametrize("kind", ["duplicate", "oversized", "symlink", "disappeared"])
+def test_unsafe_recovery_snapshot_stops_before_mutation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake: FakeCast, kind: str
+) -> None:
+    workspace = _workspace(tmp_path, extra_formats=False)
+    _config(tmp_path, monkeypatch)
+    path = workspace / "cms/draft.json"
+    path.parent.mkdir()
+    raw = json.dumps({"base_url": BASE, "parent_id": PODCAST_ID})
+    if kind == "duplicate":
+        raw = raw[:-1] + ', "episode_id": 141, "episode_id": 142}'
+    elif kind == "oversized":
+        raw += " " * (64 * 1024)
+    if kind == "symlink":
+        target = path.with_name("checkpoint.json")
+        target.write_text(raw, encoding="utf-8")
+        path.symlink_to(target.name)
+    else:
+        path.write_text(raw, encoding="utf-8")
+
+    if kind == "disappeared":
+
+        def remove_before_read(path: Path, *, max_bytes: int) -> str:
+            path.unlink()
+            return path.read_text(encoding="utf-8")
+
+        monkeypatch.setattr(entry, "read_regular_utf8", remove_before_read, raising=False)
+
+    with pytest.raises(typer.BadParameter, match="recovery state"):
+        _run(workspace)
+    assert not fake.requests
+    if kind != "disappeared":
+        assert path.read_text(encoding="utf-8") == raw
+
+
+def test_recovery_snapshot_for_another_site_ignores_its_ids_and_flags(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake: FakeCast
+) -> None:
+    workspace = _workspace(tmp_path, extra_formats=False)
+    _config(tmp_path, monkeypatch)
+    path = workspace / "cms/draft.json"
+    path.parent.mkdir()
+    path.write_text(
+        json.dumps({"base_url": "https://elsewhere.test/", "episode_id": "ignored", "audio_attached": "ignored"}),
+        encoding="utf-8",
+    )
+
+    _run(workspace)
+
+    assert len(fake.episodes) == 1
+    assert json.loads(path.read_text(encoding="utf-8"))["base_url"] == BASE
+
+
+def test_recovery_writer_keeps_ids_when_editor_url_exceeds_snapshot_budget(tmp_path: Path) -> None:
+    store = entry.EpisodeWorkspaceStore(tmp_path)
+    state = entry.CmsDraftState(
+        base_url=BASE, parent_id=PODCAST_ID, audio_id=83, audio_edit_url=BASE + "a" * (64 * 1024)
+    )
+
+    entry._write_state(store, state)
+
+    recovered = entry._read_state(store, entry.CmsConfig(base_url=BASE))
+    assert recovered.parent_id == PODCAST_ID
+    assert recovered.audio_id == 83
+    assert recovered.audio_edit_url is None
+
+
 @pytest.mark.parametrize("value", [[], None, 4, {}])
 def test_invalid_recovery_shape(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake: FakeCast, value: Any) -> None:
     workspace = _workspace(tmp_path)
@@ -249,6 +316,41 @@ def test_deleted_bound_episode_falls_back_to_slug(
     _run(workspace)
     assert len(fake.audios) == len(fake.episodes) == 1
     assert fake.episodes[142]["podcast_audio"] == {"id": 83}
+
+
+@pytest.mark.parametrize("publish", [False, True], ids=["draft", "publish"])
+@pytest.mark.parametrize("changed", ["parent", "slug"])
+def test_slug_lookup_refuses_changed_episode_detail(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake: FakeCast, changed: str, publish: bool
+) -> None:
+    workspace = _workspace(tmp_path, extra_formats=False)
+    _config(tmp_path, monkeypatch)
+    _run(workspace)
+    state_path = workspace / "cms/draft.json"
+    state_path.unlink()
+    fake.requests.clear()
+    original = fake.handle
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        response = original(request)
+        if request.url.path == "/api/editor/posts/" and response.status_code == 200:
+            episode = fake.episodes[141]
+            if changed == "parent":
+                episode["parent"] = {"id": PODCAST_ID + 1}
+            else:
+                episode["page_slug"] = episode["slug"]
+                episode["slug"] = "renamed-draft"
+        return response
+
+    monkeypatch.setattr(fake, "handle", handle)
+    with pytest.raises(typer.BadParameter, match="Slug lookup changed.*re-run"):
+        if publish:
+            entry.run_cms_publish(workspace=workspace, yes=True)
+        else:
+            _run(workspace)
+    assert fake.calls("GET", "/api/editor/episodes/141/")
+    assert not [request for request in fake.requests if request.method in {"POST", "PATCH"}]
+    assert not state_path.exists()
 
 
 def test_transcript_checkpoint_identifies_remote_success(

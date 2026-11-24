@@ -376,12 +376,15 @@ fetch, HTTP, size or deadline errors preserve the previous atomic JSONL export.
 
 ### CMS recovery checkpoints
 
-CMS recovery state is validated before mutation: IDs must be positive integers or null and present flags must
-be booleans. `cms/draft.json` now records the resolved `parent_id` as well as the site. Changing podcasts requires
+CMS recovery state is validated before mutation. `cms/draft.json` must be a stable regular UTF-8 JSON file
+of at most 64 KiB, with unique object members at every depth. Missing files start with empty recovery state.
+If the optional Audio editor URL would exceed that limit, the checkpoint stores the IDs and omits the URL.
+For the configured site, IDs must be positive integers or null and present flags must be booleans.
+`cms/draft.json` records the resolved `parent_id` as well as the site. Changing podcasts requires
 an explicit reset after checking the old episode and Audio in Wagtail; no old IDs are reused. Legacy state with
 an episode ID is adopted only after verifying its parent. For legacy upload-only state, verify the Audio's
 intended podcast and add its `parent_id`, or explicitly reset the state to start fresh. Valid partial upload
-checkpoints remain resumable. State for a different site remains ignored.
+checkpoints remain resumable. After the file passes admission, state for a different site is ignored.
 
 If a remote upload or episode write succeeds but its local checkpoint fails, the error gives the confirmed
 object ID and the fields to merge into `cms/draft.json`. Repair write access and those fields before rerunning,
@@ -391,7 +394,9 @@ write. Malformed successful API identities also stop the run; check Wagtail for 
 To reset deliberately, move `cms/draft.json` to a backup after recording any unattached Audio ID for manual
 cleanup/recovery. Reset abandons automatic reuse of those IDs. Alternatively clear both IDs to null when
 abandoning them; a stale parent with no IDs is harmless. A missing stored episode under a matching recorded
-parent falls back to slug lookup; a moved episode or unverifiable legacy episode requires the explicit reset.
+parent falls back to slug lookup; a moved stored episode or unverifiable legacy episode requires the explicit reset.
+When falling back to slug lookup, both commands verify the returned episode ID, parent and latest draft slug
+against the lookup before any remote write. If these disagree, check the draft in Wagtail and rerun to rediscover it.
 
 
 ### CMS preview and publication boundaries

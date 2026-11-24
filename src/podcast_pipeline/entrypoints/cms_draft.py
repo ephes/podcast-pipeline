@@ -30,10 +30,13 @@ from podcast_pipeline.cms_draft import (
     load_cms_config,
     selected_slug,
 )
+from podcast_pipeline.control_json import load_control_json
+from podcast_pipeline.file_inputs import read_regular_utf8
 from podcast_pipeline.workspace_store import EpisodeWorkspaceStore, WorkspaceStoreError, atomic_write_text
 
 _EPISODE_TYPE = "cast.Episode"
 _PODCAST_TYPE = "cast.Podcast"
+_CMS_RECOVERY_MAX_BYTES = 64 * 1024
 _DIARIZATION_LABELS = {"enabled": "Enabled", "disabled": "Disabled", "inherit": "Inherit"}
 
 
@@ -310,12 +313,15 @@ def _find_existing_episode(
     episode = client.get_episode(int(post["id"]))
     if episode is None:
         raise CmsApiError(f"Episode {post['id']} with slug {slug!r} disappeared while it was read; re-run.")
+    if episode["id"] != post["id"] or _parent_id(episode) != parent_id or episode.get("slug") != slug:
+        raise CmsApiError("Slug lookup changed while reading episode details. Check the draft in Wagtail and re-run.")
     return episode
 
 
 def _parent_id(episode: dict[str, Any]) -> int | None:
     parent = episode.get("parent")
-    return parent.get("id") if isinstance(parent, dict) else None
+    parent_id = parent.get("id") if isinstance(parent, dict) else None
+    return parent_id if type(parent_id) is int and parent_id > 0 else None
 
 
 def _refuse_live(episode: dict[str, Any]) -> None:
@@ -585,12 +591,18 @@ def _read_state(store: EpisodeWorkspaceStore, config: CmsConfig) -> CmsDraftStat
     """The stored ids for ``config.base_url``; ids stored for another site are ignored."""
     path = store.layout.cms_draft_json
     empty = CmsDraftState(base_url=config.base_url)
-    if not path.exists():
-        return empty
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError) as exc:
-        raise CmsApiError(f"Could not read {path}: {exc}") from exc
+        try:
+            path.lstat()
+        except FileNotFoundError:
+            return empty
+        # A checkpoint seen at admission must still exist when the snapshot is read.
+        data = load_control_json(read_regular_utf8(path, max_bytes=_CMS_RECOVERY_MAX_BYTES))
+    except (OSError, ValueError):
+        raise CmsApiError(
+            "Could not read CMS recovery state in cms/draft.json. "
+            "Expected a stable regular UTF-8 JSON file within 64 KiB with unique object members."
+        ) from None
     if not isinstance(data, dict) or not isinstance(data.get("base_url"), str) or not data["base_url"]:
         raise CmsApiError("Invalid CMS recovery state in cms/draft.json: expected an object with base_url.")
     if data["base_url"] != config.base_url:
@@ -627,7 +639,14 @@ def _write_state(store: EpisodeWorkspaceStore, state: CmsDraftState) -> None:
         "audio_attached": state.audio_attached,
         "transcript_pending": state.transcript_pending,
     }
-    atomic_write_text(path, json.dumps(data, indent=2) + "\n")
+    text = json.dumps(data, indent=2) + "\n"
+    if len(text) > _CMS_RECOVERY_MAX_BYTES and state.audio_edit_url is not None:
+        # Keep the recovery IDs even when the optional editor link is too large.
+        data["audio_edit_url"] = None
+        text = json.dumps(data, indent=2) + "\n"
+    if len(text) > _CMS_RECOVERY_MAX_BYTES:
+        raise OSError("CMS recovery state exceeds the byte limit")
+    atomic_write_text(path, text)
 
 
 def _validate_parent_binding(client: DjangoCastClient, state: CmsDraftState, parent_id: int) -> None:
