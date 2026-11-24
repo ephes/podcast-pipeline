@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import stat
 from collections.abc import Iterator
 from dataclasses import dataclass
 from fnmatch import fnmatchcase
@@ -46,15 +47,21 @@ class _Inspection:
     entries: int = 0
     bytes_read: int = 0
 
-    def paths(self, directory: Path, pattern: str = "*") -> Iterator[Path]:
-        if not directory.exists():
-            return
+    def paths(self, directory: Path, pattern: str = "*", *, regular_only: bool = False) -> Iterator[Path]:
+        parent = self.layout.root
+        for part in directory.relative_to(parent).parts:
+            parent /= part
+            try:
+                if not stat.S_ISDIR(parent.lstat().st_mode):
+                    return
+            except FileNotFoundError:
+                return
         with os.scandir(directory) as entries:
             for entry in entries:
                 self.entries += 1
                 if self.entries > MAX_STATUS_ENTRIES:
                     raise _IncompleteInspection("directory entry limit exceeded")
-                if fnmatchcase(entry.name, pattern):
+                if fnmatchcase(entry.name, pattern) and (not regular_only or entry.is_file(follow_symlinks=False)):
                     yield directory / entry.name
 
     def read_text(self, path: Path) -> str:
@@ -278,9 +285,7 @@ def _required_asset_ids() -> tuple[str, ...]:
 
 
 def _glob_count(path: Path, pattern: str, inspection: _Inspection) -> int:
-    if not path.exists():
-        return 0
-    return sum(1 for _ in inspection.paths(path, pattern))
+    return sum(1 for _ in inspection.paths(path, pattern, regular_only=True))
 
 
 def _candidate_assets(layout: EpisodeWorkspaceLayout, inspection: _Inspection) -> set[str]:

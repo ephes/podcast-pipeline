@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Count only regular workspace files as chunk, chunk-summary and candidate evidence in `podcast status`.
+
 - Enforce the transcript token limit during chunk discovery and backup recovery without building a byte-offset index.
 
 - Validate transcript chunk metadata against its manifest slot and canonical text path before cache reuse or backup recovery.

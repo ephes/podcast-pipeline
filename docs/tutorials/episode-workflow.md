@@ -806,6 +806,9 @@ workspace files (no symlink components), at most 8 MiB each and 64 JSON containe
 An inspection admits at most 10,000 directory entries (including ignored names and repeated scans)
 and 32 MiB of file contents. Exceeding an aggregate limit reports **inspection incomplete** with
 exit code 1 and omits the checklist; split or clean up the workspace before retrying.
+Chunk, chunk-summary and candidate inventory counts use regular files in workspace directories.
+Directories, symlinks and special files matching an artifact name leave that evidence missing
+unless a regular file also matches.
 Invalid state blocks selection readiness; invalid review evidence stops status with a concise error.
 Review protocol folders must match a supported asset ID and supply unique evidence for that asset.
 Status uses the review engine's persisted protocol contract: contiguous strict integer iterations,
