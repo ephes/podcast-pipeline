@@ -386,17 +386,27 @@ def _validated_chunk_ids(
 ) -> list[int] | None:
     try:
         ids, files, source_digest = _read_chunk_manifest(directory, config=config, limits=limits)
-        source = _read_source(layout.transcript_dir / "transcript.txt", limits).encode("utf-8")
-        _tokenize(source.decode("utf-8"), limits)
-        if source_digest != hashlib.sha256(source).hexdigest():
+        source = _read_source(layout.transcript_dir / "transcript.txt", limits)
+        if source_digest != hashlib.sha256(source.encode("utf-8")).hexdigest():
             return None
+        for count, _ in enumerate(_TOKEN_RE.finditer(source), start=1):
+            _admit(count, limits.tokens, "tokens")
         output_bytes = 0
-        for name in sorted(files):
-            ceiling = limits.output_bytes - output_bytes if name.endswith(".txt") else _META_BYTES
-            data = read_regular_utf8(directory / name, max_bytes=ceiling).encode("utf-8")
-            if name.endswith(".txt"):
-                output_bytes += len(data)
-            if hashlib.sha256(data).hexdigest() != files[name]:
+        for chunk_id in ids:
+            meta_name = layout.transcript_chunk_meta_json_path(chunk_id).name
+            raw_meta = read_regular_utf8(directory / meta_name, max_bytes=_META_BYTES)
+            if hashlib.sha256(raw_meta.encode("utf-8")).hexdigest() != files[meta_name]:
+                return None
+            meta = TranscriptChunkMeta.model_validate(load_control_json(raw_meta))
+            text_path = layout.transcript_chunk_text_path(chunk_id)
+            if meta.chunk_id != chunk_id or meta.text_relpath != text_path.relative_to(layout.root).as_posix():
+                return None
+
+            data = read_regular_utf8(directory / text_path.name, max_bytes=limits.output_bytes - output_bytes).encode(
+                "utf-8"
+            )
+            output_bytes += len(data)
+            if hashlib.sha256(data).hexdigest() != files[text_path.name]:
                 return None
         return ids
     except (OSError, ValueError, KeyError, TypeError):

@@ -1,5 +1,6 @@
 """Disposable publishers/readers coordinated at directory rename boundaries."""
 
+import hashlib
 import json
 import multiprocessing as mp
 from multiprocessing.connection import Connection
@@ -167,6 +168,37 @@ def test_killed_publisher_recovers_previous_before_failing_new_stage(
         if publisher.is_alive():
             publisher.kill()
         publisher.join(10)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("chunk_id", 2), ("text_relpath", "transcript/chunks/chunk_0002.txt"), ("version", 2)],
+)
+@pytest.mark.parametrize("recover", [False, True])
+def test_chunk_metadata_must_match_manifest_slot(tmp_path: Path, field: str, value: int | str, recover: bool) -> None:
+    layout = _initial(tmp_path)
+    assert chunker.discover_complete_chunk_ids(layout) == [1, 2, 3]
+
+    meta_path = layout.transcript_chunk_meta_json_path(1)
+    metadata = json.loads(meta_path.read_bytes())
+    metadata[field] = value
+    data = json.dumps(metadata).encode("utf-8")
+    meta_path.write_bytes(data)
+    manifest_path = layout.transcript_chunks_dir / "complete.json"
+    manifest = json.loads(manifest_path.read_bytes())
+    manifest["files"][meta_path.name] = hashlib.sha256(data).hexdigest()
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    if not recover:
+        assert chunker.discover_complete_chunk_ids(layout) == []
+        return
+
+    backup = layout.transcript_dir / ".chunks-previous-mismatched"
+    layout.transcript_chunks_dir.rename(backup)
+    with pytest.raises(chunker.ChunkRecoveryError, match="Unusable chunk backup"):
+        chunker.discover_complete_chunk_ids(layout)
+    assert not layout.transcript_chunks_dir.exists()
+    assert (backup / meta_path.name).read_bytes() == data
 
 
 @pytest.mark.parametrize("problem", ["multiple", "corrupt", "changed_source"])

@@ -43,9 +43,11 @@ Chunk outputs live under `transcript/chunks/`:
 4096 chunks and 32 MiB of aggregate UTF-8 chunk text (including overlap and added newlines).
 Token and output capacity is charged before retaining each token/chunk. A refusal raises
 `ChunkerResourceError` before any staging or publication, preserving the last completed set.
-Discovery uses the same envelope, plus 2 MiB for the manifest and 4096 bytes per metadata file;
-an excessive cache is not reused. Programmatic callers may supply smaller `limits` to chunking,
-writing and discovery. Reduce source size or overlap before retrying a refused transcript.
+Discovery and backup recovery use the same envelope, plus 2 MiB for the manifest and 4096 bytes per
+metadata file. Once the source digest matches, they count whitespace tokens up to the first token
+over the limit. Only chunk generation builds the byte-offset index. Programmatic callers may supply
+smaller `limits` to chunking, writing and discovery. Reduce source size or overlap before retrying
+a refused transcript.
 
 ## LLM-backed summaries
 
@@ -201,6 +203,9 @@ and a `files` map of text/metadata basenames to SHA-256 digests. Chunks are writ
 directory, then the previous directory is moved aside and the completed directory renamed into place.
 A handled publication error triggers an attempt to restore the previous directory. Discovery rejects legacy prefixes,
 missing or changed members and sets whose source no longer matches `transcript/transcript.txt`.
+Discovery and backup recovery also validate each metadata file against the chunk schema. Its
+`chunk_id` and workspace-relative `text_relpath` must match its manifest slot and canonical text path,
+even when the file matches the recorded digest.
 Publication and discovery share the existing stable workspace-directory lock with state/YAML writers.
 Staging happens outside the lock; the source is read again under the lock before swapping. Changed
 source refuses publication with `ChunkSourceChangedError` (a `ValueError`) and preserves the current set. Swap, rollback and old-set retirement stay
