@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Enforce the transcript token limit during chunk discovery and backup recovery without building a byte-offset index.
+
 - Validate transcript chunk metadata against its manifest slot and canonical text path before cache reuse or backup recovery.
 
 - Require the editor's missing-file diagnostic to confirm CMS upload diarization support and stop before uploading on ambiguous validation responses.

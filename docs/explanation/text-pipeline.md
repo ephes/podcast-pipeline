@@ -43,9 +43,11 @@ Chunk outputs live under `transcript/chunks/`:
 4096 chunks and 32 MiB of aggregate UTF-8 chunk text (including overlap and added newlines).
 Token and output capacity is charged before retaining each token/chunk. A refusal raises
 `ChunkerResourceError` before any staging or publication, preserving the last completed set.
-Discovery uses the same envelope, plus 2 MiB for the manifest and 4096 bytes per metadata file;
-an excessive cache is not reused. Programmatic callers may supply smaller `limits` to chunking,
-writing and discovery. Reduce source size or overlap before retrying a refused transcript.
+Discovery and backup recovery use the same envelope, plus 2 MiB for the manifest and 4096 bytes per
+metadata file. Once the source digest matches, they count whitespace tokens up to the first token
+over the limit. Only chunk generation builds the byte-offset index. Programmatic callers may supply
+smaller `limits` to chunking, writing and discovery. Reduce source size or overlap before retrying
+a refused transcript.
 
 ## LLM-backed summaries
 

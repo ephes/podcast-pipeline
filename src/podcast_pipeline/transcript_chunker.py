@@ -386,10 +386,11 @@ def _validated_chunk_ids(
 ) -> list[int] | None:
     try:
         ids, files, source_digest = _read_chunk_manifest(directory, config=config, limits=limits)
-        source = _read_source(layout.transcript_dir / "transcript.txt", limits).encode("utf-8")
-        _tokenize(source.decode("utf-8"), limits)
-        if source_digest != hashlib.sha256(source).hexdigest():
+        source = _read_source(layout.transcript_dir / "transcript.txt", limits)
+        if source_digest != hashlib.sha256(source.encode("utf-8")).hexdigest():
             return None
+        for count, _ in enumerate(_TOKEN_RE.finditer(source), start=1):
+            _admit(count, limits.tokens, "tokens")
         output_bytes = 0
         for chunk_id in ids:
             meta_name = layout.transcript_chunk_meta_json_path(chunk_id).name
