@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Require a bounded regular CMS recovery file and reject duplicate JSON members before using stored checkpoint data.
+
 - Stop CMS draft updates and publishing if the episode detail no longer matches the fallback slug lookup.
 
 - Bound expanded episode YAML node count and depth before loading the model, and reject cyclic aliases.
