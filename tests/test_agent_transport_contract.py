@@ -10,6 +10,7 @@ from typing import Any
 import pytest
 
 from podcast_pipeline import agent_runners as runners
+from podcast_pipeline.agent_cli_config import AgentCliConfig
 
 
 def run(script: str, text: str = "") -> subprocess.CompletedProcess[str]:
@@ -170,6 +171,18 @@ def test_protocol_stdout_requires_exact_utf8() -> None:
         run('import os; os.write(1, b\'{"content":"\\xff"}\')')
 
 
+def test_invalid_stdout_preserves_nonzero_agent_exit() -> None:
+    config = AgentCliConfig(
+        role="drafter",
+        command=sys.executable,
+        args=("-c", 'import os, sys; sys.stdin.read(); os.write(1, b"synthetic \\xff"); sys.exit(73)'),
+    )
+
+    with pytest.raises(runners.AgentRunnerError, match=r"Drafter CLI failed with exit code 73;") as caught:
+        runners.run_agent_cli(config=config, prompt_text="synthetic", cwd=None, timeout_seconds=3, label="Drafter")
+    assert "synthetic" not in str(caught.value)
+
+
 def test_non_protocol_stdout_keeps_replacement_decoding() -> None:
     result = runners.run_cli_process(
         [sys.executable, "-c", 'import os; os.write(1, b"progress \\xff done")'],
@@ -257,7 +270,6 @@ def test_external_reap_revokes_group_authority(monkeypatch: pytest.MonkeyPatch) 
 @pytest.mark.parametrize("role", ["creator", "reviewer"])
 @pytest.mark.parametrize("output", [b'{"content":"\xff"}', b'{"done":false,"done":true}'])
 def test_invalid_protocol_never_publishes(tmp_path: Path, role: str, output: bytes) -> None:
-    from podcast_pipeline.agent_cli_config import AgentCliConfig
     from podcast_pipeline.workspace_store import EpisodeWorkspaceLayout
 
     config = AgentCliConfig(role=role, command=sys.executable, args=("-c", f"import os; os.write(1,{output!r})"))

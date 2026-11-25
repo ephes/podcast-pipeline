@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Preserve the agent CLI exit code when stdout contains invalid UTF-8 on a nonzero exit.
+
 - Retire agent and transcription CLI processes and close their pipes if supervision setup fails after launch.
 
 - Coalesce identical RSS example records and preserve the previous export when the same ID has conflicting records.

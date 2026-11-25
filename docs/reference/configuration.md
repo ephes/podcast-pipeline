@@ -338,8 +338,8 @@ Overflow fails the step and kills/reaps the owned process group, as do timeout a
 Successful agent and transcription commands are retired the same way, so helpers left in their
 session/process group do not survive, and uncertain cleanup fails the step;
 transcription nonzero-exit diagnostics retain only the final 4096 characters. Agent errors omit raw stderr.
-Agent stdin must be completely delivered and fit 1 MiB of UTF-8; protocol stdout is decoded strictly.
-Normal stdout is preserved within the limit.
+Agent stdin must be completely delivered and fit 1 MiB of UTF-8. Successful agent stdout must be valid UTF-8.
+On nonzero exit, malformed stdout bytes are decoded with replacement within the same byte limit, preserving the exit code.
 Process supervision needs `os.waitid` with `WNOWAIT`: on macOS that means Python 3.13 or newer
 (the repository pins 3.14). Older macOS interpreters refuse agent and transcription calls before launch.
 Transcription defaults to a finite 7200-second (two-hour) deadline; `podcast transcribe --timeout`
@@ -477,7 +477,7 @@ priority and carries a fixed cleanup note. A call can only succeed if cleanup su
 Group signaling requires an unreaped child identity; external reaping revokes this authority.
 On Darwin, an EPERM group signal is accepted only when waitid confirms exit and libproc proves
 the reserved leader is the sole member.
-Agent stdout must be exact UTF-8; stderr remains a separately byte-bounded diagnostic stream.
+Successful agent stdout must be exact UTF-8. On nonzero exit the agent error reports the code without raw stdout or stderr.
 Transcriber stdout is not protocol output: it is still byte-bounded but decoded with replacement and ignored.
 
 Agent protocol stdout must contain exactly one JSON object, optionally wrapped in a complete
