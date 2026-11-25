@@ -126,6 +126,9 @@ at any depth, non-finite numbers (`NaN`, `Infinity`, `1e999`) and integers longe
 raise an Auphonic API error. Oversized error responses also fail admission, including oversized 404 responses.
 Production reads, including status polls and cleanup checks, require the returned UUID to match the requested
 production. A mismatch prevents downloading or recording those outputs and prevents deletion based on that response.
+Production update and start responses also require the target UUID. An update mismatch stops before track updates
+or a paid start. After a start mismatch, a plain `podcast produce` follows the saved UUID if Auphonic accepted
+the start. If it did not, use `--restart` for a newly created production or `--update` for a rerun.
 An empty successful DELETE response is accepted. A failure after a production was created still reports its UUID, which `state.json` already holds, and
 never triggers a second create or start.
 

@@ -1400,3 +1400,46 @@ def test_empty_base_url_falls_back_to_default(monkeypatch: pytest.MonkeyPatch, v
     monkeypatch.setenv("AUPHONIC_API_KEY", "k1")
     monkeypatch.setenv("AUPHONIC_BASE_URL", value)
     assert auphonic_api.load_auphonic_credentials().base_url == "https://auphonic.com/api"
+
+
+def test_rerun_refuses_mismatched_update_before_track_updates_or_paid_start(tmp_path: Path) -> None:
+    original = _rerun_handler()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST" and request.url.path == "/api/production/u1.json":
+            original(request)
+            return _ok(_production("unrelated", 15, "Production Changed"))
+        return original(request)
+
+    recorder = _Recorder(handler)
+    with _client(recorder) as client, pytest.raises(AuphonicApiError, match="production UUID mismatch"):
+        client.rerun_production(_stored(), _rerun_payload(tmp_path))
+    assert recorder.calls == [("GET", "/api/preset/p1.json"), ("POST", "/api/production/u1.json")]
+
+
+@pytest.mark.parametrize("update", [False, True])
+def test_run_produce_keeps_recovery_uuid_after_mismatched_start(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    fake_api: Callable[[list[tuple[int, str]]], _FakeAuphonic],
+    update: bool,
+) -> None:
+    fake = fake_api([(4, "Audio Processing"), (3, "Done")])
+    workspace = _workspace(tmp_path)
+    store = EpisodeWorkspaceStore(workspace)
+    if update:
+        produce.run_produce(workspace=workspace, dry_run=False)
+    fake.recorder.requests.clear()
+
+    def wrong_start_identity(request: httpx.Request) -> httpx.Response | None:
+        if request.url.path == "/api/production/prod-1/start.json":
+            return _ok(_production("unrelated", 1, "Waiting"))
+        return None
+
+    monkeypatch.setattr(fake, "_handle_fixed", wrong_start_identity)
+    recovery = "--update" if update else "--restart"
+    with pytest.raises(typer.BadParameter, match=rf"prod-1 was .*production UUID mismatch.*{recovery}"):
+        produce.run_produce(workspace=workspace, dry_run=False, update=update)
+    assert fake.recorder.calls[-1] == ("POST", "/api/production/prod-1/start.json")
+    assert store.read_state().auphonic_production_uuid == "prod-1"
+    assert store.read_state().auphonic_productions[0].outputs_downloaded_at is None

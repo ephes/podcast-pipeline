@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Check Auphonic production UUIDs after updates and starts, keeping the saved production available for recovery.
+
 - Require matching Auphonic production UUIDs when resuming, polling or checking whether cleanup can delete a production.
 
 - Stream the bounded UTF-8 transcript digest during the final chunk publication check, keeping source changes from replacing the current set.
