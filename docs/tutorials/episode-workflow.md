@@ -568,6 +568,8 @@ Auphonic production):
 
 The dashboard's **Close** button keeps the dashboard open and shows the active stage while a background job
 is running. Job progress remains visible. After the job completes or fails, click **Close** again.
+If the dashboard server has already stopped (for example after Ctrl-C), **Close** shows the closed page
+instead of an error.
 `POST /api/done` returns 409 with the active job ID in `job_id` while a job is running. Once it accepts
 shutdown, new background job requests receive 503.
 

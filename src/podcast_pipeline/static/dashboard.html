@@ -1743,9 +1743,13 @@ async function handleDone() {
   try {
     await apiJson("POST", "/api/done", {});
   } catch (error) {
-    elements.closeBtn.disabled = false;
-    alert(error instanceof Error ? error.message : String(error));
-    return;
+    // fetch rejects with TypeError when no server answers (already stopped, or the
+    // accepted shutdown raced the response). HTTP refusals and timeouts keep the page live.
+    if (!(error instanceof TypeError)) {
+      elements.closeBtn.disabled = false;
+      alert(error instanceof Error ? error.message : String(error));
+      return;
+    }
   }
 
   if (state.jobPollInterval !== null) {

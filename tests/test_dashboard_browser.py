@@ -419,6 +419,20 @@ def test_close_conflict_preserves_progress_and_allows_retry(page: Page) -> None:
     assert page.evaluate("state.jobPollInterval === null && Object.keys(state.currentJobStreams).length === 0")
 
 
+def test_close_finishes_when_server_is_already_gone(page: Page) -> None:
+    page.wait_for_function("state.jobPollInterval !== null")
+    page.evaluate("""() => {
+      server.holds = ['POST /api/done'];
+      streamJob('synthetic', elements.produceLog, elements.produceProgress);
+    }""")
+    page.get_by_role("button", name="Close", exact=True).click()
+    page.wait_for_function("server.pending.length === 1")
+    page.evaluate("server.pending.shift().reject(new TypeError('Failed to fetch'))")
+    expect(page.get_by_text("Dashboard closed.")).to_be_visible()
+    assert page.evaluate("window.lastAlert === undefined")
+    assert page.evaluate("state.jobPollInterval === null && Object.keys(state.currentJobStreams).length === 0")
+
+
 def test_stalled_health_check_can_recover(page: Page) -> None:
     page.clock.install()
     page.evaluate("""() => {
