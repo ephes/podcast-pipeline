@@ -748,10 +748,11 @@ def test_invalid_status_prevents_cleanup_deletion(tmp_path: Path, status: object
     before = store.layout.state_json.read_bytes()
 
     def handler(request: httpx.Request) -> httpx.Response:
-        invalid = request.url.path.endswith("/current.json") == invalid_current
+        uuid = Path(request.url.path).stem
+        invalid = (uuid == "current") == invalid_current
         return _ok(
             {
-                "uuid": "current" if invalid_current else "old",
+                "uuid": uuid,
                 "status": status if invalid else 3,
                 "status_string": "Done",
             }
@@ -761,6 +762,53 @@ def test_invalid_status_prevents_cleanup_deletion(tmp_path: Path, status: object
     with _client(recorder) as client:
         if invalid_current:
             with pytest.raises(AuphonicApiError, match="invalid production status"):
+                produce.cleanup_superseded(client, store)
+        else:
+            assert produce.cleanup_superseded(client, store).failed == ("old",)
+    assert all(method == "GET" for method, _ in recorder.calls)
+    assert store.layout.state_json.read_bytes() == before
+
+
+@pytest.mark.parametrize("during_poll", [False, True])
+def test_produce_rejects_mismatched_fetch_identity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    fake_api: Callable[[list[tuple[int, str]]], _FakeAuphonic],
+    during_poll: bool,
+) -> None:
+    fake = fake_api([DONE])
+    workspace = _workspace(tmp_path)
+    store = EpisodeWorkspaceStore(workspace)
+    _state_with_history(store, _record("current", CURRENT))
+    before = store.layout.state_json.read_bytes()
+
+    def wrong_identity(request: httpx.Request) -> httpx.Response | None:
+        if request.url.path == "/api/production/current.json" and (not during_poll or fake.polls.get("current", 0)):
+            return _ok(fake._production("unrelated", *DONE))
+        return None
+
+    monkeypatch.setattr(fake, "_handle_fixed", wrong_identity)
+    with pytest.raises(typer.BadParameter, match="production UUID mismatch"):
+        produce.run_produce(workspace=workspace, dry_run=False)
+    assert fake.recorder.calls == [("GET", "/api/production/current.json")] * (2 if during_poll else 1)
+    assert store.layout.state_json.read_bytes() == before
+    assert not store.layout.auphonic_outputs_dir.exists()
+
+
+@pytest.mark.parametrize("mismatched_uuid", ["current", "old"])
+def test_mismatched_fetch_identity_prevents_cleanup_deletion(tmp_path: Path, mismatched_uuid: str) -> None:
+    store = EpisodeWorkspaceStore(tmp_path)
+    _state_with_history(store, _record("old", SUPERSEDED), _downloaded("current"))
+    before = store.layout.state_json.read_bytes()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        uuid = Path(request.url.path).stem
+        return _ok({"uuid": "unrelated" if uuid == mismatched_uuid else uuid, "status": 3})
+
+    recorder = _Recorder(handler)
+    with _client(recorder) as client:
+        if mismatched_uuid == "current":
+            with pytest.raises(AuphonicApiError, match="production UUID mismatch"):
                 produce.cleanup_superseded(client, store)
         else:
             assert produce.cleanup_superseded(client, store).failed == ("old",)

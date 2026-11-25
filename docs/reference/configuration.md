@@ -124,6 +124,8 @@ compressed bodies and trailing bytes fail. Redirects are followed without readin
 The parser requires strict UTF-8 JSON without a byte order mark. Excessive nesting, duplicate object members
 at any depth, non-finite numbers (`NaN`, `Infinity`, `1e999`) and integers longer than Python's digit limit
 raise an Auphonic API error. Oversized error responses also fail admission, including oversized 404 responses.
+Production reads, including status polls and cleanup checks, require the returned UUID to match the requested
+production. A mismatch prevents downloading or recording those outputs and prevents deletion based on that response.
 An empty successful DELETE response is accepted. A failure after a production was created still reports its UUID, which `state.json` already holds, and
 never triggers a second create or start.
 

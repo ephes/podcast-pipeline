@@ -412,7 +412,7 @@ class AuphonicClient:
             response = self._request_json("GET", url)
         else:
             response = asyncio.run(self._fetch_with_deadline(url, timeout_seconds))
-        return _parse_production(response)
+        return _parse_production(response, expected_uuid=uuid)
 
     async def _fetch_with_deadline(self, url: str, seconds: float) -> dict[str, Any]:
         assert self._transport is None or isinstance(self._transport, httpx.AsyncBaseTransport)
@@ -771,11 +771,15 @@ def _extract_data(payload: Mapping[str, Any]) -> object:
     return payload
 
 
-def _parse_production(payload: Mapping[str, Any]) -> AuphonicProduction:
+def _parse_production(payload: Mapping[str, Any], *, expected_uuid: str | None = None) -> AuphonicProduction:
     data = _extract_data(payload)
     if not isinstance(data, Mapping):
         raise AuphonicApiError("Auphonic API response missing production data.")
     uuid = _required_str(data.get("uuid"), key="uuid")
+    if expected_uuid is not None and uuid != expected_uuid:
+        raise AuphonicApiError(
+            "Auphonic production UUID mismatch: response does not identify the requested production."
+        )
     status = data.get("status")
     status_string = _optional_str(
         data.get("status_string") or data.get("status_text") or data.get("status_label"),
