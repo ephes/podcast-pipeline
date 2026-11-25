@@ -48,6 +48,9 @@ Notes:
   the CLI and the dashboard job say so ("no agent calls") instead of reporting a fresh result.
   A selection conflict, invalid protocol state or unreadable saved candidate evidence ends
   `podcast review` with a "Review stopped" message and exit code 1, not a traceback.
+  Resume requires a regular JSON state file of at most 8 MiB. If that path contains
+  a special file or symlink, restore or repair the saved evidence before retrying.
+  Programmatic callers must pass a positive integer for `max_iterations` on both fresh and resumed runs.
 - Saved review candidates must use `copy/candidates/<asset_id>/candidate_<UUID>.json`, with
   one file per UUID and the same UUID in the filename and JSON. If review stops on conflicting
   evidence, verify the canonical file against the checkpoint and archive conflicting copies
@@ -62,6 +65,8 @@ Notes:
   Review stops before calling either agent or changing the checkpoint or selection.
 - Each completed candidate/review is checkpointed before the next agent call. After an agent
   failure, fix the cause and repeat the command. Invalid protocol state stops before agent calls.
+  Protocol JSON accepts only finite numbers, including in candidate and review provenance metadata.
+  Nonfinite numbers in a new candidate or review stop publication of that round's checkpoint.
 - For an intentional fresh run, archive `copy/protocol/<asset_id>/` and
   `copy/reviews/<asset_id>/` outside their active paths (for example, under
   `review-archive/<timestamp>/<asset_id>/`) before repeating the command. Keep the candidate

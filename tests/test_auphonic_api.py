@@ -1278,12 +1278,12 @@ def test_download_directory_failure_uses_api_error(tmp_path: Path) -> None:
     assert output_dir.read_bytes() == b"existing"
 
 
-@pytest.mark.parametrize("fail_second", [False, True])
+@pytest.mark.parametrize("second_output", ["complete", "interrupted", "short", "long"])
 def test_produce_marks_downloaded_only_after_complete_set(
     tmp_path: Path,
     fake_api: Callable[[list[tuple[int, str]]], _FakeAuphonic],
     monkeypatch: pytest.MonkeyPatch,
-    fail_second: bool,
+    second_output: str,
 ) -> None:
     fake = fake_api([(3, "Done")])
     production = fake._production
@@ -1297,8 +1297,11 @@ def test_produce_marks_downloaded_only_after_complete_set(
 
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/second":
-            if fail_second:
+            if second_output == "interrupted":
                 return httpx.Response(200, stream=_InterruptedDownload())
+            if second_output in {"short", "long"}:
+                declared = "20" if second_output == "short" else "2"
+                return httpx.Response(200, headers={"Content-Length": declared}, stream=httpx.ByteStream(b"ogg"))
             return httpx.Response(200, content=b"ogg-bytes")
         return dispatch(request)
 
@@ -1310,8 +1313,9 @@ def test_produce_marks_downloaded_only_after_complete_set(
     output_dir.mkdir(parents=True)
     for filename in ["ep.mp3", "ep.ogg"]:
         (output_dir / filename).write_bytes(b"old")
-    if fail_second:
-        with pytest.raises(typer.BadParameter, match="download"):
+    if second_output != "complete":
+        message = "download" if second_output == "interrupted" else "Content-Length mismatch"
+        with pytest.raises(typer.BadParameter, match=message):
             produce.run_produce(workspace=workspace, dry_run=False)
         assert {p.name: p.read_bytes() for p in output_dir.iterdir()} == {"ep.mp3": b"old", "ep.ogg": b"old"}
         assert store.read_state().auphonic_productions[-1].outputs_downloaded_at is None

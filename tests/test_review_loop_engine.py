@@ -2,7 +2,10 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from pathlib import Path
+from unittest.mock import Mock
 from uuid import UUID
+
+import pytest
 
 from podcast_pipeline.domain.models import (
     Candidate,
@@ -18,6 +21,7 @@ from podcast_pipeline.review_loop_engine import (
     LoopProtocolIteration,
     LoopProtocolState,
     ReviewerInput,
+    load_loop_protocol_state,
     run_review_loop_engine,
 )
 from podcast_pipeline.workspace_store import EpisodeWorkspaceLayout
@@ -35,6 +39,40 @@ def _candidate(asset_id: str, iteration: int) -> Candidate:
         content=f"draft {iteration}",
         created_at=_fixed_dt(),
     )
+
+
+@pytest.mark.parametrize("resume", [False, True], ids=["fresh", "resume"])
+def test_engine_refuses_boolean_limit_before_callbacks(tmp_path: Path, resume: bool) -> None:
+    layout = EpisodeWorkspaceLayout(tmp_path)
+    state, writes = run_review_loop_engine(
+        layout=layout,
+        asset_id="description",
+        max_iterations=1,
+        creator=lambda inp: CreatorOutput(candidate=_candidate(inp.asset_id, inp.iteration), done=True),
+        reviewer=lambda inp: ReviewIteration(iteration=inp.iteration, verdict=ReviewVerdict.ok),
+    )
+    write = writes[-1]
+    write.path.parent.mkdir(parents=True)
+    write.path.write_text(write.dumps(), encoding="utf-8")
+    saved = load_loop_protocol_state(write.path)
+    assert saved == state
+
+    creator = Mock(side_effect=AssertionError("unexpected creator call"))
+    reviewer = Mock(side_effect=AssertionError("unexpected reviewer call"))
+    checkpoint = Mock(side_effect=AssertionError("unexpected checkpoint call"))
+    with pytest.raises(ValueError, match="max_iterations must be a positive integer"):
+        run_review_loop_engine(
+            layout=layout,
+            asset_id="description",
+            max_iterations=True,
+            creator=creator,
+            reviewer=reviewer,
+            existing=saved if resume else None,
+            checkpoint=checkpoint,
+        )
+    creator.assert_not_called()
+    reviewer.assert_not_called()
+    checkpoint.assert_not_called()
 
 
 def test_engine_converges_when_reviewer_ok_and_creator_done(tmp_path: Path) -> None:

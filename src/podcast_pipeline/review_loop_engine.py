@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
@@ -8,8 +9,10 @@ from pathlib import Path
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, StrictBool, StrictInt, field_validator
+from pydantic_core import to_jsonable_python
 
 from podcast_pipeline.domain.models import Candidate, ReviewIteration, ReviewVerdict
+from podcast_pipeline.file_inputs import read_regular_bytes
 from podcast_pipeline.workspace_store import EpisodeWorkspaceLayout
 
 
@@ -46,9 +49,11 @@ class LoopProtocolIteration:
             "iteration": self.iteration,
             "creator": {
                 "done": self.creator_done,
-                "candidate": self.candidate.model_dump(mode="json"),
+                # Keep nonfinite floats visible to the strict writer (here and for
+                # the reviewer). Pydantic's JSON-mode model dump would turn them into null.
+                "candidate": to_jsonable_python(self.candidate.model_dump(), inf_nan_mode="constants"),
             },
-            "reviewer": self.review.model_dump(mode="json"),
+            "reviewer": to_jsonable_python(self.review.model_dump(), inf_nan_mode="constants"),
         }
 
 
@@ -192,13 +197,28 @@ def _check_candidate_identity(candidate: Candidate, known: dict[object, Candidat
 
 def load_loop_protocol_state(path: Path) -> LoopProtocolState:
     try:
-        with path.open("rb") as stream:
-            body = stream.read(8 * 1024 * 1024 + 1)
-        if len(body) > 8 * 1024 * 1024:
-            raise ValueError("protocol byte limit")
-        return parse_loop_protocol_state(json.loads(body, object_pairs_hook=unique_json_members))
+        body = read_regular_bytes(path, max_bytes=8 * 1024 * 1024)
+        return parse_loop_protocol_state(
+            json.loads(
+                body,
+                object_pairs_hook=unique_json_members,
+                parse_constant=_reject_nonfinite_constant,
+                parse_float=_parse_finite_float,
+            )
+        )
     except (OSError, ValueError, RecursionError):
         raise LoopProtocolError("Invalid review protocol state; restore or repair the saved evidence.") from None
+
+
+def _reject_nonfinite_constant(_: str) -> float:
+    raise ValueError("nonfinite JSON number")
+
+
+def _parse_finite_float(value: str) -> float:
+    number = float(value)
+    if not math.isfinite(number):
+        raise ValueError("nonfinite JSON number")
+    return number
 
 
 def unique_json_members(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -217,7 +237,12 @@ class ProtocolWrite:
     json_data: dict[str, Any]
 
     def dumps(self) -> str:
-        return json.dumps(self.json_data, indent=2, sort_keys=True) + "\n"
+        try:
+            return json.dumps(self.json_data, indent=2, sort_keys=True, allow_nan=False) + "\n"
+        except ValueError:
+            raise LoopProtocolError(
+                "Cannot checkpoint review protocol state; check for nonfinite numbers or invalid JSON values."
+            ) from None
 
 
 @dataclass(frozen=True)
@@ -251,8 +276,8 @@ def run_review_loop_engine(
     existing: LoopProtocolState | None = None,
     checkpoint: Callable[[LoopProtocolState, tuple[ProtocolWrite, ...]], None] | None = None,
 ) -> tuple[LoopProtocolState, tuple[ProtocolWrite, ...]]:
-    if max_iterations < 1:
-        raise ValueError("max_iterations must be >= 1")
+    if isinstance(max_iterations, bool) or not isinstance(max_iterations, int) or max_iterations < 1:
+        raise ValueError("max_iterations must be a positive integer")
 
     state = (
         parse_loop_protocol_state(existing.to_json_dict())

@@ -221,7 +221,9 @@ def _run_and_report_review(
 ) -> None:
     protocol_path = store.layout.protocol_state_json_path(asset_id)
     try:
-        previous = load_loop_protocol_state(protocol_path) if protocol_path.exists() else None
+        previous = (
+            load_loop_protocol_state(protocol_path) if protocol_path.is_symlink() or protocol_path.exists() else None
+        )
         protocol_state = run_review_loop_orchestrator(
             workspace=store.layout.root,
             asset_id=asset_id,

@@ -1,4 +1,4 @@
-"""Bounded reads of a single regular UTF-8 file generation."""
+"""Bounded reads of a single regular file generation."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ def _generation(value: os.stat_result) -> tuple[int, int, int, int, int]:
     return value.st_dev, value.st_ino, value.st_size, value.st_mtime_ns, value.st_ctime_ns
 
 
-def read_regular_utf8(path: Path, *, max_bytes: int, dir_fd: int | None = None) -> str:
+def read_regular_bytes(path: Path, *, max_bytes: int, dir_fd: int | None = None) -> bytes:
     named = os.stat(path, dir_fd=dir_fd, follow_symlinks=False)
     fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW, dir_fd=dir_fd)
     try:
@@ -36,9 +36,13 @@ def read_regular_utf8(path: Path, *, max_bytes: int, dir_fd: int | None = None) 
             or size != before.st_size
         ):
             raise ValueError("Source changed during read")
-        return b"".join(parts).decode("utf-8")
+        return b"".join(parts)
     finally:
         os.close(fd)
+
+
+def read_regular_utf8(path: Path, *, max_bytes: int, dir_fd: int | None = None) -> str:
+    return read_regular_bytes(path, max_bytes=max_bytes, dir_fd=dir_fd).decode("utf-8")
 
 
 def read_workspace_utf8(root: Path, reference: Path, *, max_bytes: int) -> str:

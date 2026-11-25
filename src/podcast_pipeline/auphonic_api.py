@@ -1203,9 +1203,13 @@ async def _download_file(
                     if response.is_redirect and response.next_request is not None:
                         request = response.next_request
                         continue
-                    _check_download_response(response, max_bytes, dest.name)
+                    expected_length = _check_download_response(response, max_bytes, dest.name)
                     return await _atomic_write_stream(
-                        dest, response.aiter_bytes(), max_bytes=max_bytes, deadline=deadline
+                        dest,
+                        response.aiter_bytes(),
+                        max_bytes=max_bytes,
+                        deadline=deadline,
+                        expected_length=expected_length,
                     )
                 finally:
                     await response.aclose()
@@ -1219,7 +1223,7 @@ async def _download_file(
         raise AuphonicApiError(f"Failed to download {dest.name}: {type(exc).__name__}") from exc
 
 
-def _check_download_response(response: httpx.Response, max_bytes: int, filename: str) -> None:
+def _check_download_response(response: httpx.Response, max_bytes: int, filename: str) -> int | None:
     if response.status_code != 200:
         raise AuphonicApiError(f"Failed to download {filename} (status {response.status_code})")
     if "Content-Range" in response.headers:
@@ -1227,16 +1231,20 @@ def _check_download_response(response: httpx.Response, max_bytes: int, filename:
     if response.headers.get("Content-Encoding", "identity").lower() != "identity":
         raise AuphonicApiError(f"Failed to download {filename}: unsupported Content-Encoding")
     length = response.headers.get("Content-Length", "")
-    if length.isdecimal():
-        try:
-            too_large = int(length) > max_bytes
-        except ValueError as exc:
-            raise AuphonicApiError(f"Failed to download {filename}: invalid Content-Length") from exc
-        if too_large:
-            raise AuphonicApiError(f"Failed to download {filename}: byte limit exceeded")
+    if not length.isdecimal():
+        return None
+    try:
+        expected_length = int(length)
+    except ValueError as exc:
+        raise AuphonicApiError(f"Failed to download {filename}: invalid Content-Length") from exc
+    if expected_length > max_bytes:
+        raise AuphonicApiError(f"Failed to download {filename}: byte limit exceeded")
+    return expected_length
 
 
-async def _atomic_write_stream(path: Path, chunks: AsyncIterable[bytes], *, max_bytes: int, deadline: float) -> int:
+async def _atomic_write_stream(
+    path: Path, chunks: AsyncIterable[bytes], *, max_bytes: int, deadline: float, expected_length: int | None
+) -> int:
     tmp_path: Path | None = None
     total = 0
     try:
@@ -1256,6 +1264,8 @@ async def _atomic_write_stream(path: Path, chunks: AsyncIterable[bytes], *, max_
                 if total > max_bytes:
                     raise AuphonicApiError(f"Failed to download {path.name}: byte limit exceeded")
                 tmp.write(chunk)
+            if expected_length is not None and total != expected_length:
+                raise AuphonicApiError(f"Failed to download {path.name}: Content-Length mismatch")
             tmp.flush()
             os.fsync(tmp.fileno())
         if time.monotonic() >= deadline:
