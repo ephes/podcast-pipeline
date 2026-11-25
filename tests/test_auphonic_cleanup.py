@@ -81,8 +81,18 @@ def _state_with_history(store: EpisodeWorkspaceStore, *records: AuphonicProducti
     )
 
 
-def _downloaded(uuid: str) -> AuphonicProductionRecord:
-    return _record(uuid, CURRENT, last_known_state="done", outputs_downloaded_at=datetime.now(UTC))
+def _downloaded(uuid: str, workspace: Path) -> AuphonicProductionRecord:
+    path = workspace / "auphonic" / "outputs" / "ep.mp3"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    content = b"mp3-bytes"
+    path.write_bytes(content)
+    return _record(
+        uuid,
+        CURRENT,
+        last_known_state="done",
+        outputs_downloaded_at=datetime.now(UTC),
+        output_receipt={path.relative_to(workspace).as_posix(): len(content)},
+    )
 
 
 def _deletes(fake: _FakeAuphonic) -> list[str]:
@@ -114,6 +124,7 @@ def test_restart_keeps_the_discarded_production_in_the_history(
     assert old.created_at is not None and old.superseded_at is not None
     assert (new.uuid, new.status, new.last_known_state) == ("prod-2", CURRENT, "done")
     assert new.outputs_downloaded_at is not None
+    assert new.output_receipt == {"auphonic/outputs/ep.mp3": len(b"mp3-bytes")}
     # Cleanup is opt-in: nothing was deleted.
     assert _deletes(fake) == []
 
@@ -331,6 +342,7 @@ def test_update_forgets_the_downloaded_outputs_until_the_rerun_is_downloaded(
         produce.run_produce(workspace=workspace, dry_run=False, update=True)
     current = store.read_state().auphonic_productions[-1]
     assert (current.uuid, current.outputs_downloaded_at, current.last_known_state) == ("prod-2", None, None)
+    assert current.output_receipt == {}
     with pytest.raises(typer.BadParameter, match="have not been downloaded"):
         produce.run_auphonic_cleanup(workspace=workspace, dry_run=False)
 
@@ -377,7 +389,7 @@ def test_dry_run_lists_each_uuid_without_credentials_or_requests(
         _record("old-a", SUPERSEDED, superseded_reason="replaced by `podcast produce --restart`", superseded_by="cur"),
         _record("old-b", SUPERSEDED, last_known_state="not_started"),
         _record("gone", DELETED),
-        _downloaded("cur"),
+        _downloaded("cur", workspace),
     )
 
     def no_credentials() -> AuphonicCredentials:
@@ -408,6 +420,76 @@ def test_dry_run_says_when_nothing_would_be_deleted_yet(tmp_path: Path) -> None:
     assert "Nothing would be deleted right now" in result.output
 
 
+@pytest.mark.parametrize("damage", ["missing", "truncated"])
+def test_cleanup_requires_the_downloaded_output_until_refreshed(
+    tmp_path: Path, fake_api: Callable[[list[tuple[int, str]]], _FakeAuphonic], damage: str
+) -> None:
+    fake = fake_api([DONE])
+    workspace = _workspace(tmp_path)
+    store = EpisodeWorkspaceStore(workspace)
+    produce.run_produce(workspace=workspace, dry_run=False)
+    produce.run_produce(workspace=workspace, dry_run=False, restart=True)
+    output = store.layout.auphonic_outputs_dir / "ep.mp3"
+    if damage == "missing":
+        output.unlink()
+    else:
+        output.write_bytes(b"short")
+
+    with pytest.raises(typer.BadParameter, match=r"ep\.mp3.*podcast produce"):
+        produce.run_auphonic_cleanup(workspace=workspace, dry_run=False)
+    assert _deletes(fake) == []
+
+    produce.run_produce(workspace=workspace, dry_run=False)
+    produce.run_auphonic_cleanup(workspace=workspace, dry_run=False)
+    assert fake.started == ["prod-1", "prod-2"]
+    assert fake.deleted == ["prod-1"]
+
+
+def test_cleanup_accepts_a_symlinked_output_directory(
+    tmp_path: Path, fake_api: Callable[[list[tuple[int, str]]], _FakeAuphonic]
+) -> None:
+    fake = fake_api([DONE])
+    workspace = _workspace(tmp_path)
+    external = tmp_path / "media-disk" / "outputs"
+    external.mkdir(parents=True)
+    (workspace / "auphonic").mkdir()
+    (workspace / "auphonic" / "outputs").symlink_to(external, target_is_directory=True)
+    store = EpisodeWorkspaceStore(workspace)
+
+    produce.run_produce(workspace=workspace, dry_run=False)
+    produce.run_produce(workspace=workspace, dry_run=False, restart=True)
+
+    current = store.read_state().auphonic_productions[-1]
+    assert current.output_receipt == {"auphonic/outputs/ep.mp3": len(b"mp3-bytes")}
+    assert (external / "ep.mp3").read_bytes() == b"mp3-bytes"
+    produce.run_auphonic_cleanup(workspace=workspace, dry_run=False)
+    assert fake.deleted == ["prod-1"]
+
+
+def test_cleanup_prompts_legacy_workspaces_to_refresh_outputs(
+    tmp_path: Path, fake_api: Callable[[list[tuple[int, str]]], _FakeAuphonic]
+) -> None:
+    fake = fake_api([DONE])
+    fake.fixed_status.update({"cur": DONE, "old": DONE})
+    workspace = _workspace(tmp_path)
+    store = EpisodeWorkspaceStore(workspace)
+    _state_with_history(
+        store,
+        _record("old", SUPERSEDED),
+        _record("cur", CURRENT, last_known_state="done", outputs_downloaded_at=datetime.now(UTC)),
+    )
+
+    preview = CliRunner().invoke(app, ["auphonic-cleanup", "--workspace", str(workspace)])
+    assert preview.exit_code == 0
+    assert "Nothing would be deleted right now" in preview.output
+    assert "output receipt" in preview.output and "podcast produce" in preview.output
+    assert fake.recorder.calls == []
+
+    with pytest.raises(typer.BadParameter, match="output receipt"):
+        produce.run_auphonic_cleanup(workspace=workspace, dry_run=False)
+    assert _deletes(fake) == []
+
+
 def test_delete_removes_only_superseded_history_entries(
     tmp_path: Path, fake_api: Callable[[list[tuple[int, str]]], _FakeAuphonic]
 ) -> None:
@@ -421,7 +503,7 @@ def test_delete_removes_only_superseded_history_entries(
         _record("old-a", SUPERSEDED),
         _record("old-b", SUPERSEDED),
         _record("gone", DELETED),
-        _downloaded("cur"),
+        _downloaded("cur", workspace),
     )
 
     result = CliRunner().invoke(app, ["auphonic-cleanup", "--workspace", str(workspace), "--delete"])
@@ -458,7 +540,7 @@ def test_delete_refuses_while_the_current_production_is_not_done(
     fake = fake_api([DONE])
     fake.fixed_status["cur"] = status
     workspace = _workspace(tmp_path)
-    _state_with_history(EpisodeWorkspaceStore(workspace), _record("old", SUPERSEDED), _downloaded("cur"))
+    _state_with_history(EpisodeWorkspaceStore(workspace), _record("old", SUPERSEDED), _downloaded("cur", workspace))
 
     with pytest.raises(typer.BadParameter, match=f"current production cur is not Done.*{detail}"):
         produce.run_auphonic_cleanup(workspace=workspace, dry_run=False)
@@ -496,7 +578,7 @@ def test_delete_skips_running_records_missing_and_reports_failures(
         _record("running", SUPERSEDED),
         _record("vanished", SUPERSEDED),
         _record("broken", SUPERSEDED),
-        _downloaded("cur"),
+        _downloaded("cur", workspace),
     )
 
     with pytest.raises(typer.BadParameter, match="superseded Auphonic productions broken"):
@@ -510,18 +592,55 @@ def test_delete_skips_running_records_missing_and_reports_failures(
     assert records["cur"].status == CURRENT
 
 
+def test_cleanup_preserves_completed_receipt_when_second_settlement_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    fake_api: Callable[[list[tuple[int, str]]], _FakeAuphonic],
+) -> None:
+    fake = fake_api([DONE])
+    fake.fixed_status.update({"cur": DONE, "old-a": DONE, "old-b": DONE})
+    store = EpisodeWorkspaceStore(tmp_path)
+    _state_with_history(
+        store, _record("old-a", SUPERSEDED), _record("old-b", SUPERSEDED), _downloaded("cur", tmp_path)
+    )
+    write = store._write_state_unlocked
+
+    def fail_second_settlement(state: EpisodeWorkspace) -> None:
+        if state.auphonic_productions[1].status == DELETED:
+            raise OSError("state.json write failed")
+        write(state)
+
+    with monkeypatch.context() as patch, _client(fake.recorder) as client, produce._produce_lock(store):
+        patch.setattr(store, "_write_state_unlocked", fail_second_settlement)
+        outcome = produce.cleanup_superseded(client, store)
+
+    assert outcome.deleted == ("old-a",)
+    assert outcome.settlement_pending == ("old-b",)
+    assert outcome.failed == ()
+    assert "old-b is gone from Auphonic" in capsys.readouterr().err
+    assert fake.deleted == ["old-a", "old-b"]
+    assert [record.status for record in store.read_state().auphonic_productions] == [DELETED, SUPERSEDED, CURRENT]
+
+    fake.recorder.requests.clear()
+    produce.run_auphonic_cleanup(workspace=tmp_path, dry_run=False)
+    assert fake.recorder.calls == [("GET", "/api/production/cur.json"), ("GET", "/api/production/old-b.json")]
+    settled = store.read_state().auphonic_productions[1]
+    assert (settled.status, settled.last_known_state) == (DELETED, "missing")
+
+
 def test_cleanup_without_state_json_is_a_no_op(tmp_path: Path) -> None:
     result = CliRunner().invoke(app, ["auphonic-cleanup", "--workspace", str(_workspace(tmp_path)), "--delete"])
     assert result.exit_code == 0, result.output
     assert "no Auphonic productions are recorded" in result.output
 
 
-def test_plan_never_includes_the_current_production() -> None:
+def test_plan_never_includes_the_current_production(tmp_path: Path) -> None:
     state = EpisodeWorkspace(
         episode_id="ep",
         root_dir=".",
         auphonic_production_uuid="cur",
-        auphonic_productions=[_record("old", SUPERSEDED), _downloaded("cur")],
+        auphonic_productions=[_record("old", SUPERSEDED), _downloaded("cur", tmp_path)],
     )
     plan = plan_cleanup(state)
     assert [record.uuid for record in plan.candidates] == ["old"]
@@ -638,7 +757,7 @@ def test_cleanup_refuses_when_the_current_production_was_deleted(
     fake.missing.add("cur")
     workspace = _workspace(tmp_path)
     store = EpisodeWorkspaceStore(workspace)
-    _state_with_history(store, _record("old", SUPERSEDED), _downloaded("cur"))
+    _state_with_history(store, _record("old", SUPERSEDED), _downloaded("cur", workspace))
 
     with pytest.raises(typer.BadParameter, match="cur stored in state.json no longer exists.*--restart"):
         produce.run_auphonic_cleanup(workspace=workspace, dry_run=False)
@@ -659,7 +778,7 @@ def test_delete_404_is_recorded_as_already_gone(
     fake.delete_status["old"] = 404
     workspace = _workspace(tmp_path)
     store = EpisodeWorkspaceStore(workspace)
-    _state_with_history(store, _record("old", SUPERSEDED), _downloaded("cur"))
+    _state_with_history(store, _record("old", SUPERSEDED), _downloaded("cur", workspace))
 
     produce.run_auphonic_cleanup(workspace=workspace, dry_run=False)
 
@@ -727,13 +846,15 @@ def test_auto_cleanup_local_state_failures_are_warnings(
 
     captured = capsys.readouterr()
     assert "Auphonic production complete: prod-2" in captured.out
-    assert "Warning: Auphonic cleanup failed: state.json is read-only" in captured.err
+    assert "prod-1 is gone from Auphonic" in captured.err
+    assert "state.json is read-only" in captured.err
+    assert "Warning: Auphonic productions prod-1 are gone remotely" in captured.err
     assert fake.deleted == ["prod-1"]
 
-    # The standalone command reports the same failure without a traceback.
-    fake.missing.discard("prod-1")
-    with pytest.raises(typer.BadParameter, match="state.json is read-only"):
+    # The standalone command reports unresolved settlement even when Auphonic now returns 404.
+    with pytest.raises(typer.BadParameter, match="prod-1 are gone remotely.*state.json"):
         produce.run_auphonic_cleanup(workspace=workspace, dry_run=False)
+    assert fake.deleted == ["prod-1"]
 
 
 @pytest.mark.parametrize(
@@ -744,7 +865,7 @@ def test_auto_cleanup_local_state_failures_are_warnings(
 @pytest.mark.parametrize("invalid_current", [False, True])
 def test_invalid_status_prevents_cleanup_deletion(tmp_path: Path, status: object, invalid_current: bool) -> None:
     store = EpisodeWorkspaceStore(tmp_path)
-    _state_with_history(store, _record("old", SUPERSEDED), _downloaded("current"))
+    _state_with_history(store, _record("old", SUPERSEDED), _downloaded("current", tmp_path))
     before = store.layout.state_json.read_bytes()
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -798,7 +919,7 @@ def test_produce_rejects_mismatched_fetch_identity(
 @pytest.mark.parametrize("mismatched_uuid", ["current", "old"])
 def test_mismatched_fetch_identity_prevents_cleanup_deletion(tmp_path: Path, mismatched_uuid: str) -> None:
     store = EpisodeWorkspaceStore(tmp_path)
-    _state_with_history(store, _record("old", SUPERSEDED), _downloaded("current"))
+    _state_with_history(store, _record("old", SUPERSEDED), _downloaded("current", tmp_path))
     before = store.layout.state_json.read_bytes()
 
     def handler(request: httpx.Request) -> httpx.Response:

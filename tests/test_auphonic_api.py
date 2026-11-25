@@ -1322,12 +1322,16 @@ def test_produce_marks_downloaded_only_after_complete_set(
     else:
         original_mark = produce.mark_outputs_downloaded
 
-        def mark(state: EpisodeWorkspace, uuid: str) -> EpisodeWorkspace:
+        def mark(state: EpisodeWorkspace, uuid: str, receipt: dict[str, int]) -> EpisodeWorkspace:
             assert {p.name: p.read_bytes() for p in output_dir.iterdir()} == {
                 "ep.mp3": b"mp3-bytes",
                 "ep.ogg": b"ogg-bytes",
             }
-            return original_mark(state, uuid)
+            assert receipt == {
+                "auphonic/outputs/ep.mp3": len(b"mp3-bytes"),
+                "auphonic/outputs/ep.ogg": len(b"ogg-bytes"),
+            }
+            return original_mark(state, uuid, receipt)
 
         monkeypatch.setattr(produce, "mark_outputs_downloaded", mark)
         produce.run_produce(workspace=workspace, dry_run=False)

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import fcntl
 import json
+import stat
 from collections.abc import Iterator
 from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
@@ -132,10 +133,11 @@ def _produce(
         output_files = client.list_output_files(production_uuid)
     if not output_files:
         raise AuphonicApiError("Auphonic production completed without output files.")
-    client.download_outputs(output_files, store.layout.auphonic_outputs_dir)
+    paths = client.download_outputs(output_files, store.layout.auphonic_outputs_dir)
+    receipt = {path.relative_to(store.layout.root).as_posix(): _local_output_size(store, path) for path in paths}
     finished = production_uuid
     store.update_auphonic_productions(
-        lambda state: mark_outputs_downloaded(state, finished),
+        lambda state: mark_outputs_downloaded(state, finished, receipt),
         default=workspace_state,
     )
     return production
@@ -327,6 +329,7 @@ class CleanupResult:
     deleted: tuple[str, ...] = ()
     skipped: tuple[str, ...] = ()
     failed: tuple[str, ...] = ()
+    settlement_pending: tuple[str, ...] = ()
 
 
 def run_auphonic_cleanup(*, workspace: Path, dry_run: bool) -> None:
@@ -340,7 +343,7 @@ def run_auphonic_cleanup(*, workspace: Path, dry_run: bool) -> None:
     except WorkspaceStoreError as exc:
         raise typer.BadParameter(str(exc)) from exc
     if dry_run:
-        _print_plan(plan)
+        _print_plan(plan, store)
         return
     try:
         credentials = load_auphonic_credentials()
@@ -350,14 +353,40 @@ def run_auphonic_cleanup(*, workspace: Path, dry_run: bool) -> None:
             result = cleanup_superseded(client, store)
     except (AuphonicApiError, WorkspaceStoreError, OSError) as exc:
         raise typer.BadParameter(str(exc)) from exc
-    if result.failed:
-        raise typer.BadParameter(
-            f"Could not delete the superseded Auphonic productions {', '.join(result.failed)}; "
-            "they stay in state.json for the next cleanup."
-        )
+    if problems := _cleanup_problems(result):
+        raise typer.BadParameter(" ".join(problems))
 
 
-def _print_plan(plan: CleanupPlan) -> None:
+def _local_output_size(store: EpisodeWorkspaceStore, path: Path) -> int:
+    layout = store.layout
+    try:
+        # Lexical check only: `auphonic/` or `auphonic/outputs/` may be a
+        # symlink (for example to an external media disk), as for downloads.
+        if path.parent != layout.auphonic_outputs_dir:
+            raise ValueError("path is outside the workspace output directory")
+        info = path.lstat()
+        if not stat.S_ISREG(info.st_mode):
+            raise ValueError("path is not a regular file")
+        return info.st_size
+    except (OSError, ValueError) as exc:
+        raise AuphonicApiError(f"Cannot verify local Auphonic output {path}: {exc}") from exc
+
+
+def _local_output_problem(store: EpisodeWorkspaceStore, receipt: dict[str, int]) -> str | None:
+    for relative, size in receipt.items():
+        if Path(relative).is_absolute():
+            return "the output receipt contains an absolute path; run `podcast produce` to refresh the outputs"
+        path = store.layout.root / relative
+        try:
+            actual_size = _local_output_size(store, path)
+        except AuphonicApiError as exc:
+            return f"{exc}; run `podcast produce` to refresh the outputs"
+        if actual_size != size:
+            return f"local Auphonic output {path} changed size; run `podcast produce` to refresh the outputs"
+    return None
+
+
+def _print_plan(plan: CleanupPlan, store: EpisodeWorkspaceStore) -> None:
     if not plan.candidates:
         typer.echo("No superseded Auphonic productions to delete.")
         return
@@ -368,8 +397,11 @@ def _print_plan(plan: CleanupPlan) -> None:
     )
     for record in plan.candidates:
         typer.echo(f"  {describe_record(record)}")
-    if plan.blocked_reason is not None:
-        typer.echo(f"Nothing would be deleted right now: {plan.blocked_reason}.")
+    blocked = plan.blocked_reason
+    if blocked is None and plan.current is not None:
+        blocked = _local_output_problem(store, plan.current.output_receipt)
+    if blocked is not None:
+        typer.echo(f"Nothing would be deleted right now: {blocked}.")
     else:
         typer.echo(
             "Run `podcast auphonic-cleanup --delete` to delete them; deletion cannot be undone. "
@@ -387,7 +419,7 @@ def cleanup_superseded(
     deleted, never the current one, and only when the current production is
     Done (asked from Auphonic right before deleting, even after a produce run
     just polled it: it may have changed or been deleted while the outputs downloaded)
-    and the outputs of its latest run were downloaded. A superseded production
+    and the local outputs of its latest run match the receipt. A superseded production
     that is still running is skipped. Call it while holding the produce lock.
     """
     state = store.read_state()
@@ -413,13 +445,25 @@ def cleanup_superseded(
             f"(status: {current.status_string or current.status})."
         )
 
+    if problem := _local_output_problem(store, plan.current.output_receipt):
+        raise AuphonicCleanupBlockedError(f"Not deleting superseded Auphonic productions: {problem}.")
+
     deleted: list[str] = []
     skipped: list[str] = []
     failed: list[str] = []
+    settlement_pending: list[str] = []
+    outcomes = {"deleted": deleted, "skipped": skipped, "failed": failed, "settlement_pending": settlement_pending}
     for record in plan.candidates:
         outcome = _delete_superseded(client, store, state, record.uuid, describe_record(record))
-        {"deleted": deleted, "skipped": skipped, "failed": failed}[outcome].append(record.uuid)
-    return CleanupResult(deleted=tuple(deleted), skipped=tuple(skipped), failed=tuple(failed))
+        outcomes[outcome].append(record.uuid)
+        if outcome == "settlement_pending":
+            break
+    return CleanupResult(
+        deleted=tuple(deleted),
+        skipped=tuple(skipped),
+        failed=tuple(failed),
+        settlement_pending=tuple(settlement_pending),
+    )
 
 
 def _delete_superseded(
@@ -432,9 +476,7 @@ def _delete_superseded(
     try:
         observed = production_state(client.fetch_production(uuid))
     except AuphonicNotFoundError:
-        store.update_auphonic_productions(lambda s: mark_deleted(s, uuid, last_known_state="missing"), default=state)
-        typer.echo(f"Superseded Auphonic production {uuid} no longer exists; recorded as deleted.")
-        return "deleted"
+        return _settle_deleted(store, state, uuid, observed="missing")
     except AuphonicApiError as exc:
         typer.echo(f"Could not check superseded Auphonic production {uuid}: {exc}", err=True)
         return "failed"
@@ -450,9 +492,36 @@ def _delete_superseded(
     except AuphonicApiError as exc:
         typer.echo(f"Could not delete Auphonic production {uuid}: {exc}", err=True)
         return "failed"
-    store.update_auphonic_productions(lambda s: mark_deleted(s, uuid, last_known_state=observed), default=state)
-    typer.echo(f"Deleted Auphonic production {uuid}.")
+    return _settle_deleted(store, state, uuid, observed=observed)
+
+
+def _settle_deleted(store: EpisodeWorkspaceStore, state: EpisodeWorkspace, uuid: str, *, observed: str) -> str:
+    try:
+        store.update_auphonic_productions(lambda s: mark_deleted(s, uuid, last_known_state=observed), default=state)
+    except (WorkspaceStoreError, OSError) as exc:
+        typer.echo(f"Production {uuid} is gone from Auphonic. Could not record it in state.json ({exc}).", err=True)
+        return "settlement_pending"
+    if observed == "missing":
+        typer.echo(f"Superseded Auphonic production {uuid} no longer exists and was recorded as deleted.")
+    else:
+        typer.echo(f"Deleted Auphonic production {uuid}.")
     return "deleted"
+
+
+def _cleanup_problems(result: CleanupResult) -> list[str]:
+    problems = []
+    if result.failed:
+        problems.append(
+            f"Could not delete the superseded Auphonic productions {', '.join(result.failed)}. "
+            "Retry with `podcast auphonic-cleanup --delete`."
+        )
+    if result.settlement_pending:
+        problems.append(
+            f"Auphonic productions {', '.join(result.settlement_pending)} are gone remotely and still need "
+            "to be recorded as deleted in state.json. Fix the workspace write error and retry with "
+            "`podcast auphonic-cleanup --delete`."
+        )
+    return problems
 
 
 def _cleanup_after_produce(client: AuphonicClient, store: EpisodeWorkspaceStore) -> None:
@@ -462,9 +531,5 @@ def _cleanup_after_produce(client: AuphonicClient, store: EpisodeWorkspaceStore)
     except (AuphonicApiError, WorkspaceStoreError, OSError) as exc:
         typer.echo(f"Warning: Auphonic cleanup failed: {exc}", err=True)
         return
-    if result.failed:
-        typer.echo(
-            f"Warning: could not delete the superseded Auphonic productions {', '.join(result.failed)}; "
-            "retry with `podcast auphonic-cleanup --delete`.",
-            err=True,
-        )
+    for problem in _cleanup_problems(result):
+        typer.echo(f"Warning: {problem}", err=True)

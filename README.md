@@ -45,8 +45,10 @@ uploading the stems again: it applies the current preset, metadata, chapters and
 again (`--update --dry-run` prints the update requests). Re-running a finished production costs credits again.
 `state.json` records every production the workspace created; `podcast auphonic-cleanup` lists the ones a `--restart`
 superseded and `--delete` removes them from the Auphonic account (irreversible, and only while the current production
-is Done with downloaded outputs). `podcast produce --cleanup`, or `auphonic.cleanup_superseded: true`, does that
-automatically after a successful run. Deleting the current production in the Auphonic web UI also deletes its stems:
+is Done and the local output files match the recorded paths and byte lengths). If the receipt is missing or the
+files have changed size or disappeared, run `podcast produce` to download the current outputs again.
+`podcast produce --cleanup`, or `auphonic.cleanup_superseded: true`, cleans up automatically after a successful run.
+Deleting the current production in the Auphonic web UI also deletes its stems:
 `produce` and `--update` then stop and ask for `--restart`. Outputs are named after the episode (`output_basename`,
 default `episode_id`). A single-file production is only available as an
 explicit opt-in (`auphonic.mode: single_track`). Credentials: `AUPHONIC_API_KEY`, or `AUPHONIC_USER` +

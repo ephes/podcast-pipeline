@@ -176,6 +176,7 @@ class AuphonicProductionRecord(DomainModel):
     is the production state as last observed (``done``, ``running``,
     ``not_started``, ``changed``, ``error`` or ``missing``). ``outputs_downloaded_at``
     marks that the outputs of the production's latest run were downloaded.
+    ``output_receipt`` maps their workspace-relative paths to byte lengths.
     """
 
     uuid: Annotated[str, Field(min_length=1, pattern=r"^[A-Za-z0-9_-]+$")]
@@ -183,6 +184,7 @@ class AuphonicProductionRecord(DomainModel):
     created_at: AwareDatetime | None = None
     last_known_state: str | None = None
     outputs_downloaded_at: AwareDatetime | None = None
+    output_receipt: dict[str, Annotated[int, Field(strict=True, ge=0)]] = Field(default_factory=dict)
     superseded_at: AwareDatetime | None = None
     superseded_by: str | None = None
     superseded_reason: str | None = None
