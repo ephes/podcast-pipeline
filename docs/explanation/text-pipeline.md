@@ -207,9 +207,12 @@ Discovery and backup recovery also validate each metadata file against the chunk
 `chunk_id` and workspace-relative `text_relpath` must match its manifest slot and canonical text path,
 even when the file matches the recorded digest.
 Publication and discovery share the existing stable workspace-directory lock with state/YAML writers.
-Staging happens outside the lock; the source is read again under the lock before swapping. Changed
-source refuses publication with `ChunkSourceChangedError` (a `ValueError`) and preserves the current set. Swap, rollback and old-set retirement stay
-under that lock, so one writer cannot restore over another writer's committed generation and discovery
+Staging happens outside the lock. Before swapping, the publisher streams the source under the
+lock, validates a bounded regular UTF-8 file generation and compares its SHA-256 digest with the
+staged source digest. The digest covers the original bytes, including line endings. A different digest
+raises `ChunkSourceChangedError` (a `ValueError`) and preserves the current set. A source that fails
+admission raises `ChunkerResourceError`. Swap, rollback and old-set retirement stay under the
+lock, so one writer cannot restore over another writer's committed generation and discovery
 cannot inspect the inter-rename gap. The dashboard takes the lock for both its manifest count and
 bounded legacy directory scan, so status reports the count from one published generation. Transcript
 ingestion uses the same lock for invalidation and swap.

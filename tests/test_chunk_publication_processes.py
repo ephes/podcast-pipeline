@@ -3,6 +3,7 @@
 import hashlib
 import json
 import multiprocessing as mp
+import tracemalloc
 from multiprocessing.connection import Connection
 from pathlib import Path
 from typing import Any
@@ -67,19 +68,29 @@ def _receive(connection: Connection) -> Any:
     return connection.recv()
 
 
-def _initial(root: Path) -> EpisodeWorkspaceLayout:
+def _initial(root: Path, transcript: bytes = b"one two three four five six") -> EpisodeWorkspaceLayout:
     layout = EpisodeWorkspaceLayout(root=root)
     path = layout.transcript_dir / "transcript.txt"
     path.parent.mkdir(parents=True)
-    path.write_text("one two three four five six")
+    path.write_bytes(transcript)
     chunker.write_transcript_chunks(
         layout=layout, transcript_path=path, config=chunker.ChunkerConfig(max_tokens=2, overlap_tokens=0)
     )
     return layout
 
 
-def test_source_changed_during_staging_cannot_replace_current(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    layout = _initial(tmp_path)
+@pytest.mark.parametrize(
+    ("replacement", "error", "message"),
+    [
+        (b"one two three four five six\n", chunker.ChunkSourceChangedError, "Transcript changed"),
+        (b"invalid UTF-8 \xc3", chunker.ChunkerResourceError, "coherent regular UTF-8"),
+    ],
+    ids=["line-endings-changed", "incomplete-utf8"],
+)
+def test_source_changed_during_staging_cannot_replace_current(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, replacement: bytes, error: type[ValueError], message: str
+) -> None:
+    layout = _initial(tmp_path, b"one two three four five six\r\n")
     before = {p.name: p.read_bytes() for p in layout.transcript_chunks_dir.iterdir()}
     write = Path.write_text
     source = layout.transcript_dir / "transcript.txt"
@@ -87,13 +98,40 @@ def test_source_changed_during_staging_cannot_replace_current(tmp_path: Path, mo
     def change(path: Path, text: str, *args: Any, **kwargs: Any) -> int:
         result = write(path, text, *args, **kwargs)
         if path.name == "complete.json":
-            write(source, "changed after staging")
+            source.write_bytes(replacement)
         return result
 
     monkeypatch.setattr(Path, "write_text", change)
-    with pytest.raises(chunker.ChunkSourceChangedError, match="Transcript changed"):
+    with pytest.raises(error, match=message):
         chunker.write_transcript_chunks(layout=layout, transcript_path=source, config=chunker.ChunkerConfig())
     assert {p.name: p.read_bytes() for p in layout.transcript_chunks_dir.iterdir()} == before
+
+
+def test_source_recheck_streams_large_utf8_transcript(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    layout = _initial(tmp_path)
+    source = layout.transcript_dir / "transcript.txt"
+    # Split a UTF-8 character across read blocks and include a literal CRLF in the digest.
+    data = b"x" * (64 * 1024 - 1) + "ä".encode() + b"x" * (1024 * 1024) + b"\r\n"
+    source.write_bytes(data)
+    write = Path.write_text
+
+    def measure_recheck(path: Path, text: str, *args: Any, **kwargs: Any) -> int:
+        result = write(path, text, *args, **kwargs)
+        if path.name == "complete.json":
+            tracemalloc.start()
+            tracemalloc.reset_peak()
+        return result
+
+    monkeypatch.setattr(Path, "write_text", measure_recheck)
+    try:
+        chunker.write_transcript_chunks(layout=layout, transcript_path=source, config=chunker.ChunkerConfig())
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert 0 < peak < 512 * 1024
+    manifest = json.loads((layout.transcript_chunks_dir / "complete.json").read_text())
+    assert manifest["source_sha256"] == hashlib.sha256(data).hexdigest()
+    assert chunker.discover_complete_chunk_ids(layout) == [1]
 
 
 @pytest.mark.parametrize("failed_swap", [False, True])
