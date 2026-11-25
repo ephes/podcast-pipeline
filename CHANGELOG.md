@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Preserve completed cleanup receipts and report Auphonic deletions pending a local state update.
+
 - Verify downloaded Auphonic output paths and byte lengths before deleting superseded productions.
 
 - Require a matching generation receipt for automatic CMS transcript requests and report already-active jobs separately.

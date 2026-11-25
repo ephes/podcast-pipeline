@@ -400,6 +400,10 @@ What is deleted, and when:
 - A superseded production that Auphonic reports as still running is skipped; one that no longer exists (404 on the
   status check or on the delete request, for example because it was deleted in the Auphonic web UI) is recorded as
   deleted. Failed deletions stay `superseded` and are retried by the next cleanup.
+- If a production is gone from Auphonic but the workspace write fails, cleanup reports its UUID as pending local
+  settlement and stops with the outcomes already recorded. Fix the write error and run
+  `podcast auphonic-cleanup --delete` again. A 404 on the status check records the deletion locally without sending
+  another DELETE.
 - When the current production itself was deleted in Auphonic, the cleanup deletes nothing, records it as `missing` and
   asks for `podcast produce --restart`; after the new production finished, the old one is recorded as deleted.
 - `auphonic-cleanup --delete` holds the same `auphonic/.produce.lock` as `produce`, so it never runs next to one.

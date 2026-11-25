@@ -571,6 +571,43 @@ def test_delete_skips_running_records_missing_and_reports_failures(
     assert records["cur"].status == CURRENT
 
 
+def test_cleanup_preserves_completed_receipt_when_second_settlement_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    fake_api: Callable[[list[tuple[int, str]]], _FakeAuphonic],
+) -> None:
+    fake = fake_api([DONE])
+    fake.fixed_status.update({"cur": DONE, "old-a": DONE, "old-b": DONE})
+    store = EpisodeWorkspaceStore(tmp_path)
+    _state_with_history(
+        store, _record("old-a", SUPERSEDED), _record("old-b", SUPERSEDED), _downloaded("cur", tmp_path)
+    )
+    write = store._write_state_unlocked
+
+    def fail_second_settlement(state: EpisodeWorkspace) -> None:
+        if state.auphonic_productions[1].status == DELETED:
+            raise OSError("state.json write failed")
+        write(state)
+
+    with monkeypatch.context() as patch, _client(fake.recorder) as client, produce._produce_lock(store):
+        patch.setattr(store, "_write_state_unlocked", fail_second_settlement)
+        outcome = produce.cleanup_superseded(client, store)
+
+    assert outcome.deleted == ("old-a",)
+    assert outcome.settlement_pending == ("old-b",)
+    assert outcome.failed == ()
+    assert "old-b is gone from Auphonic" in capsys.readouterr().err
+    assert fake.deleted == ["old-a", "old-b"]
+    assert [record.status for record in store.read_state().auphonic_productions] == [DELETED, SUPERSEDED, CURRENT]
+
+    fake.recorder.requests.clear()
+    produce.run_auphonic_cleanup(workspace=tmp_path, dry_run=False)
+    assert fake.recorder.calls == [("GET", "/api/production/cur.json"), ("GET", "/api/production/old-b.json")]
+    settled = store.read_state().auphonic_productions[1]
+    assert (settled.status, settled.last_known_state) == (DELETED, "missing")
+
+
 def test_cleanup_without_state_json_is_a_no_op(tmp_path: Path) -> None:
     result = CliRunner().invoke(app, ["auphonic-cleanup", "--workspace", str(_workspace(tmp_path)), "--delete"])
     assert result.exit_code == 0, result.output
@@ -788,13 +825,15 @@ def test_auto_cleanup_local_state_failures_are_warnings(
 
     captured = capsys.readouterr()
     assert "Auphonic production complete: prod-2" in captured.out
-    assert "Warning: Auphonic cleanup failed: state.json is read-only" in captured.err
+    assert "prod-1 is gone from Auphonic" in captured.err
+    assert "state.json is read-only" in captured.err
+    assert "Warning: Auphonic productions prod-1 are gone remotely" in captured.err
     assert fake.deleted == ["prod-1"]
 
-    # The standalone command reports the same failure without a traceback.
-    fake.missing.discard("prod-1")
-    with pytest.raises(typer.BadParameter, match="state.json is read-only"):
+    # The standalone command reports unresolved settlement even when Auphonic now returns 404.
+    with pytest.raises(typer.BadParameter, match="prod-1 are gone remotely.*state.json"):
         produce.run_auphonic_cleanup(workspace=workspace, dry_run=False)
+    assert fake.deleted == ["prod-1"]
 
 
 @pytest.mark.parametrize(
