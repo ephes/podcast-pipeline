@@ -20,10 +20,10 @@ import typer
 from podcast_pipeline.domain.models import AssetKind, Candidate, ProvenanceRef, TextFormat
 from podcast_pipeline.drafter_runner import DrafterRunner
 from podcast_pipeline.pick_core import custom_selection_format, normalize_custom_selection_text
+from podcast_pipeline.summary_inputs import MAX_SUMMARY_BYTES
 
 REFINE_PROVENANCE_KIND = "llm_refine"
 MAX_INSTRUCTION_CHARS = 2000
-MAX_SUMMARY_BYTES = 1024 * 1024
 MAX_REFINE_PROMPT_BYTES = 256 * 1024
 
 

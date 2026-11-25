@@ -27,6 +27,7 @@ from podcast_pipeline.dashboard_context import (
     PROGRESS_TRUNCATED,
     BackgroundJob,
     DashboardContext,
+    EpisodeMetadataError,
     ProgressEntry,
     SelectedArtifactError,
 )
@@ -479,7 +480,7 @@ class _DashboardApi:
             from podcast_pipeline.auphonic_payload import build_auphonic_payload
 
             with self.ctx.lock:
-                data = self.ctx._read_episode_yaml_safe()
+                data = self.ctx.read_episode_metadata() or {}
                 payload = build_auphonic_payload(
                     episode_yaml=data,
                     workspace=self.ctx.workspace,
@@ -672,6 +673,10 @@ class _DashboardApi:
             return JSONResponse({"ok": True})
 
 
+def _episode_metadata_error(_request: Request, exc: Exception) -> Response:
+    return JSONResponse({"error": str(exc)}, status_code=400)
+
+
 def _selected_artifact_error(_request: Request, exc: Exception) -> Response:
     return JSONResponse({"error": str(exc)}, status_code=422)
 
@@ -729,7 +734,10 @@ def create_dashboard_app(
 
     return Starlette(
         routes=routes,
-        exception_handlers={SelectedArtifactError: _selected_artifact_error},
+        exception_handlers={
+            SelectedArtifactError: _selected_artifact_error,
+            EpisodeMetadataError: _episode_metadata_error,
+        },
         middleware=[Middleware(_LocalRequestGuardMiddleware, expected_port=port, session_token=session_token)],
     )
 
@@ -978,6 +986,7 @@ def _run_summarize_job(
                 chunk_ids=chunk_ids,
                 runner=runner,
                 renderer=renderer,
+                hosts=ctx.store.read_episode_hosts(),
             )
         finally:
             _thread_local.capture = None

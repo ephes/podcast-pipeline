@@ -46,6 +46,7 @@ class AssetNotesOut(_DashboardApiModel):
 
 class StatusStagesOut(_DashboardApiModel):
     episode_yaml: bool
+    episode_yaml_error: str | None = None
     state_json: bool
     transcript: bool
     chunks: int | None

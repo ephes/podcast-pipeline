@@ -584,8 +584,9 @@ function statusCard(label, value, status) {
 function renderStatus() {
   if (!state.statusData) return;
   const stages = state.statusData.stages;
+  const episodeStatus = stages.episode_yaml_error ? "Invalid" : stages.episode_yaml ? "Ready" : "Missing";
   elements.statusGrid.innerHTML = [
-    statusCard("Episode YAML", stages.episode_yaml ? "Ready" : "Missing", stages.episode_yaml ? "ok" : "missing"),
+    statusCard("Episode YAML", episodeStatus, episodeStatus === "Ready" ? "ok" : "missing"),
     statusCard("Transcript", stages.transcript ? "Ready" : "Missing", stages.transcript ? "ok" : "missing"),
     statusCard(
       "Chunks",
@@ -1778,7 +1779,10 @@ function wireEvents() {
 
   elements.closeBtn.addEventListener("click", handleDone);
   elements.saveMetadataBtn.addEventListener("click", saveMetadata);
-  document.getElementById("retry-metadata-btn").addEventListener("click", loadEpisode);
+  document.getElementById("retry-metadata-btn").addEventListener("click", () => {
+    loadEpisode();
+    loadStatus();
+  });
   elements.metaEpisodeId.addEventListener("input", () => metadataTouched.add("episode_id"));
   elements.metaHosts.addEventListener("input", () => metadataTouched.add("hosts"));
   elements.runDraftBtn.addEventListener("click", runDraft);

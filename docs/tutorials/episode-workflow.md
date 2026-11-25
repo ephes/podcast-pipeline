@@ -90,7 +90,8 @@ podcast draft \
 
 The `--host` flag is repeatable and persists host names to `episode.yaml`. On subsequent runs without `--host`, the
 stored names are reused automatically. Host names are injected into all LLM prompts (summarization and candidate
-generation) to prevent hallucinated speaker names.
+generation) to prevent hallucinated speaker names. The dashboard's Summarize action also uses the stored hosts
+in both the chunk and episode summary prompts.
 
 When the workspace already has `transcript/transcript.txt` from `podcast transcribe`, `podcast draft` reuses it. Pass
 `--transcript /path/to/file.txt` only when creating a new workspace from an external transcript or when you want to
@@ -99,7 +100,10 @@ replace the transcript currently stored in the workspace.
 Outputs:
 
 - `transcript/` contains the ingested transcript + chunk files.
-- `summaries/` contains chunk summaries and the episode summary.
+- `summaries/` contains chunk summaries and the episode summary. Before publishing a completed episode summary,
+  the pipeline checks the serialized UTF-8 sizes of the JSON (1 MiB), Markdown (32 MiB), and HTML (64 MiB)
+  artifacts. If an artifact exceeds its limit, the error names the file and the previous completed summary
+  stays available.
 - `copy/candidates/<asset_id>/` contains candidate JSON + Markdown + HTML files.
 
 Tag assets (`cms_tags`, `audio_tags`, `itunes_keywords`) aim for 6-10 specific terms. Generated tag candidates are
@@ -611,14 +615,19 @@ Each dashboard status refresh reads the latest workspace state, including select
 CLI processes or dashboards. A missing candidates directory counts as empty. If a candidate read fails,
 status displays an error and the next refresh tries again. Candidate selections count only while the
 same asset still has that candidate and usable published text. Assets with stale candidate selections
-remain in the total as unselected. Saved manual text also counts as a selection. The Pick tab check mark
-uses the same rule against its loaded candidate list.
+remain in the total as unselected. Saved manual text also counts as a selection. Status reads each manual
+selection without candidates once per refresh, using that read for both asset eligibility and selection counts.
+The Pick tab check mark uses the same selection rule against its loaded candidate list.
 
 The dashboard counts chunks from the published manifest when it passes structural validation. This status
 counts the entries recorded at publication. Drafting separately verifies the source and chunk contents.
 Without a usable manifest, status counts regular `chunk_*.txt` files and skips symlinks. It scans
 at most 8,192 directory entries and checks one extra entry to detect overflow. An oversized or unreadable
 inventory displays “Count incomplete” and returns `null` in `/api/status` at `stages.chunks`. A missing chunk directory reports zero.
+
+The dashboard marks an unreadable or invalid `episode.yaml` as **Invalid** in Overview. Metadata and production
+preview show a repair message. Repair the file as regular UTF-8 YAML of at most 1 MiB, then reload metadata
+or retry the preview. A missing file still shows **Missing** and allows initial setup.
 
 Saving or clearing an asset's editorial notes validates the stored `episode.yaml` first. If its
 `editorial_notes` value is malformed, the dashboard returns HTTP 400 and preserves the file for repair.

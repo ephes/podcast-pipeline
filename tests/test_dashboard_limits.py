@@ -601,3 +601,45 @@ def test_selected_tag_artifact_admission(
                 response = client.get(url)
                 assert response.status_code == 422
                 assert response.json() == {"error": "Selected artifact cms_tags.md is unreadable or invalid."}
+
+
+def test_status_admits_each_manual_selection_once(
+    ctx: context.DashboardContext, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from collections import Counter
+
+    from podcast_pipeline.pick_core import load_workspace, save_custom_selection
+
+    for asset_id in ("description", "shownotes"):
+        save_custom_selection(
+            store=ctx.store,
+            workspace=load_workspace(ctx.store),
+            asset_id=asset_id,
+            candidates=[],
+            text="Synthetic selection",
+        )
+    reads: Counter[str] = Counter()
+    read = context.read_workspace_utf8
+
+    def observe(root: Path, reference: Path, *, max_bytes: int) -> str:
+        reads[reference.name] += 1
+        return read(root, reference, max_bytes=max_bytes)
+
+    monkeypatch.setattr(context, "read_workspace_utf8", observe)
+    with TestClient(
+        web.create_dashboard_app(ctx=ctx, port=8765, session_token=SESSION_TOKEN),
+        base_url="http://127.0.0.1:8765",
+        headers=SESSION_HEADERS,
+    ) as client:
+        response = client.get("/api/status")
+        assert response.status_code == 200
+        stages = response.json()["stages"]
+        assert (stages["selected"], stages["total_assets"], stages["candidate_assets"]) == (2, 2, 0)
+        assert reads == {"description.md": 1, "shownotes.md": 1}
+
+        # A subsequent request must admit the current artifact and surface read errors.
+        ctx.layout.selected_text_path("description", TextFormat.markdown).write_bytes(b"\xff")
+        response = client.get("/api/status")
+        assert response.status_code == 422
+        assert response.json() == {"error": "Selected artifact description.md is unreadable or invalid."}
+        assert reads["description.md"] == 2

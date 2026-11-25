@@ -469,14 +469,26 @@ class EpisodeWorkspaceStore:
     def __init__(self, root: Path) -> None:
         self.layout = EpisodeWorkspaceLayout(root=root)
 
-    def read_episode_yaml(self) -> dict[str, Any]:
-        raw = _parse_yaml_mapping(_read_text(self.layout.episode_yaml), self.layout.episode_yaml)
+    def read_episode_yaml(self, *, max_bytes: int | None = None) -> dict[str, Any]:
+        path = self.layout.episode_yaml
+        text = _read_text(path) if max_bytes is None else read_regular_utf8(path, max_bytes=max_bytes)
+        raw = _parse_yaml_mapping(text, path)
         result = try_load_episode_yaml(raw)
         if result.error is not None:
             raise WorkspaceStoreError(f"Invalid episode.yaml at {self.layout.episode_yaml}: {result.error}")
         episode = result.value
         assert episode is not None
         return episode.to_mapping(exclude_unset=True)
+
+    def read_episode_hosts(self) -> list[str] | None:
+        """Read the workspace's named hosts for summary prompts."""
+        try:
+            raw = self.read_episode_yaml().get("hosts")
+        except FileNotFoundError:
+            return None
+        if isinstance(raw, list) and raw and all(isinstance(host, str) for host in raw):
+            return raw
+        return None
 
     def read_episode_yaml_with_revision(self) -> tuple[dict[str, Any], str]:
         with self._state_lock():

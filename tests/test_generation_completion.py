@@ -295,3 +295,41 @@ def test_unexpected_recovery_errors_keep_unconsumed_backups(
                 raise KeyboardInterrupt("synthetic interrupt")
     backups = list(tmp_path.glob(".backup-*"))
     assert sorted(backup.read_text() for backup in backups) == ["first", "second"]
+
+
+@pytest.mark.parametrize(
+    ("limit_module", "limit_name", "limit", "artifact", "oversized"),
+    [
+        ("summary_inputs", "MAX_SUMMARY_BYTES", 256, "episode_summary.json", "é" * 60),
+        ("summarization_stub", "_SUMMARY_MARKDOWN_BYTES", 8, "episode_summary.md", "é" * 4),
+        ("summarization_stub", "_SUMMARY_HTML_BYTES", 80, "episode_summary.html", "&" * 8),
+    ],
+)
+def test_oversized_summary_preserves_complete_generation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    limit_module: str,
+    limit_name: str,
+    limit: int,
+    artifact: str,
+    oversized: str,
+) -> None:
+    from podcast_pipeline import summarization_stub, summary_inputs
+
+    module = summary_inputs if limit_module == "summary_inputs" else summarization_stub
+    monkeypatch.setattr(module, limit_name, limit)
+    store = _store(tmp_path)
+    _chunk(store)
+    old_summary = EpisodeSummary(summary_markdown="old")
+    write_episode_summary_artifacts(layout=store.layout, episode_summary=old_summary)
+    before = _snapshot(store.layout.episode_summary_dir)
+    assert summarization_stub.load_complete_episode_summary(store.layout) == old_summary
+    assert summary_inputs.load_workspace_episode_summary(store.layout) == old_summary
+
+    with pytest.raises(ValueError, match=artifact):
+        write_episode_summary_artifacts(
+            layout=store.layout, episode_summary=EpisodeSummary(summary_markdown=oversized)
+        )
+
+    assert _snapshot(store.layout.episode_summary_dir) == before
+    assert summarization_stub.load_complete_episode_summary(store.layout) == old_summary
