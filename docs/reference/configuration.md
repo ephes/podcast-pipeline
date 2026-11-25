@@ -100,6 +100,9 @@ production's, so a preset created with tracks (for example `jochen`, `dominik`) 
 defaults; intro/outro entries are fine) and put per-track algorithms into `auphonic.tracks[].algorithms` in
 `episode.yaml`. `podcast produce` stops before creating a production when the preset contains speaker tracks.
 
+Optional offsets in `auphonic.tracks[].offset` must be finite nonnegative seconds. An explicit zero is sent to
+Auphonic. Omitted and null offsets are left out of the production request.
+
 After changing a preset (for example adding Ogg Vorbis or audiogram outputs), `podcast produce --update` applies it to
 the production stored in `state.json` and starts that production again without uploading the stems; re-running a
 finished production costs Auphonic credits again. Auphonic re-applies the preset on that update, so the production's
@@ -245,7 +248,7 @@ cms:
 | `host_links` | global and episode (merged) | Host name → profile URL. Only hosts in `hosts` of `episode.yaml` are linked (all configured names when `hosts` is unset); names already linked, or whose URL is already in the overview, are left alone. |
 | `contributors` | global and episode (merged) | Host name → Contributor slug (role `host`) or `{slug, role}` with role `host` or `guest`. The episode's `hosts` are credited in that order. A host without an entry, or an episode without `hosts`, is listed as a manual step, and the transcript is not started automatically. Sent to django-cast once its editor API accepts episode contributors. |
 | `transcript_diarization` | global or episode | Diarization mode of the uploaded Audio. `enabled` (default) gives speaker labels regardless of the site's Voxhelm settings; `inherit` follows them. The transcript is only started automatically when the Audio reports `enabled`. |
-| `audio_file` | episode only | File to upload as the Audio (relative to the workspace or absolute; `.mp3`, `.m4a`, `.ogg`/`.oga` or `.opus`). Default: `auphonic/outputs/<output_basename>.mp3`, else the only MP3 there. Files with the same name and another of these extensions are the further formats. |
+| `audio_file` | episode only | File to upload as the Audio (relative to the workspace or absolute; `.mp3`, `.m4a`, `.ogg`/`.oga` or `.opus`). Default: `auphonic/outputs/<output_basename>.mp3`, else the only regular MP3 file there. Files with the same name and another of these extensions are the further formats. |
 
 For a contributor mapping, omitting `role` defaults to `host`. When specified, the role must be the
 string `host` or `guest`. Invalid values such as lists, mappings and explicit `null` raise a configuration
@@ -405,6 +408,11 @@ If a remote upload or episode write succeeds but its local checkpoint fails, the
 object ID and the fields to merge into `cms/draft.json`. Repair write access and those fields before rerunning,
 preserving the previous state and its other fields. The command stops immediately without retrying the remote
 write. Malformed successful API identities also stop the run; check Wagtail for the remote outcome before retrying.
+
+When using the editor transcript endpoint, the command clears `transcript_pending` after receiving
+a matching episode ID and an active generation receipt. It reports whether generation was newly enqueued
+or already active. If a successful response lacks a valid receipt, the request remains pending in
+`cms/draft.json`. Check the episode's transcript in Wagtail before retrying.
 
 To reset deliberately, move `cms/draft.json` to a backup after recording any unattached Audio ID for manual
 cleanup/recovery. Reset abandons automatic reuse of those IDs. Alternatively clear both IDs to null when

@@ -10,6 +10,7 @@ from __future__ import annotations
 import html
 import math
 import re
+import stat
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from html.parser import HTMLParser
@@ -307,9 +308,14 @@ def resolve_audio_file(*, episode_yaml: Mapping[str, Any], workspace: Path, conf
     _validate_output_basename(basename)
     preferred = outputs / f"{basename}.mp3"
     _contained_output(preferred, outputs)
-    if preferred.is_file():
-        return AudioFile(field="mp3", path=preferred)
-    mp3s = sorted(outputs.glob("*.mp3")) if outputs.is_dir() else []
+    try:
+        if _is_regular_file(preferred):
+            return AudioFile(field="mp3", path=preferred)
+        mp3s = sorted(path for path in outputs.iterdir() if path.name.endswith(".mp3") and _is_regular_file(path))
+    except (FileNotFoundError, NotADirectoryError):
+        mp3s = []
+    except OSError as exc:
+        raise CmsConfigError(f"Could not inspect MP3 files in {outputs}: {exc}") from exc
     if len(mp3s) == 1:
         _contained_output(mp3s[0], outputs)
         return AudioFile(field="mp3", path=mp3s[0])
@@ -319,6 +325,13 @@ def resolve_audio_file(*, episode_yaml: Mapping[str, Any], workspace: Path, conf
     raise CmsConfigError(
         f"No MP3 found in {outputs}: run `podcast produce` first or set cms.audio_file in episode.yaml."
     )
+
+
+def _is_regular_file(path: Path) -> bool:
+    try:
+        return stat.S_ISREG(path.stat().st_mode)
+    except (FileNotFoundError, NotADirectoryError):
+        return False
 
 
 def _audio_file(path: Path, *, source: str) -> AudioFile:

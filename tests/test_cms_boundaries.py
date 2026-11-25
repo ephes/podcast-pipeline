@@ -171,6 +171,25 @@ def test_explicit_audio_can_be_outside_outputs(
     assert len(fake.episodes) == 1
 
 
+def test_implicit_mp3_fallback_ignores_directories(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake: FakeCast, capsys: pytest.CaptureFixture[str]
+) -> None:
+    workspace = _workspace(tmp_path, extra_formats=False)
+    _config(tmp_path, monkeypatch)
+    outputs = workspace / "auphonic/outputs"
+    fallback = outputs / "alternate.mp3"
+    (outputs / "pp_73.mp3").rename(fallback)
+    (outputs / "scratch.mp3").mkdir()
+
+    entry.run_cms_draft(workspace=workspace, dry_run=True)
+    assert json.loads(capsys.readouterr().out)["audio_upload"]["file"] == {"mp3": str(fallback)}
+
+    fallback.unlink()
+    with pytest.raises(typer.BadParameter, match="No MP3 found"):
+        _run(workspace)
+    assert not fake.requests
+
+
 @pytest.mark.parametrize("change", ["description", "slug", "config", "invalid_slug", "heading_only", "invalid_config"])
 @pytest.mark.parametrize("existing", [False, True])
 def test_copy_or_config_change_during_audio_setup_stops_episode_write(

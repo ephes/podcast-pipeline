@@ -281,9 +281,21 @@ class DjangoCastClient:
     def supports_transcript_generation(self, episode_id: int) -> bool:
         return self.supports("POST", EPISODE_TRANSCRIPT_PATH.format(id=episode_id))
 
-    def start_transcript_generation(self, episode_id: int) -> dict[str, Any] | None:
-        data = self._json("POST", EPISODE_TRANSCRIPT_PATH.format(id=episode_id))
-        return data if isinstance(data, dict) else None
+    def start_transcript_generation(self, episode_id: int) -> dict[str, Any]:
+        path = EPISODE_TRANSCRIPT_PATH.format(id=episode_id)
+        data: object = self._json("POST", path)
+        match data:
+            case {
+                "episode": dict() as episode,
+                "enqueued": True | False,
+                "generation": {"active": True, "status": "queued" | "running"},
+            } if isinstance(data, dict):
+                _identity(episode, "POST", path, expected_episode_id=episode_id)
+                return data
+        raise CmsApiError(
+            f"POST {path} returned an invalid transcript generation receipt; "
+            "check Wagtail for the remote outcome before retrying."
+        )
 
     def _upload(self, method: str, path: str, audio_file: AudioFile, *, data: Mapping[str, str]) -> dict[str, Any]:
         content_type = _AUDIO_CONTENT_TYPES.get(audio_file.field, "application/octet-stream")

@@ -52,7 +52,7 @@ class CmsDraftState:
     audio_attached: bool = True
     """False between uploading an Audio and the episode request that attaches it."""
     transcript_pending: bool = False
-    """An uploaded Audio whose transcript was neither started nor handed to the user as a manual step yet."""
+    """A transcript request still awaiting confirmation or manual handoff."""
 
 
 @dataclass
@@ -527,9 +527,14 @@ def _start_transcript(run: _DraftRun, episode: dict[str, Any], *, forced: bool, 
     edit_url = run.client.absolute_url(episode.get("edit_url"))
     supported = run.client.supports_transcript_generation(episode_id)
     if ready and supported:
-        run.client.start_transcript_generation(episode_id)
+        if not run.state.transcript_pending:
+            run.save(transcript_pending=True)
+        receipt = run.client.start_transcript_generation(episode_id)
         run.save(checkpoint=f"Transcript generation for episode {episode_id}", transcript_pending=False)
-        typer.echo("Transcript generation enqueued (Voxhelm).")
+        if receipt["enqueued"]:
+            typer.echo("Transcript generation enqueued (Voxhelm).")
+        else:
+            typer.echo("Transcript generation already active (Voxhelm).")
         return
     if ready:
         run.steps.append(
