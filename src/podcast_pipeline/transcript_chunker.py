@@ -88,7 +88,7 @@ class ChunkerLimits:
 
 
 DEFAULT_LIMITS = ChunkerLimits()
-_MANIFEST_BYTES = 2 * 1024 * 1024
+CHUNK_MANIFEST_MAX_BYTES = 2 * 1024 * 1024
 _META_BYTES = 4096
 
 
@@ -359,7 +359,7 @@ def _recover_chunks(layout: EpisodeWorkspaceLayout, limits: ChunkerLimits) -> No
 def _read_chunk_manifest(
     directory: Path, *, config: ChunkerConfig | None, limits: ChunkerLimits
 ) -> tuple[list[int], dict[str, str], str]:
-    manifest = load_control_json(read_regular_utf8(directory / "complete.json", max_bytes=_MANIFEST_BYTES))
+    manifest = load_control_json(read_regular_utf8(directory / "complete.json", max_bytes=CHUNK_MANIFEST_MAX_BYTES))
     if not isinstance(manifest, dict) or type(manifest.get("version")) is not int or manifest["version"] != 1:
         raise ValueError("Invalid chunk manifest version")
     if not _matches_config(manifest["config"], config):

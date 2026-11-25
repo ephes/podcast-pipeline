@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 from typing import Any
 
@@ -153,6 +154,58 @@ def test_summary_failure_preserves_complete_set(tmp_path: Path, monkeypatch: pyt
     assert module.episode_summary_is_complete(store.layout)
     store.layout.episode_summary_html_path().unlink()
     assert not module.episode_summary_is_complete(store.layout)
+
+
+@pytest.mark.parametrize("grows_during_read", [False, True])
+def test_summary_verification_caps_output_reads(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, grows_during_read: bool
+) -> None:
+    import podcast_pipeline.summarization_stub as module
+
+    store = _store(tmp_path)
+    _chunk(store)
+    write_episode_summary_artifacts(layout=store.layout, episode_summary=EpisodeSummary(summary_markdown="x" * 1024))
+    assert module.episode_summary_is_complete(store.layout)  # Existing version-1 receipt.
+    target = store.layout.episode_summary_markdown_path()
+    original_bytes = target.read_bytes()
+    max_bytes = 128
+    monkeypatch.setattr(module, "_SUMMARY_MARKDOWN_BYTES", max_bytes, raising=False)
+    if grows_during_read:
+        target.write_bytes(original_bytes[:16])
+    identity = target.stat()
+    total_read = 0
+
+    def append_remainder() -> None:
+        with target.open("ab") as output:
+            output.write(original_bytes[16:])
+
+    read = os.read
+    read_bytes = Path.read_bytes
+
+    def observed_read(fd: int, size: int) -> bytes:
+        nonlocal total_read
+        if not os.path.samestat(os.fstat(fd), identity):
+            return read(fd, size)
+        if grows_during_read and total_read == 0:
+            append_remainder()
+        data = read(fd, size)
+        total_read += len(data)
+        return data
+
+    def observed_read_bytes(path: Path) -> bytes:
+        nonlocal total_read
+        if path == target and grows_during_read:
+            append_remainder()
+        data = read_bytes(path)
+        if path == target:
+            total_read += len(data)
+        return data
+
+    monkeypatch.setattr(os, "read", observed_read)
+    monkeypatch.setattr(Path, "read_bytes", observed_read_bytes)
+    complete = module.episode_summary_is_complete(store.layout)
+    assert total_read == (max_bytes + 1 if grows_during_read else 0)
+    assert not complete
 
 
 def test_chunk_directory_replace_failure_restores_previous(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

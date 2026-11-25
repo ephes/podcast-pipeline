@@ -6,9 +6,12 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
+from podcast_pipeline.control_json import load_control_json
 from podcast_pipeline.domain.intermediate_formats import ChunkSummary, EpisodeSummary
 from podcast_pipeline.domain.models import ProvenanceRef
+from podcast_pipeline.file_inputs import read_regular_bytes, sha256_regular_file
 from podcast_pipeline.markdown_html import markdown_to_deterministic_html
+from podcast_pipeline.transcript_chunker import CHUNK_MANIFEST_MAX_BYTES
 from podcast_pipeline.workspace_store import EpisodeWorkspaceLayout, atomic_write_text, preserve_files
 
 
@@ -19,6 +22,10 @@ class StubSummarizerConfig:
 
 
 _TOKEN_RE = re.compile(r"[A-Za-z][A-Za-z0-9'_-]+")
+_SUMMARY_MARKER_BYTES = 4096
+_SUMMARY_MARKDOWN_BYTES = 32 * 1024 * 1024
+_SUMMARY_JSON_BYTES = 64 * 1024 * 1024
+_SUMMARY_HTML_BYTES = 64 * 1024 * 1024
 
 
 def _first_non_empty_lines(text: str, *, limit: int) -> list[str]:
@@ -227,19 +234,35 @@ def write_episode_summary_artifacts(
     return json_path, md_path, html_path
 
 
-def episode_summary_is_complete(layout: EpisodeWorkspaceLayout) -> bool:
+def load_complete_episode_summary(layout: EpisodeWorkspaceLayout) -> EpisodeSummary | None:
+    """Return the model from the exact JSON bytes bound by a complete receipt."""
     try:
-        marker = json.loads((layout.episode_summary_dir / "complete.json").read_text(encoding="utf-8"))
-        chunks = (layout.transcript_chunks_dir / "complete.json").read_bytes()
-        if marker["version"] != 1 or marker["chunks_sha256"] != hashlib.sha256(chunks).hexdigest():
-            return False
-        paths = [
-            layout.episode_summary_json_path(),
-            layout.episode_summary_markdown_path(),
-            layout.episode_summary_html_path(),
-        ]
-        return set(marker["files"]) == {path.name for path in paths} and all(
-            marker["files"][path.name] == hashlib.sha256(path.read_bytes()).hexdigest() for path in paths
+        marker = load_control_json(
+            read_regular_bytes(layout.episode_summary_dir / "complete.json", max_bytes=_SUMMARY_MARKER_BYTES)
         )
-    except (OSError, ValueError, KeyError, TypeError):
-        return False
+        if not isinstance(marker, dict) or type(marker.get("version")) is not int or marker["version"] != 1:
+            return None
+        json_path = layout.episode_summary_json_path()
+        markdown_path = layout.episode_summary_markdown_path()
+        html_path = layout.episode_summary_html_path()
+        files = marker.get("files")
+        if not isinstance(files, dict) or set(files) != {json_path.name, markdown_path.name, html_path.name}:
+            return None
+        chunks_digest = sha256_regular_file(
+            layout.transcript_chunks_dir / "complete.json", max_bytes=CHUNK_MANIFEST_MAX_BYTES
+        )
+        if marker.get("chunks_sha256") != chunks_digest:
+            return None
+        summary_json = read_regular_bytes(json_path, max_bytes=_SUMMARY_JSON_BYTES)
+        if files[json_path.name] != hashlib.sha256(summary_json).hexdigest():
+            return None
+        for path, limit in ((markdown_path, _SUMMARY_MARKDOWN_BYTES), (html_path, _SUMMARY_HTML_BYTES)):
+            if files[path.name] != sha256_regular_file(path, max_bytes=limit):
+                return None
+        return EpisodeSummary.model_validate(json.loads(summary_json.decode("utf-8")))
+    except (OSError, ValueError, RecursionError):
+        return None
+
+
+def episode_summary_is_complete(layout: EpisodeWorkspaceLayout) -> bool:
+    return load_complete_episode_summary(layout) is not None

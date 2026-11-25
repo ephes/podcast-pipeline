@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import os
 import shutil
 import uuid
@@ -10,7 +9,7 @@ import typer
 
 from podcast_pipeline.entrypoints.draft_candidates import run_draft_candidates
 from podcast_pipeline.entrypoints.summarize_demo import run_summarize_demo
-from podcast_pipeline.summarization_stub import StubSummarizerConfig, episode_summary_is_complete
+from podcast_pipeline.summarization_stub import StubSummarizerConfig, load_complete_episode_summary
 from podcast_pipeline.transcript_chunker import ChunkerConfig, discover_complete_chunk_ids
 from podcast_pipeline.workspace_store import EpisodeWorkspaceStore
 
@@ -206,15 +205,9 @@ def _run_llm_pipeline(
 
     typer.echo(f"Found {len(chunk_ids)} chunks", err=True)
 
-    # Check if episode summary already exists
-    summary_path = store.layout.episode_summary_json_path()
-    if episode_summary_is_complete(store.layout):
+    episode_summary = load_complete_episode_summary(store.layout)
+    if episode_summary is not None:
         typer.echo("Episode summary already exists, skipping summarization", err=True)
-        from podcast_pipeline.domain.intermediate_formats import EpisodeSummary
-
-        episode_summary = EpisodeSummary.model_validate(
-            json.loads(summary_path.read_text(encoding="utf-8")),
-        )
     else:
         typer.echo("Running LLM summarization...", err=True)
         episode_summary = run_llm_summarization(

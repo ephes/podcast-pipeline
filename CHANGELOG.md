@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Generate asset candidates from the exact summary JSON snapshot verified on resume, and regenerate when that snapshot is invalid.
+
+- Bound draft resume verification of summary manifests and artifacts, and regenerate incomplete summaries when a file fails admission.
+
 - Reject nonfinite numbers in review protocol JSON before resuming or publishing a checkpoint.
 
 - Require a positive integer review iteration limit before running callbacks or resuming saved state.

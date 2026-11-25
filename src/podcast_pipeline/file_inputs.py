@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
 import stat
+from collections.abc import Callable
 from contextlib import ExitStack
 from pathlib import Path
 
@@ -12,7 +14,9 @@ def _generation(value: os.stat_result) -> tuple[int, int, int, int, int]:
     return value.st_dev, value.st_ino, value.st_size, value.st_mtime_ns, value.st_ctime_ns
 
 
-def read_regular_bytes(path: Path, *, max_bytes: int, dir_fd: int | None = None) -> bytes:
+def _consume_regular_bytes(
+    path: Path, consume: Callable[[bytes], None], *, max_bytes: int, dir_fd: int | None = None
+) -> None:
     named = os.stat(path, dir_fd=dir_fd, follow_symlinks=False)
     fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW, dir_fd=dir_fd)
     try:
@@ -21,13 +25,12 @@ def read_regular_bytes(path: Path, *, max_bytes: int, dir_fd: int | None = None)
             raise ValueError("Source must be a regular file within the byte limit")
         if _generation(named) != _generation(before):
             raise ValueError("Source changed before open")
-        parts: list[bytes] = []
         size = 0
         while part := os.read(fd, min(64 * 1024, max_bytes + 1 - size)):
             size += len(part)
             if size > max_bytes:
                 raise ValueError("Source byte limit exceeded")
-            parts.append(part)
+            consume(part)
         after = os.fstat(fd)
         current = os.stat(path, dir_fd=dir_fd, follow_symlinks=False)
         if (
@@ -36,9 +39,21 @@ def read_regular_bytes(path: Path, *, max_bytes: int, dir_fd: int | None = None)
             or size != before.st_size
         ):
             raise ValueError("Source changed during read")
-        return b"".join(parts)
     finally:
         os.close(fd)
+
+
+def read_regular_bytes(path: Path, *, max_bytes: int, dir_fd: int | None = None) -> bytes:
+    parts: list[bytes] = []
+    _consume_regular_bytes(path, parts.append, max_bytes=max_bytes, dir_fd=dir_fd)
+    return b"".join(parts)
+
+
+def sha256_regular_file(path: Path, *, max_bytes: int) -> str:
+    """Hash a bounded regular file generation without retaining its contents."""
+    digest = hashlib.sha256()
+    _consume_regular_bytes(path, digest.update, max_bytes=max_bytes)
+    return digest.hexdigest()
 
 
 def read_regular_utf8(path: Path, *, max_bytes: int, dir_fd: int | None = None) -> str:
