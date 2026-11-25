@@ -13,7 +13,7 @@ from podcast_pipeline.auphonic_payload import AuphonicConfigError, build_auphoni
 from podcast_pipeline.domain.models import TextFormat
 from podcast_pipeline.entrypoints import produce
 from podcast_pipeline.entrypoints.cli import app
-from podcast_pipeline.workspace_store import EpisodeWorkspaceLayout
+from podcast_pipeline.workspace_store import EpisodeWorkspaceLayout, EpisodeWorkspaceStore
 
 # One speaker stem so payload tests that focus on metadata or presets build a valid multitrack production.
 _STEMS: dict[str, Any] = {"tracks": [{"id": "jochen", "path": "stems/jochen.flac"}]}
@@ -202,6 +202,39 @@ def test_payload_validates_explicit_stems(
 
     with pytest.raises(AuphonicConfigError, match=message):
         build_auphonic_payload(episode_yaml={"auphonic": {"preset_id": "p1", "tracks": tracks}}, workspace=tmp_path)
+
+
+@pytest.mark.parametrize("offset", [".nan", ".inf", "-.inf"])
+def test_episode_yaml_rejects_nonfinite_track_offset(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, offset: str
+) -> None:
+    _set_global_config(monkeypatch, tmp_path, {})
+    (tmp_path / "episode.yaml").write_text(
+        "episode_id: ep_001\nauphonic:\n  preset_id: p1\n  tracks:\n"
+        f"    - {{id: speaker, path: stem.flac, offset: {offset}}}\n",
+        encoding="utf-8",
+    )
+
+    episode = EpisodeWorkspaceStore(tmp_path).read_episode_yaml()
+    with pytest.raises(AuphonicConfigError, match=r"auphonic\.tracks\[1\]\.offset must be finite nonnegative"):
+        build_auphonic_payload(episode_yaml=episode, workspace=tmp_path)
+
+
+def test_episode_yaml_distinguishes_zero_and_omitted_track_offsets(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _set_global_config(monkeypatch, tmp_path, {})
+    (tmp_path / "episode.yaml").write_text(
+        "episode_id: ep_001\nauphonic:\n  preset_id: p1\n  tracks:\n"
+        "    - {id: a, path: a.flac, offset: 0}\n"
+        "    - {id: b, path: b.flac}\n",
+        encoding="utf-8",
+    )
+
+    episode = EpisodeWorkspaceStore(tmp_path).read_episode_yaml()
+    with_offset, without_offset = build_auphonic_payload(episode_yaml=episode, workspace=tmp_path)["multi_input_files"]
+    assert with_offset["offset"] == 0.0
+    assert "offset" not in without_offset
 
 
 def test_payload_rejects_unknown_mode(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -639,8 +672,6 @@ def test_store_preserves_invalid_chapters_without_widening_metadata(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     import math
-
-    from podcast_pipeline.workspace_store import EpisodeWorkspaceStore
 
     _set_global_config(monkeypatch, tmp_path, {})
     (tmp_path / "episode.yaml").write_text(

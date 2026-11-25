@@ -100,6 +100,9 @@ production's, so a preset created with tracks (for example `jochen`, `dominik`) 
 defaults; intro/outro entries are fine) and put per-track algorithms into `auphonic.tracks[].algorithms` in
 `episode.yaml`. `podcast produce` stops before creating a production when the preset contains speaker tracks.
 
+Optional offsets in `auphonic.tracks[].offset` must be finite nonnegative seconds. An explicit zero is sent to
+Auphonic. Omitted and null offsets are left out of the production request.
+
 After changing a preset (for example adding Ogg Vorbis or audiogram outputs), `podcast produce --update` applies it to
 the production stored in `state.json` and starts that production again without uploading the stems; re-running a
 finished production costs Auphonic credits again. Auphonic re-applies the preset on that update, so the production's

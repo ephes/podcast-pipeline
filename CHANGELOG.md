@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Reject NaN and infinite Auphonic track offsets in episode YAML during production planning.
+
 - Count only regular MP3 files when selecting fallback audio for a CMS draft.
 
 - Prepare bounded UTF-8 progress tails before taking the dashboard lock.
