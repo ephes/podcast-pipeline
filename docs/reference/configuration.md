@@ -245,7 +245,7 @@ cms:
 | `host_links` | global and episode (merged) | Host name → profile URL. Only hosts in `hosts` of `episode.yaml` are linked (all configured names when `hosts` is unset); names already linked, or whose URL is already in the overview, are left alone. |
 | `contributors` | global and episode (merged) | Host name → Contributor slug (role `host`) or `{slug, role}` with role `host` or `guest`. The episode's `hosts` are credited in that order. A host without an entry, or an episode without `hosts`, is listed as a manual step, and the transcript is not started automatically. Sent to django-cast once its editor API accepts episode contributors. |
 | `transcript_diarization` | global or episode | Diarization mode of the uploaded Audio. `enabled` (default) gives speaker labels regardless of the site's Voxhelm settings; `inherit` follows them. The transcript is only started automatically when the Audio reports `enabled`. |
-| `audio_file` | episode only | File to upload as the Audio (relative to the workspace or absolute; `.mp3`, `.m4a`, `.ogg`/`.oga` or `.opus`). Default: `auphonic/outputs/<output_basename>.mp3`, else the only MP3 there. Files with the same name and another of these extensions are the further formats. |
+| `audio_file` | episode only | File to upload as the Audio (relative to the workspace or absolute; `.mp3`, `.m4a`, `.ogg`/`.oga` or `.opus`). Default: `auphonic/outputs/<output_basename>.mp3`, else the only regular MP3 file there. Files with the same name and another of these extensions are the further formats. |
 
 For a contributor mapping, omitting `role` defaults to `host`. When specified, the role must be the
 string `host` or `guest`. Invalid values such as lists, mappings and explicit `null` raise a configuration

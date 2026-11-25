@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Count only regular MP3 files when selecting fallback audio for a CMS draft.
+
 - Prepare bounded UTF-8 progress tails before taking the dashboard lock.
 
 - Count only regular files in the dashboard’s legacy chunk inventory.
