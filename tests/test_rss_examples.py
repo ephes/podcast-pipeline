@@ -70,6 +70,29 @@ def test_parse_rss_examples_missing_channel_raises() -> None:
         parse_rss_examples(xml_payload, feed_url="https://example.com/feed", limit=5)
 
 
+@pytest.mark.parametrize(
+    "xml",
+    [
+        "<wrapper><channel>{item}</channel></wrapper>",
+        "<channel>{item}</channel>",
+        '<rss xmlns="urn:foreign"><channel>{item}</channel></rss>',
+    ],
+)
+def test_parse_rss_examples_rejects_non_rss_channel_parents(xml: str) -> None:
+    item = "<item><title>Episode</title><description>Desc</description></item>"
+    with pytest.raises(RssExamplesError, match="expected RSS 2.0"):
+        parse_rss_examples(xml.format(item=item), feed_url="https://example.test/feed", limit=1)
+
+
+def test_parse_rss_examples_ignores_foreign_channel_before_real_channel() -> None:
+    xml = """<rss version="2.0" xmlns:foreign="urn:foreign">
+      <foreign:channel><item><title>Foreign</title><description>Desc</description></item></foreign:channel>
+      <channel><item><title>Episode</title><description>Desc</description></item></channel>
+    </rss>"""
+    examples = parse_rss_examples(xml, feed_url="https://example.test/feed", limit=1)
+    assert [example.title for example in examples] == ["Episode"]
+
+
 def test_parse_rss_examples_invalid_xml_raises() -> None:
     with pytest.raises(RssExamplesError, match="invalid XML"):
         parse_rss_examples("<rss", feed_url="https://example.com/feed", limit=5)

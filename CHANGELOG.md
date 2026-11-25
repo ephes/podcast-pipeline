@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Require an RSS root and a direct channel for RSS examples, skipping namespaced channel extensions.
+
 - Read picker tag overrides and host exclusions from the same admitted episode YAML snapshot.
 
 - Apply workspace YAML structure checks and a 1 MiB regular-file limit to the optional global CMS configuration.

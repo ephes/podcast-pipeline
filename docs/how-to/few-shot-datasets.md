@@ -6,7 +6,10 @@ Use these commands to fetch recent episodes and write JSONL files for few-shot s
 ## Before you start
 
 - Ensure the `podcast` CLI is available (run `podcast --help`).
-- RSS feeds must expose RSS 2.0 `<item>` entries with `<description>` or `<content:encoded>`.
+- The RSS importer expects an unnamespaced `<rss>` document root with a direct, unnamespaced
+  `<channel>` child. It uses that RSS 2.0 structure even when the root omits `version`.
+  Items need a title and `<description>` or `<content:encoded>` to become examples.
+  Namespaced extension fields such as `<itunes:keywords>` are supported.
 - Wagtail/CMS endpoints must return a list under `items`, `results`, or `pages`.
 
 ## RSS feed examples

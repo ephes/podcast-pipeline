@@ -87,29 +87,26 @@ class _ExampleTarget:
     def __init__(self, *, feed_url: str, limit: int) -> None:
         self.feed_url = feed_url
         self.limit = limit
-        self.stack: list[str] = []
+        self.depth = 0
         self.elements = 0
         self.text_bytes = 0
-        self.channel_depth: int | None = None
+        self.in_channel = False
         self.found_channel = False
         self.builder: ElementTree.TreeBuilder | None = None
         self.examples: list[RssEpisodeExample] = []
 
     def start(self, tag: str, attrs: dict[str, str]) -> None:
         self.elements += 1
-        self.stack.append(_strip_namespace(tag))
-        if self.elements > MAX_XML_ELEMENTS or len(self.stack) > MAX_XML_DEPTH:
+        self.depth += 1
+        if self.elements > MAX_XML_ELEMENTS or self.depth > MAX_XML_DEPTH:
             raise RssExamplesError("RSS XML element/depth limit exceeded.")
         self._charge_text(sum(len(k.encode()) + len(v.encode()) for k, v in attrs.items()))
-        if self.stack[-1] == "channel" and len(self.stack) <= 2 and not self.found_channel:
-            self.channel_depth = len(self.stack)
+        if self.depth == 1 and tag != "rss":
+            raise RssExamplesError("RSS feed requires an unnamespaced rss root (expected RSS 2.0).")
+        if self.depth == 2 and tag == "channel" and not self.found_channel:
+            self.in_channel = True
             self.found_channel = True
-        if (
-            self.channel_depth is not None
-            and len(self.stack) == self.channel_depth + 1
-            and self.stack[-1] == "item"
-            and len(self.examples) < self.limit
-        ):
+        if self.in_channel and self.depth == 3 and _strip_namespace(tag) == "item" and len(self.examples) < self.limit:
             self.builder = ElementTree.TreeBuilder()
         if self.builder is not None:
             self.builder.start(tag, attrs)
@@ -117,15 +114,15 @@ class _ExampleTarget:
     def end(self, tag: str) -> None:
         if self.builder is not None:
             self.builder.end(tag)
-            if self.channel_depth is not None and len(self.stack) == self.channel_depth + 1:
+            if self.depth == 3:
                 item = self.builder.close()
                 self.builder = None
                 example = _parse_item(item, feed_url=self.feed_url)
                 if example is not None:
                     self.examples.append(example)
-        if len(self.stack) == self.channel_depth:
-            self.channel_depth = None
-        self.stack.pop()
+        if self.depth == 2:
+            self.in_channel = False
+        self.depth -= 1
 
     def _charge_text(self, size: int) -> None:
         self.text_bytes += size
@@ -142,7 +139,7 @@ class _ExampleTarget:
 
     def close(self) -> list[RssEpisodeExample]:
         if not self.found_channel:
-            raise RssExamplesError("RSS feed missing channel element (expected RSS 2.0).")
+            raise RssExamplesError("RSS feed missing an unnamespaced channel directly under rss (expected RSS 2.0).")
         if not self.examples:
             raise RssExamplesError("RSS feed returned no usable episodes.")
         return self.examples
