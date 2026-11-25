@@ -8,12 +8,15 @@ import socket
 import sys
 import threading
 import time
-from contextlib import nullcontext
+from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager, nullcontext
 from pathlib import Path
 from typing import Any
 
 import httpx
 import pytest
+from starlette.requests import Request
 
 from podcast_pipeline.dashboard_context import DashboardContext
 from podcast_pipeline.entrypoints import dashboard_web as web
@@ -117,7 +120,7 @@ def test_job_stderr_capture_ends_when_dashboard_exits(tmp_path: Path, monkeypatc
 @pytest.mark.parametrize(
     ("method", "path", "operation", "result"),
     [
-        ("GET", "/api/status", "get_status_json", {"episode_id": "synthetic"}),
+        ("GET", "/api/status", "_status_snapshot", {"episode_id": "synthetic"}),
         ("GET", "/api/assets", "get_assets_json", []),
         ("POST", "/api/episode", "update_episode", None),
     ],
@@ -174,6 +177,31 @@ def test_slow_storage_allows_other_requests(
     asyncio.run(exercise())
 
 
+def test_status_waits_for_publication_without_blocking_job_progress(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ctx = DashboardContext(workspace=tmp_path)
+    api = web._DashboardApi(ctx=ctx, on_done=None)
+    publication_lock = ctx.store.publication_lock
+    waiting = threading.Event()
+
+    @contextmanager
+    def observed_publication_lock() -> Iterator[None]:
+        waiting.set()
+        with publication_lock():
+            yield
+
+    monkeypatch.setattr(ctx.store, "publication_lock", observed_publication_lock)
+    with ThreadPoolExecutor() as pool:
+        with publication_lock():
+            pending = pool.submit(api.serve_status, Request({"type": "http"}))
+            assert waiting.wait(3)
+            assert ctx.lock.acquire(timeout=1), "status blocks publishers from reporting progress"
+            ctx.lock.release()
+            assert not pending.done()
+        assert pending.result(timeout=3).status_code == 200
+
+
 @pytest.mark.parametrize("path", ["/api/status", "/api/jobs", "/api/produce", "/api/jobs/test/stream"])
 def test_worker_held_lock_keeps_event_loop_responsive(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, path: str
@@ -224,7 +252,6 @@ def test_worker_held_lock_keeps_event_loop_responsive(
 
 
 def test_sse_poll_waits_for_lock_off_event_loop(tmp_path: Path) -> None:
-    from starlette.requests import Request
     from starlette.responses import StreamingResponse
 
     ctx = DashboardContext(workspace=tmp_path)

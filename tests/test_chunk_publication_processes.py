@@ -10,6 +10,7 @@ from typing import Any
 import pytest
 
 from podcast_pipeline import transcript_chunker as chunker
+from podcast_pipeline.dashboard_context import DashboardContext
 from podcast_pipeline.workspace_store import EpisodeWorkspaceLayout
 
 
@@ -53,6 +54,12 @@ def _publish(root: str, connection: Connection, max_tokens: int, pause_gap: bool
 def _discover(root: str, connection: Connection) -> None:
     connection.send("reading")
     connection.send(chunker.discover_complete_chunk_ids(EpisodeWorkspaceLayout(root=Path(root))))
+
+
+def _dashboard_count(root: str, connection: Connection) -> None:
+    dashboard = DashboardContext(workspace=Path(root))
+    connection.send("reading")
+    connection.send(dashboard.get_status_json()["stages"]["chunks"])
 
 
 def _receive(connection: Connection) -> Any:
@@ -122,6 +129,38 @@ def test_two_writers_and_reader_share_publication_boundary(tmp_path: Path, faile
         assert not list(layout.transcript_dir.glob(".chunks-previous-*"))
     finally:
         for process in processes:
+            if process.pid is not None:
+                if process.is_alive():
+                    process.terminate()
+                process.join(10)
+
+
+@pytest.mark.parametrize("failed_swap", [False, True])
+def test_dashboard_count_waits_for_chunk_swap(tmp_path: Path, failed_swap: bool) -> None:
+    layout = _initial(tmp_path)
+    if failed_swap:
+        # A restored legacy set exercises the fallback count after rollback.
+        (layout.transcript_chunks_dir / "complete.json").unlink()
+    ctx = mp.get_context("spawn")
+    parent, child = ctx.Pipe()
+    reader, reader_child = ctx.Pipe()
+    publisher = ctx.Process(target=_publish, args=(str(tmp_path), child, 4, True, failed_swap))
+    dashboard = ctx.Process(target=_dashboard_count, args=(str(tmp_path), reader_child))
+    try:
+        publisher.start()
+        assert _receive(parent) == "staged"
+        parent.send("continue")
+        assert _receive(parent) == "gap"
+        dashboard.start()
+        assert _receive(reader) == "reading"
+        # Capture early completion, then let the writer finish even when the check fails.
+        early_count = _receive(reader) if reader.poll(0.5) else None
+        parent.send("continue")
+        assert _receive(parent) == ("OSError" if failed_swap else "committed")
+        assert early_count is None, f"dashboard counted {early_count} chunks during the swap"
+        assert _receive(reader) == (3 if failed_swap else 2)
+    finally:
+        for process in (publisher, dashboard):
             if process.pid is not None:
                 if process.is_alive():
                     process.terminate()

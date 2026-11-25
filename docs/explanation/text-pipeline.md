@@ -210,7 +210,9 @@ Publication and discovery share the existing stable workspace-directory lock wit
 Staging happens outside the lock; the source is read again under the lock before swapping. Changed
 source refuses publication with `ChunkSourceChangedError` (a `ValueError`) and preserves the current set. Swap, rollback and old-set retirement stay
 under that lock, so one writer cannot restore over another writer's committed generation and discovery
-cannot inspect the inter-rename gap. Transcript ingestion uses the same lock for invalidation and swap.
+cannot inspect the inter-rename gap. The dashboard takes the lock for both its manifest count and
+bounded legacy directory scan, so status reports the count from one published generation. Transcript
+ingestion uses the same lock for invalidation and swap.
 `EpisodeWorkspaceStore.publication_lock()` exposes this boundary for other artifact readers; do not
 reacquire it or call state/YAML writers inside it. Discovery returns a snapshot, not a lease across
 later agent calls; this does not serialize entire draft jobs or exclude manual filesystem edits.
