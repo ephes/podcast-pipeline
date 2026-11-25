@@ -894,6 +894,47 @@ def test_assets_refresh_external_selection_and_candidates(pick_server: _PickServ
     assert desc["selected_text"].strip() == "New custom selection"
 
 
+@pytest.mark.parametrize("refresh", ["replace", "retire", "republish_during_selection"])
+def test_select_refuses_candidate_changed_after_display(
+    pick_server: _PickServerTuple, monkeypatch: pytest.MonkeyPatch, refresh: str
+) -> None:
+    _, url, ctx, candidates = pick_server
+    other = EpisodeWorkspaceStore(ctx.store.layout.root)
+    candidate = candidates["description"][0]
+    assert ctx.select_custom_text("description", "Keep this selection", None) is None
+    before = other.layout.state_json.read_bytes()
+    displayed = cast(list[dict[str, str]], _assets_by_id(url)["description"]["candidates"])
+    assert displayed[0]["candidate_id"] == str(candidate.candidate_id)
+    replacement = candidate
+
+    if refresh == "replace":
+        replacement = candidate.model_copy(update={"content": "Updated by another producer"})
+        other.write_candidate(replacement)
+    elif refresh == "retire":
+        other.delete_candidate_files("description", candidate.candidate_id)
+    else:
+        save = pick_web.save_candidate_selection
+
+        def republish_then_save(**kwargs: Any) -> EpisodeWorkspace:
+            other.write_candidate(candidate)
+            return save(**kwargs)
+
+        monkeypatch.setattr(pick_web, "save_candidate_selection", republish_then_save)
+
+    status, receipt = _post_json(
+        f"{url}/api/select", {"asset_id": "description", "candidate_id": str(candidate.candidate_id)}
+    )
+
+    assert status == 409, receipt
+    assert "reload candidates" in str(receipt["error"])
+    assert other.layout.state_json.read_bytes() == before
+    assert other.read_selected_text("description", TextFormat.markdown).strip() == "Keep this selection"
+    if refresh == "retire":
+        assert not other.layout.candidate_json_path("description", candidate.candidate_id).exists()
+    else:
+        assert other.read_candidate("description", candidate.candidate_id) == replacement
+
+
 def test_done_refuses_active_refinement(pick_server: _PickServerTuple) -> None:
     _, url, ctx, _ = pick_server
     ctx.refining.add("description")

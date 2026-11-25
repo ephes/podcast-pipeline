@@ -133,6 +133,8 @@ def test_same_asset_artifacts_and_metadata_share_lock(tmp_path: Path, monkeypatc
     candidates = [
         Candidate(asset_id="title_detail", format=TextFormat.plain, content=text) for text in ["First", "Second"]
     ]
+    for candidate in candidates:
+        stores[0].write_candidate(candidate)
     contexts = [
         _ServerContext(
             store=store,

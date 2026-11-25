@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Reject standalone picker choices when the candidate was changed or removed by another workspace writer.
+
 - Release the standalone picker workspace lock before rendering candidate previews and tag pools.
 
 - Preserve completed cleanup receipts and report Auphonic deletions pending a local state update.

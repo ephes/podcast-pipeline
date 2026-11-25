@@ -227,6 +227,8 @@ def test_pick_format_switch_keeps_selection_metadata_consistent(
     store.write_episode_yaml({"episode_id": "ep_001"})
     old = Candidate(asset_id="description", content="# A")
     new = Candidate(asset_id="description", format=TextFormat.plain, content="B")
+    store.write_candidate(old)
+    store.write_candidate(new)
     ctx = _ServerContext(
         store=store,
         candidates_by_asset={"description": [old, new]},

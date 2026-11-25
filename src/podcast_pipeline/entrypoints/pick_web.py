@@ -26,6 +26,8 @@ from podcast_pipeline.local_web_guard import (
 )
 from podcast_pipeline.markdown_html import markdown_to_deterministic_html
 from podcast_pipeline.pick_core import (
+    CandidateSelectionChanged,
+    candidate_generation,
     custom_selection_format,
     find_candidate_by_id,
     load_candidates,
@@ -330,6 +332,7 @@ class _ServerContext:
         if match is None:
             return f"candidate_id {candidate_id_str} not found for asset {asset_id}"
 
+        generation = candidate_generation(layout=self.store.layout, candidate=match)
         selected_format, selected_text = match.format, match.content
         if asset_id in TAG_ASSET_IDS:
             selected_tags = parse_tag_list(match.content)
@@ -345,6 +348,7 @@ class _ServerContext:
             candidates=candidates,
             selected_format=selected_format,
             selected_text=selected_text,
+            expected_generation=generation,
         )
         return None
 
@@ -565,10 +569,14 @@ class _PickWebHandler(BaseHTTPRequestHandler):
             self._respond(400, "application/json", json.dumps({"error": "Missing asset_id or candidate_id"}).encode())
             return
 
-        with self.ctx.lock:
-            if self._reject_closing():
-                return
-            error = self.ctx.select_candidate(asset_id, candidate_id)
+        try:
+            with self.ctx.lock:
+                if self._reject_closing():
+                    return
+                error = self.ctx.select_candidate(asset_id, candidate_id)
+        except CandidateSelectionChanged as exc:
+            self._respond_json(409, {"error": str(exc)})
+            return
 
         if error:
             self._respond(400, "application/json", json.dumps({"error": error}).encode())

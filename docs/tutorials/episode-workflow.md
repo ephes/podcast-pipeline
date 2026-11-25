@@ -584,7 +584,8 @@ assets. Each response uses one workspace snapshot for candidate membership and s
 tag-pool rendering run after the workspace lock is released. Custom drafts survive these refreshes and asset switches in the current page. A save acknowledges
 only the submitted revision; text typed while saving stays unsaved. Candidate and custom selections admit
 one pending choice per asset. After an uncertain mutation the picker reloads stored state before allowing
-another choice; it never automatically repeats a mutation.
+another choice; it never automatically repeats a mutation. If a displayed candidate has changed or
+disappeared, the picker reloads the candidates and asks you to choose again.
 
 Every picker browser exchange has a thirty-second deadline covering response headers and body, except
 refinement: its deadline is the configured drafter agent timeout plus one minute, so normal refinements finish
