@@ -66,6 +66,45 @@ def test_group_signal_precedes_reap(monkeypatch: pytest.MonkeyPatch) -> None:
     assert process.returncode is not None
 
 
+def test_thread_construction_failure_reaps_child_and_closes_pipes(monkeypatch: pytest.MonkeyPatch) -> None:
+    real_popen = subprocess.Popen
+    real_thread = runners.threading.Thread
+    children: list[subprocess.Popen[bytes]] = []
+    threads: list[runners.threading.Thread] = []
+
+    def spawn(*args: Any, **kwargs: Any) -> subprocess.Popen[bytes]:
+        child = real_popen(*args, **kwargs)
+        children.append(child)
+        return child
+
+    def construct_thread(**kwargs: Any) -> runners.threading.Thread:
+        if threads:
+            raise RuntimeError("synthetic thread construction failure")
+        thread = real_thread(**kwargs)
+        threads.append(thread)
+        return thread
+
+    monkeypatch.setattr(runners.subprocess, "Popen", spawn)
+    monkeypatch.setattr(runners.threading, "Thread", construct_thread)
+    try:
+        with pytest.raises(RuntimeError, match="synthetic thread construction failure"):
+            run("import time; time.sleep(10)")
+        (child,) = children
+        assert child.returncode is not None
+        assert child.stdin is not None and child.stdin.closed
+        assert child.stdout is not None and child.stdout.closed
+        assert child.stderr is not None and child.stderr.closed
+        assert threads[0].ident is None
+    finally:
+        for child in children:
+            if child.returncode is None:
+                child.kill()
+                child.wait(timeout=3)
+            for pipe in (child.stdin, child.stdout, child.stderr):
+                if pipe is not None:
+                    pipe.close()
+
+
 def test_cleanup_is_finite_and_preserves_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
     import io
 

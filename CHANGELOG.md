@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Retire agent and transcription CLI processes and close their pipes if supervision setup fails after launch.
+
 - Coalesce identical RSS example records and preserve the previous export when the same ID has conflicting records.
 
 - Require an RSS root and a direct channel for RSS examples, skipping namespaced channel extensions.

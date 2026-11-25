@@ -471,8 +471,9 @@ Agent calls require complete UTF-8 stdin delivery and retire the owned process g
 A wrapper must keep all helpers in its session/process group; detached sessions are outside this ownership boundary.
 
 Agent cleanup adds at most a one-second leader reap allowance and three 50 ms thread joins.
-All pipe closes are attempted even after a signal/wait failure. An uncertain cleanup refuses success;
-a primary timeout/interruption remains primary with a fixed cleanup note. Check owned processes before retrying.
+If pipe-thread setup fails after launch, cleanup still retires the child and closes its pipes.
+All pipe closes are attempted even after a signal/wait failure. If cleanup is uncertain, the original error retains
+priority and carries a fixed cleanup note. A call can only succeed if cleanup succeeds. Check owned processes before retrying.
 Group signaling requires an unreaped child identity; external reaping revokes this authority.
 On Darwin, an EPERM group signal is accepted only when waitid confirms exit and libproc proves
 the reserved leader is the sole member.

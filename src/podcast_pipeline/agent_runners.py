@@ -89,6 +89,8 @@ def run_cli_process(
     if not callable(getattr(os, "waitid", None)):
         raise AgentRunnerError(_WAITID_REQUIRED)
     deadline = time.monotonic() + timeout
+    threads: list[threading.Thread] = []
+    primary: BaseException | None = None
     process = subprocess.Popen(
         command,
         stdin=subprocess.PIPE,
@@ -99,25 +101,32 @@ def run_cli_process(
         start_new_session=True,
         bufsize=0,
     )
-    assert process.stdin is not None and process.stdout is not None and process.stderr is not None
-    buffers = [bytearray(), bytearray()]
-    failures: list[BaseException] = []
-    done = [threading.Event(), threading.Event(), threading.Event()]
-    threads = [
-        threading.Thread(
-            target=_drain_cli_pipe,
-            args=(process.stdout, buffers[0], failures, done[0], CLI_STDOUT_LIMIT, "stdout"),
-            daemon=True,
-        ),
-        threading.Thread(
-            target=_drain_cli_pipe,
-            args=(process.stderr, buffers[1], failures, done[1], CLI_STDERR_LIMIT, "stderr"),
-            daemon=True,
-        ),
-        threading.Thread(target=_feed_cli_pipe, args=(process.stdin, encoded_input, failures, done[2]), daemon=True),
-    ]
-    primary: BaseException | None = None
     try:
+        assert process.stdin is not None and process.stdout is not None and process.stderr is not None
+        buffers = [bytearray(), bytearray()]
+        failures: list[BaseException] = []
+        done = [threading.Event(), threading.Event(), threading.Event()]
+        threads.append(
+            threading.Thread(
+                target=_drain_cli_pipe,
+                args=(process.stdout, buffers[0], failures, done[0], CLI_STDOUT_LIMIT, "stdout"),
+                daemon=True,
+            )
+        )
+        threads.append(
+            threading.Thread(
+                target=_drain_cli_pipe,
+                args=(process.stderr, buffers[1], failures, done[1], CLI_STDERR_LIMIT, "stderr"),
+                daemon=True,
+            )
+        )
+        threads.append(
+            threading.Thread(
+                target=_feed_cli_pipe,
+                args=(process.stdin, encoded_input, failures, done[2]),
+                daemon=True,
+            )
+        )
         for thread in threads:
             thread.start()
         _wait_for_cli(process, failures, done, command, timeout, deadline)
