@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Count a dashboard candidate selection only when its asset still has the candidate and usable published text.
+
 - Retry failed candidate inventory reads on the next dashboard status refresh and report the read error.
 
 - Refresh dashboard status from the current workspace state so external selections appear without a restart.

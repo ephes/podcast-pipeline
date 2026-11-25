@@ -138,11 +138,12 @@ class DashboardContext:
             chunk_count = read_published_chunk_count(self.layout)
             if chunk_count is None:
                 chunk_count = _count_chunk_entries(self.layout.transcript_chunks_dir)
+            snapshot = self._status_snapshot(chunk_count, ws, candidates)
         with self.lock:
             if self._workspace_state is not None and self._workspace_state != ws:
                 self._workspace_state = None
                 self._candidates_by_asset = None
-            return self._status_snapshot(chunk_count, ws, candidates)
+        return snapshot
 
     def _status_snapshot(
         self, chunk_count: int | None, ws: EpisodeWorkspace, candidates: dict[str, list[Candidate]]
@@ -156,14 +157,16 @@ class DashboardContext:
         candidate_assets = len(candidates)
         pickable = self._pickable_assets(candidates, ws)
 
-        assets_by_id = {asset.asset_id: asset for asset in ws.assets}
+        selected_ids = {
+            asset.asset_id: asset.selected_candidate_id
+            for asset in ws.assets
+            if asset.selected_candidate_id is not None
+        }
+        asset_ids = pickable.keys() | selected_ids.keys()
         selected_count = sum(
             1
-            for asset_id in pickable
-            if self._is_asset_selected(
-                asset_id,
-                assets_by_id[asset_id].selected_candidate_id if asset_id in assets_by_id else None,
-            )
+            for asset_id in asset_ids
+            if self._is_asset_selected(asset_id, selected_ids.get(asset_id), candidates.get(asset_id, []))
         )
 
         payload = StatusOut(
@@ -179,7 +182,7 @@ class DashboardContext:
                 candidates=candidate_count,
                 candidate_assets=candidate_assets,
                 selected=selected_count,
-                total_assets=len(pickable),
+                total_assets=len(asset_ids),
             ),
         )
         return payload.model_dump(mode="json")
@@ -567,9 +570,11 @@ class DashboardContext:
             return text.replace("\r\n", "\n").replace("\r", "\n")
         return None
 
-    def _is_asset_selected(self, asset_id: str, selected_candidate_id: UUID | None) -> bool:
-        if selected_candidate_id is not None:
-            return True
+    def _is_asset_selected(
+        self, asset_id: str, selected_candidate_id: UUID | None, candidates: list[Candidate]
+    ) -> bool:
+        if selected_candidate_id is not None and find_candidate_by_id(candidates, selected_candidate_id) is None:
+            return False
         selected_text = self._read_selected_text(asset_id)
         if _is_tag_asset(asset_id):
             return bool(parse_tag_list(selected_text))

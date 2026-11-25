@@ -46,6 +46,24 @@ def test_status_retries_rejected_candidate_inventory(ctx: context.DashboardConte
     assert len(ctx.get_assets_json()) == 1
 
 
+@pytest.mark.parametrize("missing", ["candidate", "output"])
+def test_status_requires_selected_candidate_and_output(ctx: context.DashboardContext, missing: str) -> None:
+    candidate = Candidate(asset_id="description", content="Synthetic description")
+    ctx.store.write_candidate(candidate)
+    assert ctx.select_candidate(candidate.asset_id, str(candidate.candidate_id)) is None
+    assert ctx.get_status_json()["stages"]["selected"] == 1
+
+    if missing == "candidate":
+        ctx.store.delete_candidate_files(candidate.asset_id, candidate.candidate_id)
+        ctx.store.write_candidate(candidate.model_copy(update={"asset_id": "shownotes"}))
+    else:
+        ctx.store.clear_selected_text(candidate.asset_id)
+
+    stages = ctx.get_status_json()["stages"]
+    assert stages["selected"] == 0
+    assert stages["total_assets"] == (2 if missing == "candidate" else 1)
+
+
 def test_status_bounds_chunk_directory_entries(ctx: context.DashboardContext, monkeypatch: pytest.MonkeyPatch) -> None:
     directory = ctx.layout.transcript_chunks_dir
     directory.mkdir(parents=True)

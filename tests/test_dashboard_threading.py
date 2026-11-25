@@ -132,7 +132,7 @@ def test_slow_storage_allows_other_requests(
     entered, release, shutdown = threading.Event(), threading.Event(), threading.Event()
 
     def slow(*args: Any) -> Any:
-        assert ctx.lock.locked()
+        assert ctx.lock.locked() == (operation != "_status_snapshot")
         entered.set()
         assert release.wait(3)
         return result
@@ -159,8 +159,11 @@ def test_slow_storage_allows_other_requests(
                 with pytest.raises(TimeoutError):
                     await asyncio.wait_for(client.get("/api/status"), 0.05)
                 assert (await asyncio.wait_for(client.get("/"), 0.5)).status_code == 200
-                assert not done.done()
-                assert not shutdown.is_set()
+                if operation == "_status_snapshot":
+                    assert (await asyncio.wait_for(done, 0.5)).status_code == 200
+                else:
+                    assert not done.done()
+                    assert not shutdown.is_set()
                 assert time.monotonic() - started < 1
                 assert not release.is_set()
             finally:

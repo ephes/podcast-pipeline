@@ -161,8 +161,8 @@ Both local UIs admit an explicit Host port only as one to five ASCII decimal dig
 Malformed ports return the existing 403 Forbidden host response before reading a body, including
 oversized numbers, Unicode digits and out-of-range values. IPv4/IPv6 loopback hosts remain supported.
 Workspace reads/writes, job admission and context-lock acquisition run in Starlette's worker pool.
-Snapshots are serialized or copied under that same lock; HTTP/SSE sends and waits happen after it is
-released. A slow workspace operation or a worker-held lock can delay snapshots and the interactive
+Status reads workspace state, inventory and selected files under the publication lock. Job snapshots
+are copied under the context lock. HTTP/SSE sends and waits happen after those locks are released. A slow workspace operation or a worker-held lock can delay snapshots and the interactive
 shutdown check while the event loop remains responsive. Initialization and ingest use this boundary too.
 
 ### Concurrent selections and RSS imports
