@@ -179,6 +179,7 @@ class _DashboardApi:
     ) -> None:
         self.ctx = ctx
         self.on_done = on_done
+        self._shutdown_requested = False
 
     async def _parse_json_object(self, request: Request) -> tuple[dict[str, Any] | None, Response | None]:
         raw = bytearray()
@@ -216,8 +217,10 @@ class _DashboardApi:
             return operation(*args, **kwargs)
 
     def _start_job(self, stage: str, target: Callable[..., Any], *args: Any) -> Response:
-        """Start ``target`` unless a conflicting dashboard job is running."""
+        """Start ``target`` while the dashboard is open and the stage is available."""
         with self.ctx.lock:
+            if self._shutdown_requested:
+                return JSONResponse({"error": "Dashboard is shutting down"}, status_code=503)
             running = self.ctx.running_job(stage)
             if running is not None:
                 return JSONResponse(
@@ -237,6 +240,10 @@ class _DashboardApi:
                     target(ctx, job, *args)
                 finally:
                     del _thread_local.capture_owner
+                    with ctx.lock:
+                        if job.status == "running":
+                            job.error = "Background worker exited unexpectedly"
+                            ctx.finish_job(job, "failed")
 
             try:
                 _start_daemon_thread(run_job, self.ctx, job, *args)
@@ -642,10 +649,28 @@ class _DashboardApi:
             },
         )
 
-    async def handle_done(self, _request: Request) -> Response:
-        if self.on_done is not None:
-            _start_daemon_thread(self.on_done)
-        return JSONResponse({"ok": True})
+    def handle_done(self, _request: Request) -> Response:
+        with self.ctx.lock:
+            if self._shutdown_requested:
+                return JSONResponse({"ok": True})
+            running = next((job for job in self.ctx.jobs.values() if job.status == "running"), None)
+            if running is not None:
+                return JSONResponse(
+                    {
+                        "error": (
+                            f"A {running.stage} job is still running. Wait for it to finish, then close the dashboard."
+                        ),
+                        "job_id": running.job_id,
+                    },
+                    status_code=409,
+                )
+            if self.on_done is not None:
+                try:
+                    _start_daemon_thread(self.on_done)
+                except Exception:
+                    return JSONResponse({"error": "Could not shut down dashboard. Try again."}, status_code=503)
+            self._shutdown_requested = True
+            return JSONResponse({"ok": True})
 
 
 def _selected_artifact_error(_request: Request, exc: Exception) -> Response:

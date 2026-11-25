@@ -566,6 +566,13 @@ Auphonic production):
   `X-Content-Type-Options: nosniff` and `Referrer-Policy: no-referrer`, so other sites cannot embed the UI in a
   frame and trick clicks on its buttons.
 
+The dashboard's **Close** button keeps the dashboard open and shows the active stage while a background job
+is running. Job progress remains visible. After the job completes or fails, click **Close** again.
+If the dashboard server has already stopped (for example after Ctrl-C), **Close** shows the closed page
+instead of an error.
+`POST /api/done` returns 409 with the active job ID in `job_id` while a job is running. Once it accepts
+shutdown, new background job requests receive 503.
+
 The standalone picker reads authoritative selections and refreshed candidate membership whenever it loads
 assets. Custom drafts survive these refreshes and asset switches in the current page. A save acknowledges
 only the submitted revision; text typed while saving stays unsaved. Candidate and custom selections admit
@@ -690,6 +697,8 @@ local host/origin checks run before body consumption. Body acquisition has one m
 deadline across all chunks (408 on expiry); disconnects stop reading with 400. Neither starts work or
 changes workspace state, and external request cancellation propagates. A worker launch failure records a failed job,
 returns 503 and permits immediate retry while preserving single-flight admission.
+If a worker exits without recording an outcome, job polling and streaming report a failed job
+with the message `Background worker exited unexpectedly`. The stage can then be retried.
 Each job retains the latest 128 KiB / 1024 progress entries; oversized writes retain a UTF-8 tail.
 JSON/SSE responses include an earlier-progress-truncated notice when history was evicted.
 SSE progress IDs increase monotonically and support `Last-Event-ID` reconnects across eviction.
@@ -700,8 +709,8 @@ Malformed ports return the existing 403 Forbidden host response before reading a
 oversized numbers, Unicode digits and out-of-range values. IPv4/IPv6 loopback hosts remain supported.
 Workspace reads/writes, job admission and context-lock acquisition run in Starlette's worker pool.
 Snapshots are serialized or copied under that same lock; HTTP/SSE sends and waits happen after it is
-released. A slow workspace operation or a worker-held lock can delay dependent snapshots, while the
-event loop and Done/shutdown endpoint remain responsive. Initialization and ingest use this boundary too.
+released. A slow workspace operation or a worker-held lock can delay snapshots and the interactive
+shutdown check while the event loop remains responsive. Initialization and ingest use this boundary too.
 
 ### Concurrent selections and RSS imports
 

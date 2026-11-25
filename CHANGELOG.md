@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Keep the dashboard open when Close is requested during an active job, and stop admitting new jobs once shutdown is accepted. Close still finishes when the server has already stopped.
+
+- Mark dashboard jobs failed when their workers exit without recording an outcome, allowing retry.
+
 - Generate asset candidates from the exact summary JSON snapshot verified on resume, and regenerate when that snapshot is invalid.
 
 - Bound draft resume verification of summary manifests and artifacts, and regenerate incomplete summaries when a file fails admission.
