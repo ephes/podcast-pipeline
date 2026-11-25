@@ -9,13 +9,11 @@ from podcast_pipeline.asset_candidates_stub import (
     generate_draft_candidates,
     validate_candidate_count,
 )
-from podcast_pipeline.control_json import load_control_json
-from podcast_pipeline.domain.intermediate_formats import EpisodeSummary
 from podcast_pipeline.file_inputs import read_regular_utf8, read_workspace_utf8
+from podcast_pipeline.summary_inputs import EpisodeSummaryInputError, load_workspace_episode_summary
 from podcast_pipeline.workspace_store import EpisodeWorkspaceStore
 
 MAX_CHAPTER_BYTES = 1024 * 1024
-MAX_SUMMARY_BYTES = 1024 * 1024
 MAX_CHAPTER_LINES = 200
 
 
@@ -63,24 +61,12 @@ def run_draft_candidates(
 ) -> None:
     validate_candidate_count(candidates_per_asset)
     store = EpisodeWorkspaceStore(workspace)
-    summary_path = store.layout.episode_summary_json_path()
-    if not summary_path.exists():
-        raise typer.BadParameter(f"Missing episode summary JSON: {summary_path}")
-
     try:
-        summary_text = read_workspace_utf8(
-            store.layout.root,
-            summary_path.relative_to(store.layout.root),
-            max_bytes=MAX_SUMMARY_BYTES,
-        )
-    except (OSError, ValueError):
-        raise typer.BadParameter(
-            "Invalid summary: require coherent regular workspace UTF-8 input within 1 MiB"
-        ) from None
-    try:
-        episode_summary = EpisodeSummary.model_validate(load_control_json(summary_text))
-    except ValueError:
-        raise typer.BadParameter("Invalid or excessive summary JSON evidence") from None
+        episode_summary = load_workspace_episode_summary(store.layout)
+    except FileNotFoundError:
+        raise typer.BadParameter(f"Missing episode summary JSON: {store.layout.episode_summary_json_path()}") from None
+    except EpisodeSummaryInputError as exc:
+        raise typer.BadParameter(str(exc)) from None
     chapters_lines = _load_chapters(store=store, chapters=chapters)
 
     assets = generate_draft_candidates(

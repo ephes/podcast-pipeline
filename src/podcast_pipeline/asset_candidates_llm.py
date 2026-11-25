@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
@@ -13,6 +12,7 @@ from podcast_pipeline.drafter_runner import DrafterRunner  # noqa: TC001
 from podcast_pipeline.file_inputs import read_workspace_utf8
 from podcast_pipeline.pick_core import custom_selection_format, normalize_custom_selection_text
 from podcast_pipeline.prompting import PromptRenderer, render_asset_candidates_prompt
+from podcast_pipeline.summary_inputs import EpisodeSummaryInputError, load_workspace_episode_summary
 from podcast_pipeline.tag_assets import TAG_ASSET_IDS, TagSettings, postprocess_tag_content, tag_few_shots
 
 _TAG_RULES = (
@@ -174,13 +174,12 @@ def _load_workspace_context(
     store = EpisodeWorkspaceStore(workspace)
     layout = store.layout
 
-    summary_path = layout.episode_summary_json_path()
-    if not summary_path.exists():
-        raise RuntimeError("Episode summary not found. Run the draft pipeline first.")
-
-    episode_summary = EpisodeSummary.model_validate(
-        json.loads(summary_path.read_text(encoding="utf-8")),
-    )
+    try:
+        episode_summary = load_workspace_episode_summary(layout)
+    except FileNotFoundError:
+        raise RuntimeError("Episode summary not found. Run the draft pipeline first.") from None
+    except EpisodeSummaryInputError as exc:
+        raise RuntimeError(str(exc)) from None
 
     episode_yaml = store.read_episode_yaml()
     chapters: list[str] = []

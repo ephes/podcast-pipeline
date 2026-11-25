@@ -306,7 +306,9 @@ class AuphonicClient:
                         for field, path in uploads
                     ]
                     self._request_json("POST", f"{production_url}/upload.json", files=files)
-            return _parse_production(self._request_json("POST", f"{production_url}/start.json"))
+            return _parse_production(
+                self._request_json("POST", f"{production_url}/start.json"), expected_uuid=created.uuid
+            )
         except (AuphonicApiError, OSError) as exc:
             raise AuphonicApiError(
                 f"Auphonic production {created.uuid} was created but starting it failed: {exc}. "
@@ -390,7 +392,9 @@ class AuphonicClient:
         if before_update is not None:
             before_update()
         production_url = f"{self._base_url}/production/{stored.uuid}"
-        updated = _parse_production(self._request_json("POST", f"{production_url}.json", json=body))
+        updated = _parse_production(
+            self._request_json("POST", f"{production_url}.json", json=body), expected_uuid=stored.uuid
+        )
         for track in track_updates:
             track_url = f"{production_url}/multi_input_files/{quote(str(track['id']), safe='')}.json"
             self._request_json("POST", track_url, json=track)
@@ -398,7 +402,9 @@ class AuphonicClient:
             updated = self.fetch_production(stored.uuid)
         _check_updated(updated, payload)
         try:
-            return _parse_production(self._request_json("POST", f"{production_url}/start.json"))
+            return _parse_production(
+                self._request_json("POST", f"{production_url}/start.json"), expected_uuid=stored.uuid
+            )
         except AuphonicApiError as exc:
             raise AuphonicApiError(
                 f"Auphonic production {stored.uuid} was updated but starting it failed: {exc}. "
@@ -412,7 +418,7 @@ class AuphonicClient:
             response = self._request_json("GET", url)
         else:
             response = asyncio.run(self._fetch_with_deadline(url, timeout_seconds))
-        return _parse_production(response)
+        return _parse_production(response, expected_uuid=uuid)
 
     async def _fetch_with_deadline(self, url: str, seconds: float) -> dict[str, Any]:
         assert self._transport is None or isinstance(self._transport, httpx.AsyncBaseTransport)
@@ -771,11 +777,15 @@ def _extract_data(payload: Mapping[str, Any]) -> object:
     return payload
 
 
-def _parse_production(payload: Mapping[str, Any]) -> AuphonicProduction:
+def _parse_production(payload: Mapping[str, Any], *, expected_uuid: str | None = None) -> AuphonicProduction:
     data = _extract_data(payload)
     if not isinstance(data, Mapping):
         raise AuphonicApiError("Auphonic API response missing production data.")
     uuid = _required_str(data.get("uuid"), key="uuid")
+    if expected_uuid is not None and uuid != expected_uuid:
+        raise AuphonicApiError(
+            "Auphonic production UUID mismatch: response does not identify the requested production."
+        )
     status = data.get("status")
     status_string = _optional_str(
         data.get("status_string") or data.get("status_text") or data.get("status_label"),

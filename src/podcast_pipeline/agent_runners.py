@@ -15,6 +15,8 @@ from pathlib import Path
 from typing import Any, BinaryIO
 from uuid import UUID, uuid5
 
+import typer
+
 from podcast_pipeline.agent_cli_config import AgentCliBundle, AgentCliConfig, resolve_agent_timeout
 from podcast_pipeline.control_json import load_control_json
 from podcast_pipeline.domain.models import Candidate, ProvenanceRef, ReviewIteration
@@ -31,6 +33,7 @@ from podcast_pipeline.prompting import (
     render_reviewer_prompt,
 )
 from podcast_pipeline.review_loop_engine import CreatorInput, CreatorOutput, ReviewerInput
+from podcast_pipeline.summary_inputs import EpisodeSummaryInputError, load_workspace_episode_summary
 from podcast_pipeline.workspace_store import EpisodeWorkspaceLayout, EpisodeWorkspaceStore, atomic_write_text
 
 _FAKE_UUID_NAMESPACE = UUID("00000000-0000-0000-0000-000000000000")
@@ -803,22 +806,15 @@ class ClaudeCodeReviewerRunner:
 
 
 def _read_episode_summary(layout: EpisodeWorkspaceLayout) -> tuple[str | None, list[str] | None]:
-    """Read summary_markdown and key_points from the episode summary JSON."""
-    summary_path = layout.episode_summary_json_path()
-    if not summary_path.exists():
-        return None, None
+    """Load optional review context from an admitted episode summary."""
     try:
-        raw = json.loads(summary_path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError, UnicodeDecodeError):
+        summary = load_workspace_episode_summary(layout)
+    except FileNotFoundError:
         return None, None
-    if not isinstance(raw, dict):
+    except EpisodeSummaryInputError as exc:
+        typer.echo(f"Review: optional episode summary omitted ({exc}).", err=True)
         return None, None
-    summary = raw.get("summary_markdown")
-    if not isinstance(summary, str):
-        summary = None
-    kp = raw.get("key_points")
-    key_points = [str(p) for p in kp] if isinstance(kp, list) else None
-    return summary, key_points
+    return summary.summary_markdown, summary.key_points
 
 
 def _read_input_file(root: Path, inputs: dict[str, Any], key: str) -> str | None:

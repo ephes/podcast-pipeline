@@ -1,16 +1,19 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
+from unittest.mock import Mock
 from uuid import uuid4
 
 import pytest
 
-from podcast_pipeline.asset_candidates_llm import generate_draft_candidates_llm
+from podcast_pipeline.asset_candidates_llm import generate_draft_candidates_llm, generate_single_asset_candidates_llm
 from podcast_pipeline.domain.intermediate_formats import EpisodeSummary
 from podcast_pipeline.domain.models import AssetKind
 from podcast_pipeline.prompting import PromptRenderer, default_prompt_registry
 from podcast_pipeline.tag_assets import TAG_ASSET_IDS, render_tags
+from podcast_pipeline.workspace_store import EpisodeWorkspaceStore
 
 
 class FakeDrafterRunner:
@@ -271,3 +274,52 @@ def test_drafting_owns_model_candidate_identity_and_origin() -> None:
         if asset_id in TAG_ASSET_IDS:
             expected = [render_tags(asset_id, [value]) for value in expected]
         assert [c.content for c in alternatives] == expected
+
+
+@pytest.mark.parametrize(
+    ("summary_file", "error"),
+    [
+        ("valid", None),
+        ("missing", "Episode summary not found. Run the draft pipeline first."),
+        ("oversized", "Invalid summary"),
+        ("symlink", "Invalid summary"),
+        ("duplicate", "Invalid or excessive summary JSON evidence"),
+    ],
+)
+def test_llm_regeneration_admits_required_summary_before_model_call(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, summary_file: str, error: str | None
+) -> None:
+    monkeypatch.setenv("PODCAST_PIPELINE_CONFIG", str(tmp_path / "missing-config.yaml"))
+    store = EpisodeWorkspaceStore(tmp_path / "episode")
+    store.write_episode_yaml({"episode_id": "synthetic"})
+    summary = store.layout.episode_summary_json_path()
+    summary.parent.mkdir(parents=True)
+    text = '{"summary_markdown":"Synthetic summary"}'
+    if summary_file == "symlink":
+        outside = tmp_path / "outside.json"
+        outside.write_text(text, encoding="utf-8")
+        summary.symlink_to(outside)
+    elif summary_file == "oversized":
+        summary.write_text(text + " " * (1024 * 1024), encoding="utf-8")
+    elif summary_file == "duplicate":
+        summary.write_text(
+            '{"summary_markdown":"First summary","summary_markdown":"Synthetic summary"}', encoding="utf-8"
+        )
+    elif summary_file == "valid":
+        summary.write_text(text, encoding="utf-8")
+
+    runner = Mock(return_value={"candidates": [{"content": "Synthetic copy"}]})
+    monkeypatch.setattr("podcast_pipeline.drafter_runner.DrafterCliRunner", Mock(return_value=Mock(run=runner)))
+    if error is not None:
+        with pytest.raises(RuntimeError, match=error):
+            generate_single_asset_candidates_llm(
+                workspace=store.layout.root, asset_id="description", candidates_per_asset=1
+            )
+        runner.assert_not_called()
+    else:
+        candidates = generate_single_asset_candidates_llm(
+            workspace=store.layout.root, asset_id="description", candidates_per_asset=1
+        )
+        assert candidates[0].content == "Synthetic copy"
+        runner.assert_called_once()
+        assert "Synthetic summary" in runner.call_args.args[0]
