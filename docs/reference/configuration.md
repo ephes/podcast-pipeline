@@ -409,6 +409,11 @@ object ID and the fields to merge into `cms/draft.json`. Repair write access and
 preserving the previous state and its other fields. The command stops immediately without retrying the remote
 write. Malformed successful API identities also stop the run; check Wagtail for the remote outcome before retrying.
 
+When using the editor transcript endpoint, the command clears `transcript_pending` after receiving
+a matching episode ID and an active generation receipt. It reports whether generation was newly enqueued
+or already active. If a successful response lacks a valid receipt, the request remains pending in
+`cms/draft.json`. Check the episode's transcript in Wagtail before retrying.
+
 To reset deliberately, move `cms/draft.json` to a backup after recording any unattached Audio ID for manual
 cleanup/recovery. Reset abandons automatic reuse of those IDs. Alternatively clear both IDs to null when
 abandoning them; a stale parent with no IDs is harmless. A missing stored episode under a matching recorded

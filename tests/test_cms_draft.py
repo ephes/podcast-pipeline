@@ -116,7 +116,14 @@ class FakeCast:
             episode.update(live=True, status="live")
             return httpx.Response(200, json={**episode, "public_url": "/podcast/" + episode["slug"] + "/"})
         if action == "transcript/":
-            return httpx.Response(202, json={"status": "queued"})
+            return httpx.Response(
+                202,
+                json={
+                    "episode": {"id": episode_id},
+                    "enqueued": True,
+                    "generation": {"status": "queued", "active": True},
+                },
+            )
         if request.method == "PATCH":
             return self._patch(episode, request)
         return httpx.Response(200, json=self._episode_json(episode))
@@ -771,6 +778,67 @@ def test_uses_future_endpoints_when_offered(
     assert "Set contributors: jochen (host), dominik (host)." in out
     assert "Transcript generation enqueued" in out
     assert "No manual steps remain." in out
+
+
+@pytest.mark.parametrize(
+    ("response_body", "message"),
+    [
+        pytest.param({}, "Transcript generation enqueued", id="queued"),
+        pytest.param(
+            {"enqueued": False, "generation": {"status": "running", "active": True}},
+            "Transcript generation already active",
+            id="already-active",
+        ),
+        pytest.param(None, None, id="empty"),
+        pytest.param([], None, id="non-object"),
+        pytest.param({"episode": {"id": 142}}, None, id="wrong-episode"),
+        pytest.param({"generation": None}, None, id="missing-generation"),
+        pytest.param({"generation": {"status": "failed", "active": False}}, None, id="inactive"),
+        pytest.param({"enqueued": 1}, None, id="non-boolean"),
+    ],
+)
+@pytest.mark.parametrize("reused", [False, True])
+def test_transcript_checkpoint_requires_generation_receipt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    fake: FakeCast,
+    capsys: pytest.CaptureFixture[str],
+    response_body: Any,
+    message: str | None,
+    reused: bool,
+) -> None:
+    workspace = _workspace(tmp_path, extra_formats=False)
+    _config(tmp_path, monkeypatch)
+    fake.supports_contributors = True
+    fake.accept_enabled_diarization = True
+    path = "/api/editor/episodes/141/transcript/"
+    if reused:
+        _run(workspace)
+        capsys.readouterr()
+    fake.options_allow[path] = "POST"
+    original = fake.handle
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        response = original(request)
+        if request.method == "POST" and request.url.path == path:
+            if response_body is None:
+                return httpx.Response(204)
+            body = {**response.json(), **response_body} if isinstance(response_body, dict) else response_body
+            return httpx.Response(202, json=body)
+        return response
+
+    monkeypatch.setattr(fake, "handle", handle)
+    if message is None:
+        with pytest.raises(typer.BadParameter, match="check Wagtail for the remote outcome before retrying"):
+            _run(workspace, transcript=reused)
+    else:
+        _run(workspace, transcript=reused)
+    out = capsys.readouterr().out
+    assert ("Transcript generation enqueued" in out) is (message == "Transcript generation enqueued")
+    assert ("Transcript generation already active" in out) is (message == "Transcript generation already active")
+    assert len(fake.calls("POST", path)) == 1
+    state = json.loads((workspace / "cms/draft.json").read_text(encoding="utf-8"))
+    assert state["transcript_pending"] is (message is None)
 
 
 def test_sets_diarization_after_upload_when_audio_patch_exists(

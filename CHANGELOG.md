@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Require a matching generation receipt for automatic CMS transcript requests and report already-active jobs separately.
+
 - Reject NaN and infinite Auphonic track offsets in episode YAML during production planning.
 
 - Count only regular MP3 files when selecting fallback audio for a CMS draft.
