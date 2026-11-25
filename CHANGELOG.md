@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Reject nonfinite numbers in review protocol JSON before resuming or publishing a checkpoint.
+
+- Require a positive integer review iteration limit before running callbacks or resuming saved state.
+
 - Check Auphonic downloads against their declared Content-Length before staging, preserving existing outputs on mismatch.
 
 - Refuse nonregular review protocol state files before calling either agent.

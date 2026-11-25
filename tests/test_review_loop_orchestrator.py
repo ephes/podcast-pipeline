@@ -8,8 +8,8 @@ from pathlib import Path
 import pytest
 
 from podcast_pipeline.agent_runners import FakeCreatorRunner, FakeReviewerRunner
-from podcast_pipeline.domain.models import Candidate, EpisodeWorkspace, ReviewVerdict, TextFormat
-from podcast_pipeline.review_loop_engine import LoopOutcome, LoopProtocolError
+from podcast_pipeline.domain.models import Candidate, EpisodeWorkspace, ProvenanceRef, ReviewVerdict, TextFormat
+from podcast_pipeline.review_loop_engine import CreatorOutput, LoopOutcome, LoopProtocolError
 from podcast_pipeline.review_loop_orchestrator import run_review_loop_orchestrator
 from podcast_pipeline.workspace_store import EpisodeWorkspaceStore
 
@@ -236,6 +236,59 @@ def test_malformed_protocol_fails_before_callbacks_or_writes(tmp_path: Path) -> 
             workspace=tmp_path, asset_id="description", max_iterations=3, creator=creator, reviewer=reviewer
         )
     assert not creator.calls and not reviewer.calls
+    assert store.layout.state_json.read_bytes() == before
+
+
+@pytest.mark.parametrize("token", ["NaN", "Infinity", "-Infinity", "1e999"])
+def test_nonfinite_saved_protocol_fails_before_callbacks(tmp_path: Path, token: str) -> None:
+    store = _init_workspace(tmp_path)
+    candidate = Candidate(
+        asset_id="description",
+        content="synthetic copy",
+        provenance=[ProvenanceRef(kind="test", ref="synthetic", metadata={"score": "SCORE_MARKER"})],
+    )
+    reviewer = FakeReviewerRunner(layout=store.layout, reviewer="synthetic", replies=[{"verdict": "ok"}])
+    run_review_loop_orchestrator(
+        workspace=tmp_path,
+        asset_id="description",
+        max_iterations=1,
+        creator=lambda _: CreatorOutput(candidate=candidate, done=True),
+        reviewer=reviewer,
+    )
+    path = store.layout.protocol_state_json_path("description")
+    path.write_text(path.read_text(encoding="utf-8").replace('"SCORE_MARKER"', token), encoding="utf-8")
+    before = path.read_bytes()
+    creator = FakeCreatorRunner(layout=store.layout, replies=[])
+    reviewer = FakeReviewerRunner(layout=store.layout, reviewer="synthetic", replies=[])
+    with pytest.raises(LoopProtocolError, match="restore or repair"):
+        run_review_loop_orchestrator(
+            workspace=tmp_path, asset_id="description", max_iterations=1, creator=creator, reviewer=reviewer
+        )
+    assert not creator.calls and not reviewer.calls
+    assert path.read_bytes() == before
+
+
+@pytest.mark.parametrize("score", [float("nan"), float("inf"), float("-inf")], ids=["nan", "inf", "negative-inf"])
+def test_nonfinite_candidate_cannot_publish_checkpoint(tmp_path: Path, score: float) -> None:
+    store = _init_workspace(tmp_path)
+    candidate = Candidate(
+        asset_id="description",
+        content="synthetic copy",
+        provenance=[ProvenanceRef(kind="test", ref="synthetic", metadata={"metrics": [{"score": score}]})],
+    )
+    reviewer = FakeReviewerRunner(layout=store.layout, reviewer="synthetic", replies=[{"verdict": "ok"}])
+    before = store.layout.state_json.read_bytes()
+    with pytest.raises(LoopProtocolError, match="nonfinite"):
+        run_review_loop_orchestrator(
+            workspace=tmp_path,
+            asset_id="description",
+            max_iterations=1,
+            creator=lambda _: CreatorOutput(candidate=candidate, done=True),
+            reviewer=reviewer,
+        )
+    assert not store.layout.protocol_state_json_path("description").exists()
+    assert not store.layout.protocol_iteration_json_path("description", 1).exists()
+    assert not store.layout.candidate_json_path("description", candidate.candidate_id).exists()
     assert store.layout.state_json.read_bytes() == before
 
 

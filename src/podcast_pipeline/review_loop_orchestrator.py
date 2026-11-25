@@ -197,6 +197,8 @@ def run_review_loop_orchestrator(
         return output
 
     def checkpoint(state: LoopProtocolState, writes: tuple[ProtocolWrite, ...]) -> None:
+        marker = writes[-1]
+        marker_text = marker.dumps()
         # Publish dependencies first. The protocol state is the durable resume marker.
         _write_protocol_files(writes[:-1])
         try:
@@ -215,7 +217,7 @@ def run_review_loop_orchestrator(
             )
             _write_protocol_files((ProtocolWrite(protocol_path, conflicted.to_json_dict()),))
             raise
-        _write_protocol_files(writes[-1:])
+        atomic_write_text(marker.path, marker_text)
 
     protocol_state, _ = run_review_loop_engine(
         layout=layout,
