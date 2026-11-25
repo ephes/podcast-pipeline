@@ -503,3 +503,55 @@ def test_requested_chunk_configuration_controls_summary_reuse(
     assert all(("STALE" not in prompt) == bool(changes) for prompt in candidate_prompts)
     manifest = json.loads((store.layout.transcript_chunks_dir / "complete.json").read_text())
     assert manifest["config"] == original | changes
+
+
+@pytest.mark.parametrize("hosts", [["Host One", "Host Two"], None])
+def test_dashboard_summary_uses_same_host_context_as_cli(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, hosts: list[str] | None
+) -> None:
+    from podcast_pipeline import drafter_runner
+    from podcast_pipeline.dashboard_context import DashboardContext
+    from podcast_pipeline.entrypoints.dashboard_web import _run_summarize_job
+
+    transcript = _write_transcript_file(tmp_path)
+    workspace = tmp_path / "episode"
+    workspace.mkdir()
+    episode: dict[str, Any] = {"episode_id": "synthetic"}
+    if hosts is not None:
+        episode["hosts"] = hosts
+    EpisodeWorkspaceStore(workspace).write_episode_yaml(episode)
+
+    runner = _FakeRunner()
+    monkeypatch.setattr(drafter_runner, "DrafterCliRunner", lambda **kwargs: runner)
+    run_draft_pipeline(
+        dry_run=False,
+        workspace=workspace,
+        episode_id="synthetic",
+        transcript=transcript,
+        chapters=None,
+        candidates_per_asset=1,
+        chunker_config=ChunkerConfig(),
+        summarizer_config=StubSummarizerConfig(),
+        timeout_seconds=None,
+    )
+    cli_prompts = [p for p in runner.prompts if "Asset type:" not in p]
+    assert any("Transcript chunk:" in p for p in cli_prompts)
+    assert any("Chunk summaries" in p for p in cli_prompts)
+    if hosts is not None:
+        assert all(", ".join(hosts) in p for p in cli_prompts)
+    else:
+        assert all("The podcast hosts are:" not in p for p in cli_prompts)
+
+    runner.prompts.clear()
+    ctx = DashboardContext(workspace=workspace)
+    job = ctx.create_job("summarize")
+    _run_summarize_job(ctx, job)
+    assert job.status == "completed", job.error
+    assert runner.prompts == cli_prompts
+    if hosts is None:
+        ctx.layout.episode_yaml.unlink()
+        runner.prompts.clear()
+        job = ctx.create_job("summarize")
+        _run_summarize_job(ctx, job)
+        assert job.status == "completed", job.error
+        assert runner.prompts == cli_prompts

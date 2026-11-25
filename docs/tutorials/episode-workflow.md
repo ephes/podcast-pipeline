@@ -90,7 +90,8 @@ podcast draft \
 
 The `--host` flag is repeatable and persists host names to `episode.yaml`. On subsequent runs without `--host`, the
 stored names are reused automatically. Host names are injected into all LLM prompts (summarization and candidate
-generation) to prevent hallucinated speaker names.
+generation) to prevent hallucinated speaker names. The dashboard's Summarize action also uses the stored hosts
+in both the chunk and episode summary prompts.
 
 When the workspace already has `transcript/transcript.txt` from `podcast transcribe`, `podcast draft` reuses it. Pass
 `--transcript /path/to/file.txt` only when creating a new workspace from an external transcript or when you want to
@@ -99,7 +100,10 @@ replace the transcript currently stored in the workspace.
 Outputs:
 
 - `transcript/` contains the ingested transcript + chunk files.
-- `summaries/` contains chunk summaries and the episode summary.
+- `summaries/` contains chunk summaries and the episode summary. Before publishing a completed episode summary,
+  the pipeline checks the serialized UTF-8 sizes of the JSON (1 MiB), Markdown (32 MiB), and HTML (64 MiB)
+  artifacts. If an artifact exceeds its limit, the error names the file and the previous completed summary
+  stays available.
 - `copy/candidates/<asset_id>/` contains candidate JSON + Markdown + HTML files.
 
 Tag assets (`cms_tags`, `audio_tags`, `itunes_keywords`) aim for 6-10 specific terms. Generated tag candidates are

@@ -147,15 +147,6 @@ def _ingest_transcript(*, store: EpisodeWorkspaceStore, transcript: Path) -> Non
         episode_yaml["inputs"] = inputs
 
 
-def _read_hosts_from_yaml(store: EpisodeWorkspaceStore) -> list[str] | None:
-    """Read hosts list from episode.yaml."""
-    episode_yaml = store.read_episode_yaml()
-    raw = episode_yaml.get("hosts")
-    if isinstance(raw, list) and all(isinstance(h, str) for h in raw) and raw:
-        return raw
-    return None
-
-
 def _run_llm_pipeline(
     *,
     store: EpisodeWorkspaceStore,
@@ -175,7 +166,7 @@ def _run_llm_pipeline(
 
     # Fall back to episode.yaml hosts if CLI didn't provide them
     if hosts is None:
-        hosts = _read_hosts_from_yaml(store)
+        hosts = store.read_episode_hosts()
 
     workspace = store.layout.root
 

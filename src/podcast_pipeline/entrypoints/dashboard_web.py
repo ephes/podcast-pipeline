@@ -978,6 +978,7 @@ def _run_summarize_job(
                 chunk_ids=chunk_ids,
                 runner=runner,
                 renderer=renderer,
+                hosts=ctx.store.read_episode_hosts(),
             )
         finally:
             _thread_local.capture = None

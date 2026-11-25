@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Use the workspace hosts in dashboard chunk and episode summary prompts.
+
+- Refuse oversized episode summary artifacts before replacing the last completed summary.
+
 - Acknowledge a saved standalone picker refinement with a plain-text preview if Markdown preview rendering fails.
 
 - Finish standalone picker shutdown if sending the Done acknowledgment times out.

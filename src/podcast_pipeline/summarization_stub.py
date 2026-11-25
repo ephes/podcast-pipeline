@@ -6,6 +6,7 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
+from podcast_pipeline import summary_inputs
 from podcast_pipeline.control_json import load_control_json
 from podcast_pipeline.domain.intermediate_formats import ChunkSummary, EpisodeSummary
 from podcast_pipeline.domain.models import ProvenanceRef
@@ -24,7 +25,6 @@ class StubSummarizerConfig:
 _TOKEN_RE = re.compile(r"[A-Za-z][A-Za-z0-9'_-]+")
 _SUMMARY_MARKER_BYTES = 4096
 _SUMMARY_MARKDOWN_BYTES = 32 * 1024 * 1024
-_SUMMARY_JSON_BYTES = 64 * 1024 * 1024
 _SUMMARY_HTML_BYTES = 64 * 1024 * 1024
 
 
@@ -200,6 +200,13 @@ def _wrap_html_document(fragment: str) -> str:
     )
 
 
+def _summary_artifact_digest(path: Path, text: str, *, max_bytes: int) -> str:
+    data = text.encode("utf-8")
+    if len(data) > max_bytes:
+        raise ValueError(f"{path.name} exceeds the {max_bytes}-byte summary artifact limit")
+    return hashlib.sha256(data).hexdigest()
+
+
 def write_episode_summary_artifacts(
     *,
     layout: EpisodeWorkspaceLayout,
@@ -209,23 +216,29 @@ def write_episode_summary_artifacts(
     md_path = layout.episode_summary_markdown_path()
     html_path = layout.episode_summary_html_path()
 
-    json_path.parent.mkdir(parents=True, exist_ok=True)
-
     dumped = json.dumps(episode_summary.model_dump(mode="json"), indent=2, sort_keys=True) + "\n"
 
     md_text = episode_summary.summary_markdown
     if not md_text.endswith("\n"):
         md_text += "\n"
 
+    json_digest = _summary_artifact_digest(json_path, dumped, max_bytes=summary_inputs.MAX_SUMMARY_BYTES)
+    try:
+        load_control_json(dumped)
+    except ValueError:
+        raise ValueError(f"{json_path.name} exceeds the summary JSON admission limits or is invalid") from None
+    md_digest = _summary_artifact_digest(md_path, md_text, max_bytes=_SUMMARY_MARKDOWN_BYTES)
     html_text = _wrap_html_document(markdown_to_deterministic_html(md_text))
+    html_digest = _summary_artifact_digest(html_path, html_text, max_bytes=_SUMMARY_HTML_BYTES)
     files = {json_path: dumped, md_path: md_text, html_path: html_text}
     marker = layout.episode_summary_dir / "complete.json"
     chunk_manifest = layout.transcript_chunks_dir / "complete.json"
     manifest = {
         "version": 1,
         "chunks_sha256": hashlib.sha256(chunk_manifest.read_bytes()).hexdigest() if chunk_manifest.exists() else None,
-        "files": {path.name: hashlib.sha256(text.encode("utf-8")).hexdigest() for path, text in files.items()},
+        "files": {json_path.name: json_digest, md_path.name: md_digest, html_path.name: html_digest},
     }
+    json_path.parent.mkdir(parents=True, exist_ok=True)
     with preserve_files([*files, marker]):
         for path, text in files.items():
             atomic_write_text(path, text)
@@ -253,13 +266,13 @@ def load_complete_episode_summary(layout: EpisodeWorkspaceLayout) -> EpisodeSumm
         )
         if marker.get("chunks_sha256") != chunks_digest:
             return None
-        summary_json = read_regular_bytes(json_path, max_bytes=_SUMMARY_JSON_BYTES)
+        summary_json = read_regular_bytes(json_path, max_bytes=summary_inputs.MAX_SUMMARY_BYTES)
         if files[json_path.name] != hashlib.sha256(summary_json).hexdigest():
             return None
         for path, limit in ((markdown_path, _SUMMARY_MARKDOWN_BYTES), (html_path, _SUMMARY_HTML_BYTES)):
             if files[path.name] != sha256_regular_file(path, max_bytes=limit):
                 return None
-        return EpisodeSummary.model_validate(json.loads(summary_json.decode("utf-8")))
+        return EpisodeSummary.model_validate(load_control_json(summary_json))
     except (OSError, ValueError, RecursionError):
         return None
 

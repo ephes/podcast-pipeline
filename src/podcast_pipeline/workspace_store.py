@@ -478,6 +478,16 @@ class EpisodeWorkspaceStore:
         assert episode is not None
         return episode.to_mapping(exclude_unset=True)
 
+    def read_episode_hosts(self) -> list[str] | None:
+        """Read the workspace's named hosts for summary prompts."""
+        try:
+            raw = self.read_episode_yaml().get("hosts")
+        except FileNotFoundError:
+            return None
+        if isinstance(raw, list) and raw and all(isinstance(host, str) for host in raw):
+            return raw
+        return None
+
     def read_episode_yaml_with_revision(self) -> tuple[dict[str, Any], str]:
         with self._state_lock():
             data = self.read_episode_yaml()
