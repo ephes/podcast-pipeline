@@ -602,8 +602,10 @@ def _plain_text(text: str | None) -> str:
 
 
 def _load_yaml_mapping(path: Path) -> dict[str, Any]:
+    # The global config is user-owned, not workspace content, and other readers follow a
+    # dotfiles symlink: resolve it, then read the target as one bounded regular file.
     try:
-        return read_optional_yaml_mapping(path, max_bytes=1024 * 1024)
+        return read_optional_yaml_mapping(path.resolve(), max_bytes=1024 * 1024)
     except WorkspaceStoreError as exc:
         raise CmsConfigError(str(exc)) from exc
 

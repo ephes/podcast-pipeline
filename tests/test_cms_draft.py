@@ -557,6 +557,26 @@ def test_dry_run_rejects_unadmitted_cms_config(
     assert not (workspace / "cms").exists()
 
 
+def test_load_cms_config_follows_symlinked_global_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    target = _config(tmp_path, monkeypatch)
+    link = tmp_path / "dotfiles-link.yaml"
+    link.symlink_to(target)
+    monkeypatch.setenv("PODCAST_PIPELINE_CONFIG", str(link))
+
+    config = load_cms_config({})
+
+    assert config.parent_id == PODCAST_ID
+
+
+def test_load_cms_config_treats_dangling_symlink_as_missing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    link = tmp_path / "dangling.yaml"
+    link.symlink_to(tmp_path / "missing.yaml")
+    monkeypatch.setenv("PODCAST_PIPELINE_CONFIG", str(link))
+
+    with pytest.raises(CmsConfigError, match="base_url"):
+        load_cms_config({})
+
+
 def test_creates_draft_uploads_one_file_and_lists_manual_steps_in_order(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake: FakeCast, capsys: pytest.CaptureFixture[str]
 ) -> None:
