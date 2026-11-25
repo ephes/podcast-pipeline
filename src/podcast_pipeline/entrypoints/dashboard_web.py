@@ -262,9 +262,7 @@ class _DashboardApi:
 
     def serve_status(self, _request: Request) -> Response:
         try:
-            with self.ctx.lock:
-                data = self.ctx.get_status_json()
-                return JSONResponse(data)
+            return JSONResponse(self.ctx.get_status_json())
         except SelectedArtifactError:
             raise
         except Exception as exc:

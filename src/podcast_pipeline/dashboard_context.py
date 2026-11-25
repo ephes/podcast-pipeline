@@ -131,13 +131,19 @@ class DashboardContext:
         self._ensure_candidates()
 
     def get_status_json(self) -> dict[str, Any]:
+        # A publisher can report progress through the dashboard while holding the workspace lock.
+        with self.store.publication_lock():
+            chunk_count = read_published_chunk_count(self.layout)
+            if chunk_count is None:
+                chunk_count = _count_chunk_entries(self.layout.transcript_chunks_dir)
+        with self.lock:
+            return self._status_snapshot(chunk_count)
+
+    def _status_snapshot(self, chunk_count: int | None) -> dict[str, Any]:
         layout = self.layout
         episode_yaml = self._read_episode_yaml_safe()
 
         transcript_ok = (layout.transcript_dir / "transcript.txt").exists()
-        chunk_count = read_published_chunk_count(layout)
-        if chunk_count is None:
-            chunk_count = _count_chunk_entries(layout.transcript_chunks_dir)
         summary_ok = layout.episode_summary_json_path().exists()
         candidates = self._ensure_candidates()
         candidate_count = sum(len(v) for v in candidates.values())

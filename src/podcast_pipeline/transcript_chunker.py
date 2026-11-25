@@ -16,7 +16,7 @@ from uuid import uuid4
 
 from podcast_pipeline.control_json import load_control_json
 from podcast_pipeline.domain.intermediate_formats import TranscriptChunkMeta
-from podcast_pipeline.file_inputs import read_regular_utf8
+from podcast_pipeline.file_inputs import read_regular_utf8, sha256_regular_utf8
 from podcast_pipeline.workspace_store import EpisodeWorkspaceLayout, EpisodeWorkspaceStore
 
 
@@ -90,6 +90,7 @@ class ChunkerLimits:
 DEFAULT_LIMITS = ChunkerLimits()
 CHUNK_MANIFEST_MAX_BYTES = 2 * 1024 * 1024
 _META_BYTES = 4096
+_SOURCE_ADMISSION_ERROR = "Chunker source_bytes limit or coherent regular UTF-8 source required"
 
 
 def _admit(size: int, ceiling: int, name: str) -> None:
@@ -101,7 +102,7 @@ def _read_source(path: Path, limits: ChunkerLimits) -> str:
     try:
         return read_regular_utf8(path, max_bytes=limits.source_bytes)
     except (OSError, ValueError) as exc:
-        raise ChunkerResourceError("Chunker source_bytes limit or coherent regular UTF-8 source required") from exc
+        raise ChunkerResourceError(_SOURCE_ADMISSION_ERROR) from exc
 
 
 _TOKEN_RE = re.compile(r"\S+")
@@ -249,7 +250,7 @@ def write_transcript_chunks(
     with EpisodeWorkspaceStore(layout.root).publication_lock():
         _recover_chunks(layout, limits)
     transcript_text = _read_source(transcript_path, limits)
-    transcript_bytes = transcript_text.encode("utf-8")
+    source_digest = hashlib.sha256(transcript_text.encode("utf-8")).hexdigest()
     chunks = chunk_transcript_text(transcript_text, config=config, limits=limits)
 
     destination = layout.transcript_chunks_dir
@@ -275,7 +276,7 @@ def write_transcript_chunks(
             metas.append(meta)
         manifest = {
             "version": 1,
-            "source_sha256": hashlib.sha256(transcript_bytes).hexdigest(),
+            "source_sha256": source_digest,
             "config": asdict(config),
             "chunk_ids": [meta.chunk_id for meta in metas],
             "files": files,
@@ -283,7 +284,11 @@ def write_transcript_chunks(
         (staged / "complete.json").write_text(json.dumps(manifest, sort_keys=True) + "\n", encoding="utf-8")
         with EpisodeWorkspaceStore(layout.root).publication_lock():
             _recover_chunks(layout, limits)
-            if _read_source(transcript_path, limits).encode("utf-8") != transcript_bytes:
+            try:
+                current_digest = sha256_regular_utf8(transcript_path, max_bytes=limits.source_bytes)
+            except (OSError, ValueError) as exc:
+                raise ChunkerResourceError(_SOURCE_ADMISSION_ERROR) from exc
+            if current_digest != source_digest:
                 raise ChunkSourceChangedError("Transcript changed while staging chunks; retry with the current source")
             _publish_chunks(staged, destination)
     return metas

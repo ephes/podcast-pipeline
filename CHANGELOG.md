@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Stream the bounded UTF-8 transcript digest during the final chunk publication check, keeping source changes from replacing the current set.
+
+- Keep dashboard chunk counts consistent with the published generation during a chunk swap.
+
 - Keep the dashboard open when Close is requested during an active job, and stop admitting new jobs once shutdown is accepted. Close still finishes when the server has already stopped.
 
 - Mark dashboard jobs failed when their workers exit without recording an outcome, allowing retry.

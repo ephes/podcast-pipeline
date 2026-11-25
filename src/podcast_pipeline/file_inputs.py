@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import codecs
 import hashlib
 import os
 import stat
@@ -53,6 +54,20 @@ def sha256_regular_file(path: Path, *, max_bytes: int) -> str:
     """Hash a bounded regular file generation without retaining its contents."""
     digest = hashlib.sha256()
     _consume_regular_bytes(path, digest.update, max_bytes=max_bytes)
+    return digest.hexdigest()
+
+
+def sha256_regular_utf8(path: Path, *, max_bytes: int) -> str:
+    """Validate UTF-8 and hash the original bytes of one bounded regular file generation."""
+    decoder = codecs.getincrementaldecoder("utf-8")()
+    digest = hashlib.sha256()
+
+    def consume(part: bytes) -> None:
+        decoder.decode(part)
+        digest.update(part)
+
+    _consume_regular_bytes(path, consume, max_bytes=max_bytes)
+    decoder.decode(b"", final=True)
     return digest.hexdigest()
 
 
