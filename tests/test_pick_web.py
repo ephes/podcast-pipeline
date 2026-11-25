@@ -608,6 +608,46 @@ def test_post_api_refine_adds_refined_candidate(
     assert status == 200
 
 
+def test_refine_acknowledges_published_candidate_with_plain_preview(
+    pick_server: _PickServerTuple, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _, url, ctx, candidates = pick_server
+    calls: list[RefineRequest] = []
+    monkeypatch.setattr(asset_refine_llm, "refine_asset_text", _fake_refine(calls))
+    render = pick_web.markdown_to_deterministic_html
+    initial_count = len(candidates["description"])
+    previewed_after_publication = []
+
+    def fail_refined_preview(content: str) -> str:
+        if content.startswith("# Kürzer"):
+            paths = ctx.store.layout.copy_candidates_dir.joinpath("description").glob("candidate_*.json")
+            previewed_after_publication.append(len(list(paths)) > initial_count)
+            raise RuntimeError("Synthetic preview failure")
+        return render(content)
+
+    monkeypatch.setattr(pick_web, "markdown_to_deterministic_html", fail_refined_preview)
+
+    status, receipt = _post_json(
+        f"{url}/api/refine",
+        {"asset_id": "description", "instruction": "kürzer", "text": "A <literal> & character."},
+    )
+
+    assert status == 200, receipt
+    assert receipt["ok"] is True
+    refined = cast(dict[str, str], receipt["candidate"])
+    assert refined["content"] == "# Kürzer\n\nA <literal> & character."
+    assert refined["content_html"] == "<pre># Kürzer\n\nA &lt;literal&gt; &amp; character.</pre>"
+    assert refined["format"] == "markdown"
+    assert refined["instruction"] == "kürzer"
+    assert previewed_after_publication == [False]
+    candidate = ctx.store.read_candidate("description", UUID(refined["candidate_id"]))
+    assert candidate.content == refined["content"]
+    refreshed = cast(list[dict[str, str]], _assets_by_id(url)["description"]["candidates"])
+    assert len(refreshed) == 3
+    assert refined in refreshed
+    assert len(calls) == 1
+
+
 def test_post_api_refine_editor_text(pick_server: _PickServerTuple, monkeypatch: pytest.MonkeyPatch) -> None:
     _server, base_url, _ctx, _candidates = pick_server
     calls: list[RefineRequest] = []

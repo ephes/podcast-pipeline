@@ -581,22 +581,25 @@ shutdown, new background job requests receive 503.
 
 The standalone picker reads authoritative selections and refreshed candidate membership whenever it loads
 assets. Each response uses one workspace snapshot for candidate membership and selections. Preview and
-tag-pool rendering run after the workspace lock is released. Custom drafts survive these refreshes and asset switches in the current page. A save acknowledges
-only the submitted revision; text typed while saving stays unsaved. Candidate and custom selections admit
-one pending choice per asset. After an uncertain mutation the picker reloads stored state before allowing
-another choice; it never automatically repeats a mutation. If a displayed candidate has changed or
-disappeared, the picker reloads the candidates and asks you to choose again.
+tag-pool rendering run after the workspace lock is released. Custom drafts survive these refreshes and asset
+switches in the current page. A save acknowledges the submitted revision. Text typed while saving stays
+unsaved. Candidate and custom selections admit one pending choice per asset. After an uncertain mutation,
+the picker reloads stored state before allowing another choice and leaves the decision to retry to you.
+If a displayed candidate has changed or disappeared, the picker reloads the candidates and asks you to
+choose again.
 
 Every picker browser exchange has a thirty-second deadline covering response headers and body, except
 refinement: its deadline is the configured drafter agent timeout plus one minute, so normal refinements finish
 inside it. A timeout of a mutation means its outcome is unknown: check the stored selection before deliberately
-retrying. After a failed or timed-out refinement the picker reloads the assets, so a candidate the server
-published meanwhile appears; check it before starting more paid work.
+retrying. If the picker cannot render the Markdown preview, the refinement still returns the saved
+candidate with a plain-text preview. After a failed or timed-out refinement the picker reloads the assets
+to show any candidate the server published meanwhile. Check for it before starting more paid work.
 Pending controls are released on failure, drafts remain available, and errors stay with their asset.
 Done waits for tag saves and is unavailable during refinements or pending choices. The server also refuses
 Done while refinement work is running. Once it accepts Done, it shuts down even if the acknowledgment
-cannot reach the browser. The thirty-minute fallback stops accepting work, then waits for
-accepted handlers to finish (including the configured agent timeout); closing the browser does not cancel them.
+cannot reach the browser. After thirty minutes the server stops accepting work and waits for accepted
+handlers to finish, including the configured agent timeout. Accepted handlers keep running if you close
+the browser.
 
 Sidebar assets are native buttons: Tab/Shift-Tab reaches them and Enter/Space activates them. Selection and
 tag updates retain the equivalent control's focus, and background saves preserve the editor's text and caret.

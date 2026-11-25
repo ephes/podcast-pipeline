@@ -6,6 +6,7 @@ import sys
 import threading
 from dataclasses import dataclass
 from functools import partial
+from html import escape
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from uuid import UUID, uuid4
@@ -200,6 +201,13 @@ def _refine_deadline_ms(workspace: Path) -> int:
     return min(int((seconds + _REFINE_DEADLINE_MARGIN_SECONDS) * 1000), _MAX_BROWSER_TIMEOUT_MS)
 
 
+def _candidate_preview_html(content: str) -> str:
+    try:
+        return markdown_to_deterministic_html(content)
+    except Exception:
+        return f"<pre>{escape(content)}</pre>"
+
+
 @dataclass(frozen=True)
 class _AssetSnapshot:
     asset_id: str
@@ -289,7 +297,7 @@ class _ServerContext:
                     {
                         "candidate_id": str(c.candidate_id),
                         "content": c.content,
-                        "content_html": markdown_to_deterministic_html(c.content),
+                        "content_html": _candidate_preview_html(c.content),
                         "format": c.format.value,
                         "instruction": asset_refine_llm.refine_instruction(c),
                     }
@@ -672,6 +680,7 @@ class _PickWebHandler(BaseHTTPRequestHandler):
         try:
             # The drafter call can take minutes: run it without holding the lock.
             candidate = asset_refine_llm.refine_asset_text(workspace=self.ctx.store.layout.root, request=prepared)
+            preview = _candidate_preview_html(candidate.content)
             with self.ctx.lock:
                 self.ctx.add_candidate(candidate)
         except asset_refine_llm.RefinePromptTooLargeError as exc:
@@ -701,7 +710,7 @@ class _PickWebHandler(BaseHTTPRequestHandler):
                 "candidate": {
                     "candidate_id": str(candidate.candidate_id),
                     "content": candidate.content,
-                    "content_html": markdown_to_deterministic_html(candidate.content),
+                    "content_html": preview,
                     "format": candidate.format.value,
                     "instruction": prepared.instruction,
                 },
