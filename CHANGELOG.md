@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Prepare bounded UTF-8 progress tails before taking the dashboard lock.
+
 - Count only regular files in the dashboard’s legacy chunk inventory.
 
 - Count a dashboard candidate selection only when its asset still has the candidate and usable published text.

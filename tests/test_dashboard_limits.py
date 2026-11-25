@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import sys
 import threading
 from collections.abc import AsyncIterator, Iterator
 from contextlib import contextmanager
@@ -175,10 +176,10 @@ def test_progress_byte_and_entry_caps(ctx: context.DashboardContext, monkeypatch
     capture = web._ProgressCapture(ctx, job)
     for i in range(20):
         capture.write(str(i))
-    assert list(job.progress) == ["17", "18", "19"]
+    assert [entry.text for entry in job.progress] == ["17", "18", "19"]
     assert job.progress_start == 17
     capture.write("é" * 1000)
-    assert sum(len(line.encode()) for line in job.progress) <= 64
+    assert sum(len(entry.text.encode()) for entry in job.progress) <= 64
     assert job.progress_bytes <= 64
     assert job.progress_start >= 20
     with TestClient(
@@ -188,6 +189,35 @@ def test_progress_byte_and_entry_caps(ctx: context.DashboardContext, monkeypatch
     ) as client:
         result = client.get(f"/api/jobs/{job.job_id}").json()
     assert result["progress"][0] == context.PROGRESS_TRUNCATED
+
+
+def test_progress_only_encodes_bounded_tail_before_lock(
+    ctx: context.DashboardContext, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(context, "MAX_PROGRESS_BYTES", 65)
+    job = ctx.create_job("test")
+    capture = web._ProgressCapture(ctx, job)
+    capture.write("first")
+    text = " " + "é" * 200_000 + " \n"
+    encodes: list[tuple[int, bool]] = []
+
+    def trace(frame: Any, event: str, call: Any) -> None:
+        if event == "c_call" and getattr(call, "__name__", None) == "encode" and isinstance(call.__self__, str):
+            encodes.append((len(call.__self__), ctx.lock.locked()))
+
+    previous_profile = sys.getprofile()
+    sys.setprofile(trace)
+    try:
+        assert capture.write(text) == len(text)
+        assert [entry.text for entry in job.progress] == ["é" * 32]
+        assert job.progress_bytes == 64
+        capture.write("last")
+    finally:
+        sys.setprofile(previous_profile)
+
+    assert encodes and all(length <= 65 and not locked for length, locked in encodes)
+    assert job.progress_bytes == 4
+    assert job.progress_start + len(job.progress) == 4
 
 
 def test_completed_job_retention_keeps_running(

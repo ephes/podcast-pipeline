@@ -112,7 +112,7 @@ def test_job_stderr_capture_ends_when_dashboard_exits(tmp_path: Path, monkeypatc
             assert finished.wait(5)
 
     job = next(iter(ctx.jobs.values()))
-    assert list(job.progress) == ["while serving"]
+    assert [entry.text for entry in job.progress] == ["while serving"]
     assert "\nafter restart\n" in next_stderr.getvalue()
     assert job.status == "completed"
 
@@ -259,7 +259,7 @@ def test_sse_poll_waits_for_lock_off_event_loop(tmp_path: Path) -> None:
 
     ctx = DashboardContext(workspace=tmp_path)
     job = ctx.create_job("synthetic")
-    job.append_progress("first")
+    web._ProgressCapture(ctx, job).write("first")
     api = web._DashboardApi(ctx=ctx, on_done=None)
 
     async def exercise() -> None:
@@ -275,10 +275,12 @@ def test_sse_poll_waits_for_lock_off_event_loop(tmp_path: Path) -> None:
         entered, release = threading.Event(), threading.Event()
 
         def finish() -> None:
+            last = web.ProgressEntry.from_text("last")
+            assert last is not None
             with ctx.lock:
                 entered.set()
                 release.wait(3)
-                job.append_progress("last")
+                job.append_progress(last)
                 ctx.finish_job(job, "completed")
 
         worker = threading.Thread(target=finish)

@@ -57,30 +57,58 @@ class SelectedArtifactError(WorkspaceStoreError):
     """A published selection could not be safely read."""
 
 
+@dataclass(frozen=True)
+class ProgressEntry:
+    text: str
+    byte_count: int
+    truncated: bool
+
+    @classmethod
+    def from_text(cls, text: str) -> ProgressEntry | None:
+        # Find the stripped bounds without copying the discarded portion of a large write.
+        start, end = 0, len(text)
+        while start < end and text[start].isspace():
+            start += 1
+        if start == end:
+            return None
+        while text[end - 1].isspace():
+            end -= 1
+
+        # Every code point takes at least one byte. Only this many can fit in the retained tail.
+        tail_start = max(start, end - MAX_PROGRESS_BYTES)
+        tail = text[tail_start:end]
+        encoded = tail.encode("utf-8")
+        offset = max(0, len(encoded) - MAX_PROGRESS_BYTES)
+        truncated = tail_start > start or offset > 0
+        if offset:
+            # Skip continuation bytes at a cut through a multibyte code point.
+            while offset < len(encoded) and encoded[offset] & 0xC0 == 0x80:
+                offset += 1
+            tail = encoded[offset:].decode("utf-8")
+        return cls(text=tail, byte_count=len(encoded) - offset, truncated=truncated)
+
+
 @dataclass
 class BackgroundJob:
     job_id: str
     stage: str
     status: str = "running"
-    progress: deque[str] = field(default_factory=deque)
+    progress: deque[ProgressEntry] = field(default_factory=deque)
     progress_start: int = 0
     progress_bytes: int = 0
     error: str | None = None
     result: dict[str, Any] | None = None
 
-    def append_progress(self, text: str) -> None:
-        """Retain a byte/entry-bounded tail with monotonically increasing entry IDs."""
-        encoded = text.encode("utf-8")
-        if len(encoded) > MAX_PROGRESS_BYTES:
+    def append_progress(self, entry: ProgressEntry) -> None:
+        """Retain prepared progress with monotonically increasing IDs. Caller holds the context lock."""
+        if entry.truncated:
             self.progress_start += len(self.progress) + 1
             self.progress.clear()
             self.progress_bytes = 0
-            text = encoded[-MAX_PROGRESS_BYTES:].decode("utf-8", errors="ignore")
-        self.progress.append(text)
-        self.progress_bytes += len(text.encode("utf-8"))
+        self.progress.append(entry)
+        self.progress_bytes += entry.byte_count
         while self.progress_bytes > MAX_PROGRESS_BYTES or len(self.progress) > MAX_PROGRESS_ENTRIES:
-            removed = self.progress.popleft()
-            self.progress_bytes -= len(removed.encode("utf-8"))
+            self.progress_bytes -= self.progress.popleft().byte_count
             self.progress_start += 1
 
 

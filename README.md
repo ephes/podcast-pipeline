@@ -151,7 +151,8 @@ local host/origin checks run before body consumption. Body acquisition has one m
 deadline across all chunks (408 on expiry); disconnects stop reading with 400. Neither starts work or
 changes workspace state, and external request cancellation propagates. A worker launch failure records a failed job,
 returns 503 and permits immediate retry while preserving single-flight admission.
-Each job retains the latest 128 KiB / 1024 progress entries; oversized writes retain a UTF-8 tail.
+Each job retains the latest 128 KiB / 1024 progress entries. Oversized writes retain a UTF-8 tail
+prepared before acquiring the dashboard lock.
 JSON/SSE responses include an earlier-progress-truncated notice when history was evicted.
 SSE progress IDs increase monotonically and support `Last-Event-ID` reconnects across eviction.
 A cursor ahead of the job's newest event replays the retained history and resumes live progress.
@@ -162,8 +163,9 @@ Malformed ports return the existing 403 Forbidden host response before reading a
 oversized numbers, Unicode digits and out-of-range values. IPv4/IPv6 loopback hosts remain supported.
 Workspace reads/writes, job admission and context-lock acquisition run in Starlette's worker pool.
 Status reads workspace state, inventory and selected files under the publication lock. Job snapshots
-are copied under the context lock. HTTP/SSE sends and waits happen after those locks are released. A slow workspace operation or a worker-held lock can delay snapshots and the interactive
-shutdown check while the event loop remains responsive. Initialization and ingest use this boundary too.
+are copied under the context lock. HTTP/SSE sends and waits happen after those locks are released.
+A slow workspace operation or a worker-held lock can delay snapshots and the interactive shutdown
+check while the event loop remains responsive. Initialization and ingest use this boundary too.
 
 ### Concurrent selections and RSS imports
 

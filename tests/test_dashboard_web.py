@@ -16,7 +16,7 @@ import uvicorn
 from podcast_pipeline.dashboard_api_models import AssetOut, StatusOut
 from podcast_pipeline.dashboard_context import BackgroundJob, DashboardContext
 from podcast_pipeline.domain.models import Candidate, TextFormat
-from podcast_pipeline.entrypoints.dashboard_web import create_dashboard_app
+from podcast_pipeline.entrypoints.dashboard_web import _ProgressCapture, create_dashboard_app
 from podcast_pipeline.pick_core import has_manual_selection_provenance
 from podcast_pipeline.workspace_store import EpisodeWorkspaceStore
 from tests.session_support import SESSION_TOKEN, launch_target
@@ -687,13 +687,14 @@ def test_get_api_jobs_empty(dashboard_server: _DashboardServerTuple) -> None:
 
 
 def test_job_endpoints_serialize_bytes_progress(dashboard_server: _DashboardServerTuple) -> None:
-    """Bytes in job progress are normalized instead of crashing JSON/SSE responses."""
+    """Bytes written to progress are normalized for JSON and SSE responses."""
     _server, base_url, ctx = dashboard_server
 
     with ctx.lock:
         job = ctx.create_job("draft")
-        job.progress.append(cast(Any, b"binary-progress-line"))
-        job.status = "completed"
+    _ProgressCapture(ctx, job).write(b"binary-progress-line")
+    with ctx.lock:
+        ctx.finish_job(job, "completed")
 
     resp = urllib.request.urlopen(f"{base_url}/api/jobs/{job.job_id}")
     assert resp.status == 200
