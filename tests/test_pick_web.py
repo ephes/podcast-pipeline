@@ -6,6 +6,7 @@ import urllib.error
 import urllib.request
 import webbrowser
 from collections.abc import Generator
+from concurrent.futures import ThreadPoolExecutor
 from functools import partial
 from http.server import HTTPServer, ThreadingHTTPServer
 from pathlib import Path
@@ -17,6 +18,7 @@ import pytest
 from podcast_pipeline import asset_refine_llm
 from podcast_pipeline.asset_refine_llm import RefineRequest, parse_refined_candidate
 from podcast_pipeline.domain.models import Candidate, EpisodeWorkspace, TextFormat
+from podcast_pipeline.entrypoints import pick_web
 from podcast_pipeline.entrypoints.pick_web import _PickWebHandler, _ServerContext
 from podcast_pipeline.local_web_guard import SESSION_HEADER
 from podcast_pipeline.pick_core import has_manual_selection_provenance
@@ -598,12 +600,59 @@ def test_post_api_refine_adds_refined_candidate(
     assert len(candidates) == 3
     assert candidates[-1]["instruction"] == "kürzer"
     assert candidates[0]["instruction"] is None
+    # The page appends the refine receipt; its digest names the same copy a reload shows.
+    assert candidates[-1]["candidate_digest"] == refined["candidate_digest"]
 
     # The refined candidate can be selected like any other.
     status, _ = _post_json(
-        f"{base_url}/api/select", {"asset_id": "description", "candidate_id": refined["candidate_id"]}
+        f"{base_url}/api/select",
+        {
+            "asset_id": "description",
+            "candidate_id": refined["candidate_id"],
+            "candidate_digest": refined["candidate_digest"],
+        },
     )
     assert status == 200
+
+
+def test_refine_acknowledges_published_candidate_with_plain_preview(
+    pick_server: _PickServerTuple, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _, url, ctx, candidates = pick_server
+    calls: list[RefineRequest] = []
+    monkeypatch.setattr(asset_refine_llm, "refine_asset_text", _fake_refine(calls))
+    render = pick_web.markdown_to_deterministic_html
+    initial_count = len(candidates["description"])
+    previewed_after_publication = []
+
+    def fail_refined_preview(content: str) -> str:
+        if content.startswith("# Kürzer"):
+            paths = ctx.store.layout.copy_candidates_dir.joinpath("description").glob("candidate_*.json")
+            previewed_after_publication.append(len(list(paths)) > initial_count)
+            raise RuntimeError("Synthetic preview failure")
+        return render(content)
+
+    monkeypatch.setattr(pick_web, "markdown_to_deterministic_html", fail_refined_preview)
+
+    status, receipt = _post_json(
+        f"{url}/api/refine",
+        {"asset_id": "description", "instruction": "kürzer", "text": "A <literal> & character."},
+    )
+
+    assert status == 200, receipt
+    assert receipt["ok"] is True
+    refined = cast(dict[str, str], receipt["candidate"])
+    assert refined["content"] == "# Kürzer\n\nA <literal> & character."
+    assert refined["content_html"] == "<pre># Kürzer\n\nA &lt;literal&gt; &amp; character.</pre>"
+    assert refined["format"] == "markdown"
+    assert refined["instruction"] == "kürzer"
+    assert previewed_after_publication == [False]
+    candidate = ctx.store.read_candidate("description", UUID(refined["candidate_id"]))
+    assert candidate.content == refined["content"]
+    refreshed = cast(list[dict[str, str]], _assets_by_id(url)["description"]["candidates"])
+    assert len(refreshed) == 3
+    assert refined in refreshed
+    assert len(calls) == 1
 
 
 def test_post_api_refine_editor_text(pick_server: _PickServerTuple, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -827,6 +876,49 @@ def test_json_control_admission(pick_server: _PickServerTuple, endpoint: str, bo
     assert not ctx.store.layout.state_json.exists()
 
 
+def test_assets_release_workspace_snapshot_before_rendering(
+    pick_server: _PickServerTuple, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _, url, ctx, candidates = pick_server
+    other = _ServerContext(
+        store=EpisodeWorkspaceStore(ctx.store.layout.root),
+        candidates_by_asset=candidates,
+        workspace_state=ctx.workspace_state,
+        session_token=SESSION_TOKEN,
+    )
+    assert other.select_custom_text("description", "Original selection", None) is None
+    started, release = threading.Event(), threading.Event()
+    render = pick_web.markdown_to_deterministic_html
+
+    def render_paused(content: str) -> str:
+        started.set()
+        assert release.wait(10)
+        return render(content)
+
+    monkeypatch.setattr(pick_web, "markdown_to_deterministic_html", render_paused)
+
+    def update() -> None:
+        replacement = candidates["description"][0].model_copy(update={"content": "New candidate content"})
+        other.store.write_candidate(replacement)
+        assert other.select_custom_text("description", "New selection", None) is None
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        response = executor.submit(_assets_by_id, url)
+        try:
+            assert started.wait(5)
+            executor.submit(update).result(timeout=3)
+        finally:
+            release.set()
+        snapshot = response.result(timeout=5)["description"]
+
+    assert snapshot["custom_selected"] is True
+    assert snapshot["selected_candidate_id"] is None
+    assert str(snapshot["selected_text"]).strip() == "Original selection"
+    first = cast(list[dict[str, str]], snapshot["candidates"])[0]
+    assert first["content"] == candidates["description"][0].content
+    assert first["content_html"] == render(first["content"])
+
+
 def test_assets_refresh_external_selection_and_candidates(pick_server: _PickServerTuple) -> None:
     _, url, ctx, candidates = pick_server
     other = _ServerContext(
@@ -849,6 +941,100 @@ def test_assets_refresh_external_selection_and_candidates(pick_server: _PickServ
     assert desc["selected_text"].strip() == "New custom selection"
 
 
+@pytest.mark.parametrize("refresh", ["replace", "retire", "republish_during_selection"])
+def test_select_refuses_candidate_changed_after_display(
+    pick_server: _PickServerTuple, monkeypatch: pytest.MonkeyPatch, refresh: str
+) -> None:
+    _, url, ctx, candidates = pick_server
+    other = EpisodeWorkspaceStore(ctx.store.layout.root)
+    candidate = candidates["description"][0]
+    assert ctx.select_custom_text("description", "Keep this selection", None) is None
+    before = other.layout.state_json.read_bytes()
+    displayed = cast(list[dict[str, str]], _assets_by_id(url)["description"]["candidates"])
+    assert displayed[0]["candidate_id"] == str(candidate.candidate_id)
+    replacement = candidate
+
+    if refresh == "replace":
+        replacement = candidate.model_copy(update={"content": "Updated by another producer"})
+        other.write_candidate(replacement)
+    elif refresh == "retire":
+        other.delete_candidate_files("description", candidate.candidate_id)
+    else:
+        save = pick_web.save_candidate_selection
+
+        def republish_then_save(**kwargs: Any) -> EpisodeWorkspace:
+            other.write_candidate(candidate)
+            return save(**kwargs)
+
+        monkeypatch.setattr(pick_web, "save_candidate_selection", republish_then_save)
+
+    status, receipt = _post_json(
+        f"{url}/api/select", {"asset_id": "description", "candidate_id": str(candidate.candidate_id)}
+    )
+
+    assert status == 409, receipt
+    assert "reload candidates" in str(receipt["error"])
+    assert other.layout.state_json.read_bytes() == before
+    assert other.read_selected_text("description", TextFormat.markdown).strip() == "Keep this selection"
+    if refresh == "retire":
+        assert not other.layout.candidate_json_path("description", candidate.candidate_id).exists()
+    else:
+        assert other.read_candidate("description", candidate.candidate_id) == replacement
+
+
+def test_select_refuses_copy_reloaded_by_another_view(pick_server: _PickServerTuple) -> None:
+    _, url, ctx, candidates = pick_server
+    other = EpisodeWorkspaceStore(ctx.store.layout.root)
+    candidate = candidates["description"][0]
+    assert ctx.select_custom_text("description", "Keep this selection", None) is None
+    before = other.layout.state_json.read_bytes()
+    shown = cast(list[dict[str, str]], _assets_by_id(url)["description"]["candidates"])[0]
+    assert shown["candidate_id"] == str(candidate.candidate_id)
+    other.write_candidate(candidate.model_copy(update={"content": "NEW"}))
+    # A second tab (or a refresh whose response never reached this page) reloads the new copy.
+    reloaded = cast(list[dict[str, str]], _assets_by_id(url)["description"]["candidates"])[0]
+    assert reloaded["content"] == "NEW"
+    assert reloaded["candidate_digest"] != shown["candidate_digest"]
+
+    status, receipt = _post_json(
+        f"{url}/api/select",
+        {
+            "asset_id": "description",
+            "candidate_id": shown["candidate_id"],
+            "candidate_digest": shown["candidate_digest"],
+        },
+    )
+
+    assert status == 409, receipt
+    assert "reload candidates" in str(receipt["error"])
+    assert other.layout.state_json.read_bytes() == before
+    assert other.read_selected_text("description", TextFormat.markdown).strip() == "Keep this selection"
+
+    status, receipt = _post_json(
+        f"{url}/api/select",
+        {
+            "asset_id": "description",
+            "candidate_id": reloaded["candidate_id"],
+            "candidate_digest": reloaded["candidate_digest"],
+        },
+    )
+    assert status == 200, receipt
+    assert other.read_selected_text("description", TextFormat.markdown).strip() == "NEW"
+
+
+def test_select_rejects_non_string_candidate_digest(pick_server: _PickServerTuple) -> None:
+    _, url, _, candidates = pick_server
+    status, receipt = _post_json(
+        f"{url}/api/select",
+        {
+            "asset_id": "description",
+            "candidate_id": str(candidates["description"][0].candidate_id),
+            "candidate_digest": 1,
+        },
+    )
+    assert status == 400, receipt
+
+
 def test_done_refuses_active_refinement(pick_server: _PickServerTuple) -> None:
     _, url, ctx, _ = pick_server
     ctx.refining.add("description")
@@ -857,6 +1043,39 @@ def test_done_refuses_active_refinement(pick_server: _PickServerTuple) -> None:
     assert "pending" in str(data).lower()
     ctx.refining.clear()
     assert urllib.request.urlopen(f"{url}/api/assets").status == 200
+
+
+def test_done_stops_server_after_acknowledgment_times_out(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    store, candidates = _setup_workspace(tmp_path)
+    ctx = _ServerContext(
+        store=store,
+        candidates_by_asset=candidates,
+        workspace_state=EpisodeWorkspace(episode_id="test_ep", root_dir="."),
+        session_token=SESSION_TOKEN,
+    )
+    handler = object.__new__(_PickWebHandler)
+    handler.ctx = ctx
+    monkeypatch.setattr(handler, "_read_object", dict)
+    statuses = []
+
+    def respond(status: int, data: dict[str, object]) -> None:
+        statuses.append(status)
+        if status == 200:
+            raise TimeoutError("Synthetic response write timeout")
+
+    monkeypatch.setattr(handler, "_respond_json", respond)
+    with pick_web._PickHTTPServer(("127.0.0.1", 0), partial(_PickWebHandler, ctx)) as server:
+        handler.server = server
+        ctx.refining.add("description")
+        handler._handle_done()
+        assert not server.stop_requested.is_set()
+
+        ctx.refining.clear()
+        with pytest.raises(TimeoutError, match="response write timeout"):
+            handler._handle_done()
+        assert ctx.closing
+        assert statuses == [409, 200]
+        assert server.stop_requested.is_set()
 
 
 @pytest.mark.parametrize("failure", ["browser", "timer"])

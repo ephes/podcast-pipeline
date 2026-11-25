@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import socket
 import sys
 import threading
+from dataclasses import dataclass
 from functools import partial
+from html import escape
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from uuid import UUID, uuid4
@@ -25,6 +28,8 @@ from podcast_pipeline.local_web_guard import (
 )
 from podcast_pipeline.markdown_html import markdown_to_deterministic_html
 from podcast_pipeline.pick_core import (
+    CandidateSelectionChanged,
+    candidate_generation,
     custom_selection_format,
     find_candidate_by_id,
     load_candidates,
@@ -197,6 +202,31 @@ def _refine_deadline_ms(workspace: Path) -> int:
     return min(int((seconds + _REFINE_DEADLINE_MARGIN_SECONDS) * 1000), _MAX_BROWSER_TIMEOUT_MS)
 
 
+def _candidate_preview_html(content: str) -> str:
+    try:
+        return markdown_to_deterministic_html(content)
+    except Exception:
+        return f"<pre>{escape(content)}</pre>"
+
+
+def _candidate_digest(candidate: Candidate) -> str:
+    """Identify the candidate copy a browser displays, so a choice can be bound to it.
+
+    Canonical JSON (sorted keys) keeps an in-memory copy and its reloaded file equal.
+    """
+    canonical = json.dumps(candidate.model_dump(mode="json"), sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+@dataclass(frozen=True)
+class _AssetSnapshot:
+    asset_id: str
+    candidates: list[Candidate]
+    selected_id: str | None
+    selected_text: str | None
+    selected_tags: list[str] | None
+
+
 class _ServerContext:
     """Shared mutable state for the pick web server."""
 
@@ -244,29 +274,41 @@ class _ServerContext:
         return error
 
     def get_assets_json(self) -> list[dict[str, object]]:
-        with self.store.read_snapshot(default=self.workspace_state) as ws:
+        with self.lock, self.store.read_snapshot(default=self.workspace_state) as ws:
             self.workspace_state = ws
             self.candidates_by_asset = load_candidates(layout=self.store.layout, asset_id=self.asset_filter)
-            return self._assets_snapshot_json(ws)
-
-    def _assets_snapshot_json(self, ws: EpisodeWorkspace) -> list[dict[str, object]]:
-        assets_by_id = {asset.asset_id: asset for asset in ws.assets}
+            assets_by_id = {asset.asset_id: asset for asset in ws.assets}
+            snapshots = []
+            for asset_id, candidates in sorted(self.candidates_by_asset.items()):
+                existing = assets_by_id.get(asset_id)
+                selected_id = (
+                    str(existing.selected_candidate_id) if existing and existing.selected_candidate_id else None
+                )
+                current = read_current_selection(self.store.layout, asset_id)
+                snapshots.append(
+                    _AssetSnapshot(
+                        asset_id=asset_id,
+                        candidates=candidates,
+                        selected_id=selected_id,
+                        selected_text=current[1] if selected_id is None and current and current[1].strip() else None,
+                        selected_tags=self.get_selected_tags(asset_id) if asset_id in TAG_ASSET_IDS else None,
+                    )
+                )
 
         result: list[dict[str, object]] = []
-        for asset_key in sorted(self.candidates_by_asset):
-            candidates = self.candidates_by_asset[asset_key]
-            existing = assets_by_id.get(asset_key)
-            selected_id = str(existing.selected_candidate_id) if existing and existing.selected_candidate_id else None
-            current = read_current_selection(self.store.layout, asset_key)
-            custom_selected = selected_id is None and current is not None and bool(current[1].strip())
+        for snapshot in snapshots:
+            asset_key = snapshot.asset_id
+            candidates = snapshot.candidates
+            custom_selected = snapshot.selected_text is not None
 
             candidate_items: list[dict[str, object]] = []
             for c in candidates:
                 candidate_items.append(
                     {
                         "candidate_id": str(c.candidate_id),
+                        "candidate_digest": _candidate_digest(c),
                         "content": c.content,
-                        "content_html": markdown_to_deterministic_html(c.content),
+                        "content_html": _candidate_preview_html(c.content),
                         "format": c.format.value,
                         "instruction": asset_refine_llm.refine_instruction(c),
                     }
@@ -274,23 +316,28 @@ class _ServerContext:
 
             asset_data: dict[str, object] = {
                 "asset_id": asset_key,
-                "selected_candidate_id": selected_id,
-                "has_selection": selected_id is not None or custom_selected,
+                "selected_candidate_id": snapshot.selected_id,
+                "has_selection": snapshot.selected_id is not None or custom_selected,
                 "custom_selected": custom_selected,
-                "selected_text": current[1] if custom_selected and current is not None else None,
+                "selected_text": snapshot.selected_text,
                 "selection_format": custom_selection_format(asset_key).value,
                 "candidates": candidate_items,
                 "is_tag_asset": asset_key in TAG_ASSET_IDS,
             }
             if asset_key in TAG_ASSET_IDS:
                 asset_data["tag_pool"] = tag_pool_json(candidates, settings=self.tag_settings, hosts=self.hosts)
-                asset_data["selected_tags"] = self.get_selected_tags(asset_key)
+                asset_data["selected_tags"] = snapshot.selected_tags
                 asset_data["max_tags"] = self.tag_settings.max_tags
             result.append(asset_data)
         return result
 
-    def select_candidate(self, asset_id: str, candidate_id_str: str) -> str | None:
-        """Select a candidate. Returns error message on failure, None on success."""
+    def select_candidate(
+        self, asset_id: str, candidate_id_str: str, displayed_digest: str | None = None
+    ) -> str | None:
+        """Select a candidate. Returns error message on failure, None on success.
+
+        ``displayed_digest`` is the ``candidate_digest`` the browser rendered; the page always sends it.
+        """
         try:
             validate_asset_id(asset_id)
         except ValueError as exc:
@@ -309,6 +356,10 @@ class _ServerContext:
         if match is None:
             return f"candidate_id {candidate_id_str} not found for asset {asset_id}"
 
+        if displayed_digest is not None and displayed_digest != _candidate_digest(match):
+            # Another view reloaded a newer copy since this browser rendered the candidate.
+            raise CandidateSelectionChanged("Candidate changed or disappeared; reload candidates and select again.")
+        generation = candidate_generation(layout=self.store.layout, candidate=match)
         selected_format, selected_text = match.format, match.content
         if asset_id in TAG_ASSET_IDS:
             selected_tags = parse_tag_list(match.content)
@@ -324,6 +375,7 @@ class _ServerContext:
             candidates=candidates,
             selected_format=selected_format,
             selected_text=selected_text,
+            expected_generation=generation,
         )
         return None
 
@@ -523,8 +575,7 @@ class _PickWebHandler(BaseHTTPRequestHandler):
 
     def _serve_assets_json(self) -> None:
         try:
-            with self.ctx.lock:
-                data = self.ctx.get_assets_json()
+            data = self.ctx.get_assets_json()
         except Exception as exc:
             # Unreadable workspace state: answer without paths or diagnostics.
             reference = uuid4().hex[:12]
@@ -544,11 +595,19 @@ class _PickWebHandler(BaseHTTPRequestHandler):
         if not isinstance(asset_id, str) or not isinstance(candidate_id, str):
             self._respond(400, "application/json", json.dumps({"error": "Missing asset_id or candidate_id"}).encode())
             return
+        displayed_digest = payload.get("candidate_digest")
+        if displayed_digest is not None and not isinstance(displayed_digest, str):
+            self._respond_json(400, {"error": "candidate_digest must be a string"})
+            return
 
-        with self.ctx.lock:
-            if self._reject_closing():
-                return
-            error = self.ctx.select_candidate(asset_id, candidate_id)
+        try:
+            with self.ctx.lock:
+                if self._reject_closing():
+                    return
+                error = self.ctx.select_candidate(asset_id, candidate_id, displayed_digest)
+        except CandidateSelectionChanged as exc:
+            self._respond_json(409, {"error": str(exc)})
+            return
 
         if error:
             self._respond(400, "application/json", json.dumps({"error": error}).encode())
@@ -644,6 +703,7 @@ class _PickWebHandler(BaseHTTPRequestHandler):
         try:
             # The drafter call can take minutes: run it without holding the lock.
             candidate = asset_refine_llm.refine_asset_text(workspace=self.ctx.store.layout.root, request=prepared)
+            preview = _candidate_preview_html(candidate.content)
             with self.ctx.lock:
                 self.ctx.add_candidate(candidate)
         except asset_refine_llm.RefinePromptTooLargeError as exc:
@@ -672,8 +732,9 @@ class _PickWebHandler(BaseHTTPRequestHandler):
                 "ok": True,
                 "candidate": {
                     "candidate_id": str(candidate.candidate_id),
+                    "candidate_digest": _candidate_digest(candidate),
                     "content": candidate.content,
-                    "content_html": markdown_to_deterministic_html(candidate.content),
+                    "content_html": preview,
                     "format": candidate.format.value,
                     "instruction": prepared.instruction,
                 },
@@ -699,11 +760,13 @@ class _PickWebHandler(BaseHTTPRequestHandler):
                 self._respond_json(409, {"error": "Refinement pending; wait before Done"})
                 return
             self.ctx.closing = True
-        self._respond_json(200, {"ok": True})
-        if isinstance(self.server, _PickHTTPServer):
-            self.server.stop_requested.set()
-        else:
-            threading.Thread(target=self.server.shutdown, daemon=True).start()
+        try:
+            self._respond_json(200, {"ok": True})
+        finally:
+            if isinstance(self.server, _PickHTTPServer):
+                self.server.stop_requested.set()
+            else:
+                threading.Thread(target=self.server.shutdown, daemon=True).start()
 
     def _read_object(self) -> dict[str, object] | None:
         body = self._read_body()
@@ -1119,7 +1182,8 @@ function _renderMain() {
           <button class="edit-btn" data-candidate="${cid}"
             title="Copy this candidate into the custom text editor">Edit</button>
           <button class="select-btn"
-            data-asset="${aid}" data-candidate="${cid}" aria-disabled="${pendingChoices.has(asset.asset_id)}">
+            data-asset="${aid}" data-candidate="${cid}" data-digest="${esc(c.candidate_digest)}"
+            aria-disabled="${pendingChoices.has(asset.asset_id)}">
             ${isSel ? "Selected" : "Select"}
           </button>
         </span>
@@ -1132,7 +1196,7 @@ function _renderMain() {
   main.innerHTML = html;
   main.querySelectorAll(".select-btn").forEach(btn => {
     btn.onclick = () => handleSelect(
-      btn.dataset.asset, btn.dataset.candidate
+      btn.dataset.asset, btn.dataset.candidate, btn.dataset.digest
     );
   });
   main.querySelectorAll(".edit-btn").forEach(btn => {
@@ -1296,9 +1360,10 @@ async function handleSaveCustom(assetId) {
   });
 }
 
-async function handleSelect(assetId, candidateId) {
+async function handleSelect(assetId, candidateId, candidateDigest) {
+  // The digest names the copy this card rendered; the server refuses a newer one.
   await choose(assetId, async () => {
-    await post("/api/select", {asset_id: assetId, candidate_id: candidateId});
+    await post("/api/select", {asset_id: assetId, candidate_id: candidateId, candidate_digest: candidateDigest});
     const asset = assets.find(a => a.asset_id === assetId);
     if (asset) {
       asset.selected_candidate_id = candidateId;
