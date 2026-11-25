@@ -207,6 +207,9 @@ The `tags` section can live in the global config and in `episode.yaml`: `exclude
 
 `podcast cms-draft` and `podcast cms-publish` read a `cms` section from the global config. A `cms` section in
 `episode.yaml` overrides single keys for one episode (`host_links` and `contributors` entries are merged).
+An optional global config must be a regular, non-symlink UTF-8 file of at most 1 MiB.
+CMS rejects duplicate YAML keys, alias cycles, more than 64 levels of nesting, or more than
+100,000 YAML nodes (counting each use of an alias) before contacting the site.
 
 ```yaml
 cms:

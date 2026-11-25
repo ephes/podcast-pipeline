@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Apply workspace YAML structure checks and a 1 MiB regular-file limit to the optional global CMS configuration.
+
 - Omit invalid or unreadable episode summaries from review prompts with a warning, keeping other available episode context.
 
 - Validate the persisted episode summary before LLM candidate regeneration using the same workspace file and JSON rules as stub drafting.
