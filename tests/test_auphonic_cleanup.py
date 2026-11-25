@@ -445,6 +445,27 @@ def test_cleanup_requires_the_downloaded_output_until_refreshed(
     assert fake.deleted == ["prod-1"]
 
 
+def test_cleanup_accepts_a_symlinked_output_directory(
+    tmp_path: Path, fake_api: Callable[[list[tuple[int, str]]], _FakeAuphonic]
+) -> None:
+    fake = fake_api([DONE])
+    workspace = _workspace(tmp_path)
+    external = tmp_path / "media-disk" / "outputs"
+    external.mkdir(parents=True)
+    (workspace / "auphonic").mkdir()
+    (workspace / "auphonic" / "outputs").symlink_to(external, target_is_directory=True)
+    store = EpisodeWorkspaceStore(workspace)
+
+    produce.run_produce(workspace=workspace, dry_run=False)
+    produce.run_produce(workspace=workspace, dry_run=False, restart=True)
+
+    current = store.read_state().auphonic_productions[-1]
+    assert current.output_receipt == {"auphonic/outputs/ep.mp3": len(b"mp3-bytes")}
+    assert (external / "ep.mp3").read_bytes() == b"mp3-bytes"
+    produce.run_auphonic_cleanup(workspace=workspace, dry_run=False)
+    assert fake.deleted == ["prod-1"]
+
+
 def test_cleanup_prompts_legacy_workspaces_to_refresh_outputs(
     tmp_path: Path, fake_api: Callable[[list[tuple[int, str]]], _FakeAuphonic]
 ) -> None:

@@ -360,9 +360,9 @@ def run_auphonic_cleanup(*, workspace: Path, dry_run: bool) -> None:
 def _local_output_size(store: EpisodeWorkspaceStore, path: Path) -> int:
     layout = store.layout
     try:
-        output_dir = layout.auphonic_outputs_dir
-        relative_dir = output_dir.relative_to(layout.root)
-        if path.parent != output_dir or output_dir.resolve() != layout.root.resolve() / relative_dir:
+        # Lexical check only: `auphonic/` or `auphonic/outputs/` may be a
+        # symlink (for example to an external media disk), as for downloads.
+        if path.parent != layout.auphonic_outputs_dir:
             raise ValueError("path is outside the workspace output directory")
         info = path.lstat()
         if not stat.S_ISREG(info.st_mode):

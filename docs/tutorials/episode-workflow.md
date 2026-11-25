@@ -394,7 +394,8 @@ What is deleted, and when:
   `deleted`, and anything that is not in the history (for example productions of other episodes, or ones created in
   the Auphonic web UI) are never deleted.
 - Before deleting, cleanup confirms with Auphonic that the current production is still Done and checks that every
-  file in its latest output receipt is a regular file at the recorded workspace path with the recorded byte length.
+  file in its latest output receipt is a regular file at the recorded workspace path with the recorded byte length
+  (`auphonic/` or `auphonic/outputs/` may be a symlink, for example to an external media disk).
   Run `podcast produce` again to refresh the current outputs if a legacy workspace lacks a receipt or a file no longer
   matches. An `--update` clears the receipt until the new run's outputs have been downloaded.
 - A superseded production that Auphonic reports as still running is skipped; one that no longer exists (404 on the
