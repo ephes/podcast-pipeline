@@ -7,6 +7,11 @@ This guide shows how to run the MVP-1 creator/reviewer loop with the fake runner
 By default, `podcast review` uses the local Codex/Claude CLIs configured in `episode.yaml` or
 `~/.config/podcast-pipeline/config.yaml` and writes protocol state under `copy/protocol/<asset_id>/`.
 
+The episode summary is optional. Review uses it when the persisted JSON is a regular UTF-8 workspace
+file of at most 1 MiB without symlink components and contains valid summary data. Key points, when
+present, must be a list of strings. If the summary is unreadable or invalid, review reports why it was
+omitted and continues with the available chapters, transcript excerpt and hosts.
+
 Review prompt context admits up to 65,536 characters across summary, key points, chapter text and
 host names, and up to 200 combined key points, nonblank chapter lines and hosts. Excess context stops review
 before the creator or reviewer runs. Shorten the supplemental context and retry. The transcript

@@ -392,21 +392,53 @@ def test_load_episode_context_summary_wrong_shape(tmp_path: Path) -> None:
     assert ctx is None
 
 
-def test_load_episode_context_summary_non_string_markdown(tmp_path: Path) -> None:
-    """summary_markdown is a number instead of a string."""
-    layout = EpisodeWorkspaceLayout(root=tmp_path)
-    summary_dir = layout.episode_summary_dir
-    summary_dir.mkdir(parents=True)
-    layout.episode_summary_json_path().write_text(
-        json.dumps({"summary_markdown": 123, "key_points": ["ok"]}),
-        encoding="utf-8",
+@pytest.mark.parametrize(
+    "summary_json",
+    [
+        '{"summary_markdown": 123, "key_points": ["Invalid summary point"]}',
+        '{"summary_markdown": "Invalid summary body", "key_points": ["Invalid summary point", {"nested": "value"}]}',
+        '{"summary_markdown": "Invalid summary body", "key_points": "Invalid summary point"}',
+        '{"summary_markdown": "Invalid summary body", "key_points": ' + "[" * 1500 + "0" + "]" * 1500 + "}",
+    ],
+    ids=["invalid-markdown", "nested-point", "non-list-points", "over-nested-json"],
+)
+def test_review_prompt_omits_invalid_optional_summary(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], summary_json: str
+) -> None:
+    store = EpisodeWorkspaceStore(tmp_path)
+    store.write_episode_yaml({"episode_id": "synthetic", "inputs": {"chapters": "chapters.txt"}})
+    (tmp_path / "chapters.txt").write_text("00:00 Synthetic opening", encoding="utf-8")
+    path = store.layout.episode_summary_json_path()
+    path.parent.mkdir(parents=True)
+    path.write_text(summary_json, encoding="utf-8")
+
+    prompt = render_reviewer_prompt(
+        renderer=PromptRenderer(default_prompt_registry()),
+        inp=ReviewerInput(
+            asset_id="description",
+            iteration=1,
+            candidate=Candidate(asset_id="description", content="Synthetic candidate"),
+        ),
+        episode_context=load_episode_context_from_workspace(store.layout),
+    )
+    assert "Synthetic candidate" in prompt.text
+    assert "00:00 Synthetic opening" in prompt.text
+    assert "Invalid summary" not in prompt.text
+    assert (
+        capsys.readouterr().err
+        == "Review: optional episode summary omitted (Invalid or excessive summary JSON evidence).\n"
     )
 
-    ctx = load_episode_context_from_workspace(layout)
-    # summary_markdown is skipped but key_points still load
-    assert ctx is not None
-    assert "- ok" in ctx
-    assert "123" not in ctx
+
+def test_review_context_accepts_legacy_summary_without_key_points(tmp_path: Path) -> None:
+    layout = EpisodeWorkspaceLayout(root=tmp_path)
+    path = layout.episode_summary_json_path()
+    path.parent.mkdir(parents=True)
+    path.write_text('{"summary_markdown":"Synthetic legacy summary"}', encoding="utf-8")
+
+    context = load_episode_context_from_workspace(layout)
+    assert context is not None
+    assert "Synthetic legacy summary" in context
 
 
 def test_load_episode_context_missing_referenced_transcript(tmp_path: Path) -> None:
