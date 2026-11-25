@@ -690,6 +690,8 @@ local host/origin checks run before body consumption. Body acquisition has one m
 deadline across all chunks (408 on expiry); disconnects stop reading with 400. Neither starts work or
 changes workspace state, and external request cancellation propagates. A worker launch failure records a failed job,
 returns 503 and permits immediate retry while preserving single-flight admission.
+If a worker exits without recording an outcome, job polling and streaming report a failed job
+with the message `Background worker exited unexpectedly`. The stage can then be retried.
 Each job retains the latest 128 KiB / 1024 progress entries; oversized writes retain a UTF-8 tail.
 JSON/SSE responses include an earlier-progress-truncated notice when history was evicted.
 SSE progress IDs increase monotonically and support `Last-Event-ID` reconnects across eviction.

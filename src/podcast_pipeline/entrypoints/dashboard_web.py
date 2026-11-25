@@ -237,6 +237,10 @@ class _DashboardApi:
                     target(ctx, job, *args)
                 finally:
                     del _thread_local.capture_owner
+                    with ctx.lock:
+                        if job.status == "running":
+                            job.error = "Background worker exited unexpectedly"
+                            ctx.finish_job(job, "failed")
 
             try:
                 _start_daemon_thread(run_job, self.ctx, job, *args)

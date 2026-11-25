@@ -14,7 +14,7 @@ import pytest
 import uvicorn
 
 from podcast_pipeline.dashboard_api_models import AssetOut, StatusOut
-from podcast_pipeline.dashboard_context import DashboardContext
+from podcast_pipeline.dashboard_context import BackgroundJob, DashboardContext
 from podcast_pipeline.domain.models import Candidate, TextFormat
 from podcast_pipeline.entrypoints.dashboard_web import create_dashboard_app
 from podcast_pipeline.pick_core import has_manual_selection_provenance
@@ -742,8 +742,14 @@ def test_post_api_draft_creates_job(
 
     _server, base_url, ctx = dashboard_server
 
-    # Prevent heavy background work; keep threading behavior intact.
-    monkeypatch.setattr(dashboard_web, "_run_draft_job", lambda *_args, **_kwargs: None)
+    completed = threading.Event()
+
+    def fake_draft(context: DashboardContext, job: BackgroundJob, *args: Any) -> None:
+        with context.lock:
+            context.finish_job(job, "completed")
+        completed.set()
+
+    monkeypatch.setattr(dashboard_web, "_run_draft_job", fake_draft)
 
     payload = json.dumps({"candidates": 3}).encode("utf-8")
     req = urllib.request.Request(
@@ -756,12 +762,13 @@ def test_post_api_draft_creates_job(
     assert resp.status == 200
     data = json.loads(resp.read().decode("utf-8"))
     assert "job_id" in data
+    assert completed.wait(5)
 
     with ctx.lock:
         job = ctx.jobs.get(data["job_id"])
         assert job is not None
         assert job.stage == "draft"
-        assert job.status == "running"
+        assert job.status == "completed"
 
 
 def test_get_unknown_route_returns_404(
