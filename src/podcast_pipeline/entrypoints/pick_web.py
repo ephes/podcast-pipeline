@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import socket
 import sys
@@ -208,6 +209,15 @@ def _candidate_preview_html(content: str) -> str:
         return f"<pre>{escape(content)}</pre>"
 
 
+def _candidate_digest(candidate: Candidate) -> str:
+    """Identify the candidate copy a browser displays, so a choice can be bound to it.
+
+    Canonical JSON (sorted keys) keeps an in-memory copy and its reloaded file equal.
+    """
+    canonical = json.dumps(candidate.model_dump(mode="json"), sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
 @dataclass(frozen=True)
 class _AssetSnapshot:
     asset_id: str
@@ -296,6 +306,7 @@ class _ServerContext:
                 candidate_items.append(
                     {
                         "candidate_id": str(c.candidate_id),
+                        "candidate_digest": _candidate_digest(c),
                         "content": c.content,
                         "content_html": _candidate_preview_html(c.content),
                         "format": c.format.value,
@@ -320,8 +331,13 @@ class _ServerContext:
             result.append(asset_data)
         return result
 
-    def select_candidate(self, asset_id: str, candidate_id_str: str) -> str | None:
-        """Select a candidate. Returns error message on failure, None on success."""
+    def select_candidate(
+        self, asset_id: str, candidate_id_str: str, displayed_digest: str | None = None
+    ) -> str | None:
+        """Select a candidate. Returns error message on failure, None on success.
+
+        ``displayed_digest`` is the ``candidate_digest`` the browser rendered; the page always sends it.
+        """
         try:
             validate_asset_id(asset_id)
         except ValueError as exc:
@@ -340,6 +356,9 @@ class _ServerContext:
         if match is None:
             return f"candidate_id {candidate_id_str} not found for asset {asset_id}"
 
+        if displayed_digest is not None and displayed_digest != _candidate_digest(match):
+            # Another view reloaded a newer copy since this browser rendered the candidate.
+            raise CandidateSelectionChanged("Candidate changed or disappeared; reload candidates and select again.")
         generation = candidate_generation(layout=self.store.layout, candidate=match)
         selected_format, selected_text = match.format, match.content
         if asset_id in TAG_ASSET_IDS:
@@ -576,12 +595,16 @@ class _PickWebHandler(BaseHTTPRequestHandler):
         if not isinstance(asset_id, str) or not isinstance(candidate_id, str):
             self._respond(400, "application/json", json.dumps({"error": "Missing asset_id or candidate_id"}).encode())
             return
+        displayed_digest = payload.get("candidate_digest")
+        if displayed_digest is not None and not isinstance(displayed_digest, str):
+            self._respond_json(400, {"error": "candidate_digest must be a string"})
+            return
 
         try:
             with self.ctx.lock:
                 if self._reject_closing():
                     return
-                error = self.ctx.select_candidate(asset_id, candidate_id)
+                error = self.ctx.select_candidate(asset_id, candidate_id, displayed_digest)
         except CandidateSelectionChanged as exc:
             self._respond_json(409, {"error": str(exc)})
             return
@@ -709,6 +732,7 @@ class _PickWebHandler(BaseHTTPRequestHandler):
                 "ok": True,
                 "candidate": {
                     "candidate_id": str(candidate.candidate_id),
+                    "candidate_digest": _candidate_digest(candidate),
                     "content": candidate.content,
                     "content_html": preview,
                     "format": candidate.format.value,
@@ -1158,7 +1182,8 @@ function _renderMain() {
           <button class="edit-btn" data-candidate="${cid}"
             title="Copy this candidate into the custom text editor">Edit</button>
           <button class="select-btn"
-            data-asset="${aid}" data-candidate="${cid}" aria-disabled="${pendingChoices.has(asset.asset_id)}">
+            data-asset="${aid}" data-candidate="${cid}" data-digest="${esc(c.candidate_digest)}"
+            aria-disabled="${pendingChoices.has(asset.asset_id)}">
             ${isSel ? "Selected" : "Select"}
           </button>
         </span>
@@ -1171,7 +1196,7 @@ function _renderMain() {
   main.innerHTML = html;
   main.querySelectorAll(".select-btn").forEach(btn => {
     btn.onclick = () => handleSelect(
-      btn.dataset.asset, btn.dataset.candidate
+      btn.dataset.asset, btn.dataset.candidate, btn.dataset.digest
     );
   });
   main.querySelectorAll(".edit-btn").forEach(btn => {
@@ -1335,9 +1360,10 @@ async function handleSaveCustom(assetId) {
   });
 }
 
-async function handleSelect(assetId, candidateId) {
+async function handleSelect(assetId, candidateId, candidateDigest) {
+  // The digest names the copy this card rendered; the server refuses a newer one.
   await choose(assetId, async () => {
-    await post("/api/select", {asset_id: assetId, candidate_id: candidateId});
+    await post("/api/select", {asset_id: assetId, candidate_id: candidateId, candidate_digest: candidateDigest});
     const asset = assets.find(a => a.asset_id === assetId);
     if (asset) {
       asset.selected_candidate_id = candidateId;

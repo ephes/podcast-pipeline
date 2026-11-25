@@ -585,8 +585,9 @@ tag-pool rendering run after the workspace lock is released. Custom drafts survi
 switches in the current page. A save acknowledges the submitted revision. Text typed while saving stays
 unsaved. Candidate and custom selections admit one pending choice per asset. After an uncertain mutation,
 the picker reloads stored state before allowing another choice and leaves the decision to retry to you.
-If a displayed candidate has changed or disappeared, the picker reloads the candidates and asks you to
-choose again.
+Each Select sends a digest of the candidate copy its card shows. If that candidate has changed or
+disappeared since, even when another picker tab already loaded the new copy, the server refuses the
+choice and the picker reloads the candidates and asks you to choose again.
 
 Every picker browser exchange has a thirty-second deadline covering response headers and body, except
 refinement: its deadline is the configured drafter agent timeout plus one minute, so normal refinements finish

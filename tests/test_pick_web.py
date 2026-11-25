@@ -600,10 +600,17 @@ def test_post_api_refine_adds_refined_candidate(
     assert len(candidates) == 3
     assert candidates[-1]["instruction"] == "kürzer"
     assert candidates[0]["instruction"] is None
+    # The page appends the refine receipt; its digest names the same copy a reload shows.
+    assert candidates[-1]["candidate_digest"] == refined["candidate_digest"]
 
     # The refined candidate can be selected like any other.
     status, _ = _post_json(
-        f"{base_url}/api/select", {"asset_id": "description", "candidate_id": refined["candidate_id"]}
+        f"{base_url}/api/select",
+        {
+            "asset_id": "description",
+            "candidate_id": refined["candidate_id"],
+            "candidate_digest": refined["candidate_digest"],
+        },
     )
     assert status == 200
 
@@ -973,6 +980,59 @@ def test_select_refuses_candidate_changed_after_display(
         assert not other.layout.candidate_json_path("description", candidate.candidate_id).exists()
     else:
         assert other.read_candidate("description", candidate.candidate_id) == replacement
+
+
+def test_select_refuses_copy_reloaded_by_another_view(pick_server: _PickServerTuple) -> None:
+    _, url, ctx, candidates = pick_server
+    other = EpisodeWorkspaceStore(ctx.store.layout.root)
+    candidate = candidates["description"][0]
+    assert ctx.select_custom_text("description", "Keep this selection", None) is None
+    before = other.layout.state_json.read_bytes()
+    shown = cast(list[dict[str, str]], _assets_by_id(url)["description"]["candidates"])[0]
+    assert shown["candidate_id"] == str(candidate.candidate_id)
+    other.write_candidate(candidate.model_copy(update={"content": "NEW"}))
+    # A second tab (or a refresh whose response never reached this page) reloads the new copy.
+    reloaded = cast(list[dict[str, str]], _assets_by_id(url)["description"]["candidates"])[0]
+    assert reloaded["content"] == "NEW"
+    assert reloaded["candidate_digest"] != shown["candidate_digest"]
+
+    status, receipt = _post_json(
+        f"{url}/api/select",
+        {
+            "asset_id": "description",
+            "candidate_id": shown["candidate_id"],
+            "candidate_digest": shown["candidate_digest"],
+        },
+    )
+
+    assert status == 409, receipt
+    assert "reload candidates" in str(receipt["error"])
+    assert other.layout.state_json.read_bytes() == before
+    assert other.read_selected_text("description", TextFormat.markdown).strip() == "Keep this selection"
+
+    status, receipt = _post_json(
+        f"{url}/api/select",
+        {
+            "asset_id": "description",
+            "candidate_id": reloaded["candidate_id"],
+            "candidate_digest": reloaded["candidate_digest"],
+        },
+    )
+    assert status == 200, receipt
+    assert other.read_selected_text("description", TextFormat.markdown).strip() == "NEW"
+
+
+def test_select_rejects_non_string_candidate_digest(pick_server: _PickServerTuple) -> None:
+    _, url, _, candidates = pick_server
+    status, receipt = _post_json(
+        f"{url}/api/select",
+        {
+            "asset_id": "description",
+            "candidate_id": str(candidates["description"][0].candidate_id),
+            "candidate_digest": 1,
+        },
+    )
+    assert status == 400, receipt
 
 
 def test_done_refuses_active_refinement(pick_server: _PickServerTuple) -> None:

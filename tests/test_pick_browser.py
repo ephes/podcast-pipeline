@@ -11,7 +11,8 @@ FAKE_API = r"""
 window.server = {
   assets: ['description', 'shownotes', 'cms_tags'].map(asset_id => ({
     asset_id, candidates: ['c1', 'c2'].map(candidate_id => ({
-      candidate_id, format: 'markdown', content: 'Synthetic copy', content_html: '<p>Synthetic copy</p>'
+      candidate_id, candidate_digest: `d-${candidate_id}`, format: 'markdown', content: 'Synthetic copy',
+      content_html: '<p>Synthetic copy</p>'
     })), is_tag_asset: asset_id === 'cms_tags', selected_tags: [],
     tag_pool: [{tag:'Python', count:2}], max_tags:12, selection_format:'markdown', has_selection:true
   })), requests: [], pending: [], hold: '', bodyHold: '', fail: ''
@@ -87,6 +88,20 @@ def test_selection_has_one_pending_choice(page: Page) -> None:
     page.evaluate("server.pending[0].resolve(response({ok:true}))")
     page.wait_for_function("assets[0].selected_candidate_id === 'c1'")
     expect(page.locator("#card-c1")).to_have_class("candidate-card selected")
+
+
+def test_select_sends_digest_of_rendered_card(page: Page) -> None:
+    # An uncertain earlier choice makes the next one reload first; the request must
+    # still name the copy the clicked card showed, so the server can refuse a newer one.
+    page.evaluate(
+        "uncertainChoices.add('description');"
+        "server.assets[0].candidates[0] = {...server.assets[0].candidates[0], candidate_digest: 'd-new'}"
+    )
+    page.locator("#card-c1 .select-btn").click()
+    page.wait_for_function("server.requests.some(r => r.path === '/api/select')")
+    body = page.evaluate("server.requests.find(r => r.path === '/api/select').body")
+    assert body == {"asset_id": "description", "candidate_id": "c1", "candidate_digest": "d-c1"}
+    assert page.evaluate("server.requests.filter(r => r.path === '/api/assets').length") == 2
 
 
 @pytest.mark.parametrize("failed", [False, True])

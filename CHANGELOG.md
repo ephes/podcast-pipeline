@@ -6,7 +6,8 @@
 
 - Finish standalone picker shutdown if sending the Done acknowledgment times out.
 
-- Reject standalone picker choices when the candidate was changed or removed by another workspace writer.
+- Reject standalone picker choices when the candidate was changed or removed by another workspace writer,
+  including copies another picker tab reloaded after this page rendered the candidate.
 
 - Release the standalone picker workspace lock before rendering candidate previews and tag pools.
 
