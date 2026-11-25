@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- Prepare bounded UTF-8 progress tails before taking the dashboard lock.
+
+- Count only regular files in the dashboard’s legacy chunk inventory.
+
+- Count a dashboard candidate selection only when its asset still has the candidate and usable published text; the Pick tab check mark uses the same rule.
+
+- Retry failed candidate inventory reads on the next dashboard status refresh and report the read error.
+
+- Refresh dashboard status from the current workspace state so external selections appear without a restart.
+
 - Preserve the agent CLI exit code when stdout contains invalid UTF-8 on a nonzero exit.
 
 - Retire agent and transcription CLI processes and close their pipes if supervision setup fails after launch.

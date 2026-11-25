@@ -16,7 +16,7 @@ import uvicorn
 from podcast_pipeline.dashboard_api_models import AssetOut, StatusOut
 from podcast_pipeline.dashboard_context import BackgroundJob, DashboardContext
 from podcast_pipeline.domain.models import Candidate, TextFormat
-from podcast_pipeline.entrypoints.dashboard_web import create_dashboard_app
+from podcast_pipeline.entrypoints.dashboard_web import _ProgressCapture, create_dashboard_app
 from podcast_pipeline.pick_core import has_manual_selection_provenance
 from podcast_pipeline.workspace_store import EpisodeWorkspaceStore
 from tests.session_support import SESSION_TOKEN, launch_target
@@ -687,13 +687,14 @@ def test_get_api_jobs_empty(dashboard_server: _DashboardServerTuple) -> None:
 
 
 def test_job_endpoints_serialize_bytes_progress(dashboard_server: _DashboardServerTuple) -> None:
-    """Bytes in job progress are normalized instead of crashing JSON/SSE responses."""
+    """Bytes written to progress are normalized for JSON and SSE responses."""
     _server, base_url, ctx = dashboard_server
 
     with ctx.lock:
         job = ctx.create_job("draft")
-        job.progress.append(cast(Any, b"binary-progress-line"))
-        job.status = "completed"
+    _ProgressCapture(ctx, job).write(b"binary-progress-line")
+    with ctx.lock:
+        ctx.finish_job(job, "completed")
 
     resp = urllib.request.urlopen(f"{base_url}/api/jobs/{job.job_id}")
     assert resp.status == 200
@@ -897,6 +898,21 @@ def test_dashboard_context_status(tmp_path: Path) -> None:
     assert status["hosts"] == ["Alice", "Bob"]
     assert status["stages"]["episode_yaml"] is True
     assert status["stages"]["candidates"] == 3
+
+
+def test_dashboard_status_observes_external_selection(tmp_path: Path) -> None:
+    store = _setup_workspace(tmp_path)
+    candidate = Candidate(asset_id="summary_short", content="Synthetic summary")
+    ctx = DashboardContext(workspace=tmp_path)
+    assert ctx.get_status_json()["stages"]["selected"] == 0
+    ctx.get_assets_json()
+
+    store.write_candidate(candidate)
+    writer = DashboardContext(workspace=tmp_path)
+    assert writer.select_custom_text(candidate.asset_id, "Synthetic manual summary", None) is None
+    store.delete_candidate_files(candidate.asset_id, candidate.candidate_id)
+
+    assert ctx.get_status_json()["stages"]["selected"] == 1
 
 
 def test_dashboard_context_editorial_notes(tmp_path: Path) -> None:

@@ -27,6 +27,7 @@ from podcast_pipeline.dashboard_context import (
     PROGRESS_TRUNCATED,
     BackgroundJob,
     DashboardContext,
+    ProgressEntry,
     SelectedArtifactError,
 )
 from podcast_pipeline.local_web_guard import (
@@ -581,7 +582,7 @@ class _DashboardApi:
                 "stage": job.stage,
                 "status": job.status,
                 "progress": ([PROGRESS_TRUNCATED] if job.progress_start else [])
-                + [_to_text(line) for line in job.progress],
+                + [entry.text for entry in job.progress],
                 "error": job.error,
                 "result": job.result,
             }
@@ -595,8 +596,8 @@ class _DashboardApi:
             if last_idx > first_idx + len(job.progress):
                 last_idx = 0
             progress = [
-                (first_idx + index + 1, _to_text(line))
-                for index, line in enumerate(job.progress)
+                (first_idx + index + 1, entry.text)
+                for index, entry in enumerate(job.progress)
                 if first_idx + index + 1 > last_idx
             ]
             return last_idx, first_idx, progress, job.status, job.error
@@ -849,9 +850,10 @@ class _ProgressCapture(io.StringIO):
 
     def write(self, s: Any) -> int:
         text = _to_text(s)
-        if text.strip():
+        entry = ProgressEntry.from_text(text)
+        if entry is not None:
             with self._ctx.lock:
-                self._job.append_progress(text.strip())
+                self._job.append_progress(entry)
         return len(text)
 
 

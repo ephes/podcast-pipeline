@@ -112,7 +112,7 @@ def test_job_stderr_capture_ends_when_dashboard_exits(tmp_path: Path, monkeypatc
             assert finished.wait(5)
 
     job = next(iter(ctx.jobs.values()))
-    assert list(job.progress) == ["while serving"]
+    assert [entry.text for entry in job.progress] == ["while serving"]
     assert "\nafter restart\n" in next_stderr.getvalue()
     assert job.status == "completed"
 
@@ -132,7 +132,7 @@ def test_slow_storage_allows_other_requests(
     entered, release, shutdown = threading.Event(), threading.Event(), threading.Event()
 
     def slow(*args: Any) -> Any:
-        assert ctx.lock.locked()
+        assert ctx.lock.locked() == (operation != "_status_snapshot")
         entered.set()
         assert release.wait(3)
         return result
@@ -159,8 +159,11 @@ def test_slow_storage_allows_other_requests(
                 with pytest.raises(TimeoutError):
                     await asyncio.wait_for(client.get("/api/status"), 0.05)
                 assert (await asyncio.wait_for(client.get("/"), 0.5)).status_code == 200
-                assert not done.done()
-                assert not shutdown.is_set()
+                if operation == "_status_snapshot":
+                    assert (await asyncio.wait_for(done, 0.5)).status_code == 200
+                else:
+                    assert not done.done()
+                    assert not shutdown.is_set()
                 assert time.monotonic() - started < 1
                 assert not release.is_set()
             finally:
@@ -256,7 +259,7 @@ def test_sse_poll_waits_for_lock_off_event_loop(tmp_path: Path) -> None:
 
     ctx = DashboardContext(workspace=tmp_path)
     job = ctx.create_job("synthetic")
-    job.append_progress("first")
+    web._ProgressCapture(ctx, job).write("first")
     api = web._DashboardApi(ctx=ctx, on_done=None)
 
     async def exercise() -> None:
@@ -272,10 +275,12 @@ def test_sse_poll_waits_for_lock_off_event_loop(tmp_path: Path) -> None:
         entered, release = threading.Event(), threading.Event()
 
         def finish() -> None:
+            last = web.ProgressEntry.from_text("last")
+            assert last is not None
             with ctx.lock:
                 entered.set()
                 release.wait(3)
-                job.append_progress("last")
+                job.append_progress(last)
                 ctx.finish_job(job, "completed")
 
         worker = threading.Thread(target=finish)

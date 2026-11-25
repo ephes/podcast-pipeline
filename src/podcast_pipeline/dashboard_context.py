@@ -57,30 +57,58 @@ class SelectedArtifactError(WorkspaceStoreError):
     """A published selection could not be safely read."""
 
 
+@dataclass(frozen=True)
+class ProgressEntry:
+    text: str
+    byte_count: int
+    truncated: bool
+
+    @classmethod
+    def from_text(cls, text: str) -> ProgressEntry | None:
+        # Find the stripped bounds without copying the discarded portion of a large write.
+        start, end = 0, len(text)
+        while start < end and text[start].isspace():
+            start += 1
+        if start == end:
+            return None
+        while text[end - 1].isspace():
+            end -= 1
+
+        # Every code point takes at least one byte. Only this many can fit in the retained tail.
+        tail_start = max(start, end - MAX_PROGRESS_BYTES)
+        tail = text[tail_start:end]
+        encoded = tail.encode("utf-8")
+        offset = max(0, len(encoded) - MAX_PROGRESS_BYTES)
+        truncated = tail_start > start or offset > 0
+        if offset:
+            # Skip continuation bytes at a cut through a multibyte code point.
+            while offset < len(encoded) and encoded[offset] & 0xC0 == 0x80:
+                offset += 1
+            tail = encoded[offset:].decode("utf-8")
+        return cls(text=tail, byte_count=len(encoded) - offset, truncated=truncated)
+
+
 @dataclass
 class BackgroundJob:
     job_id: str
     stage: str
     status: str = "running"
-    progress: deque[str] = field(default_factory=deque)
+    progress: deque[ProgressEntry] = field(default_factory=deque)
     progress_start: int = 0
     progress_bytes: int = 0
     error: str | None = None
     result: dict[str, Any] | None = None
 
-    def append_progress(self, text: str) -> None:
-        """Retain a byte/entry-bounded tail with monotonically increasing entry IDs."""
-        encoded = text.encode("utf-8")
-        if len(encoded) > MAX_PROGRESS_BYTES:
+    def append_progress(self, entry: ProgressEntry) -> None:
+        """Retain prepared progress with monotonically increasing IDs. Caller holds the context lock."""
+        if entry.truncated:
             self.progress_start += len(self.progress) + 1
             self.progress.clear()
             self.progress_bytes = 0
-            text = encoded[-MAX_PROGRESS_BYTES:].decode("utf-8", errors="ignore")
-        self.progress.append(text)
-        self.progress_bytes += len(text.encode("utf-8"))
+        self.progress.append(entry)
+        self.progress_bytes += entry.byte_count
         while self.progress_bytes > MAX_PROGRESS_BYTES or len(self.progress) > MAX_PROGRESS_ENTRIES:
-            removed = self.progress.popleft()
-            self.progress_bytes -= len(removed.encode("utf-8"))
+            self.progress_bytes -= self.progress.popleft().byte_count
             self.progress_start += 1
 
 
@@ -107,10 +135,10 @@ class DashboardContext:
                 self._candidates_by_asset = {}
         return self._candidates_by_asset
 
-    def _pickable_assets(self) -> dict[str, list[Candidate]]:
+    def _pickable_assets(
+        self, candidates: dict[str, list[Candidate]], ws: EpisodeWorkspace
+    ) -> dict[str, list[Candidate]]:
         """Assets shown in the Pick tab: those with candidates plus custom selections whose candidates are gone."""
-        candidates = self._ensure_candidates()
-        ws = self._ensure_workspace_state()
         pickable = dict(candidates)
         for ref in ws.provenance:
             if (
@@ -133,32 +161,40 @@ class DashboardContext:
     def get_status_json(self) -> dict[str, Any]:
         # A publisher can report progress through the dashboard while holding the workspace lock.
         with self.store.publication_lock():
+            ws = load_workspace(self.store)
+            candidates = load_candidates(layout=self.layout, asset_id=None, allow_missing_root=True)
             chunk_count = read_published_chunk_count(self.layout)
             if chunk_count is None:
                 chunk_count = _count_chunk_entries(self.layout.transcript_chunks_dir)
+            snapshot = self._status_snapshot(chunk_count, ws, candidates)
         with self.lock:
-            return self._status_snapshot(chunk_count)
+            if self._workspace_state is not None and self._workspace_state != ws:
+                self._workspace_state = None
+                self._candidates_by_asset = None
+        return snapshot
 
-    def _status_snapshot(self, chunk_count: int | None) -> dict[str, Any]:
+    def _status_snapshot(
+        self, chunk_count: int | None, ws: EpisodeWorkspace, candidates: dict[str, list[Candidate]]
+    ) -> dict[str, Any]:
         layout = self.layout
         episode_yaml = self._read_episode_yaml_safe()
 
         transcript_ok = (layout.transcript_dir / "transcript.txt").exists()
         summary_ok = layout.episode_summary_json_path().exists()
-        candidates = self._ensure_candidates()
         candidate_count = sum(len(v) for v in candidates.values())
         candidate_assets = len(candidates)
-        pickable = self._pickable_assets()
+        pickable = self._pickable_assets(candidates, ws)
 
-        ws = self._ensure_workspace_state()
-        assets_by_id = {asset.asset_id: asset for asset in ws.assets}
+        selected_ids = {
+            asset.asset_id: asset.selected_candidate_id
+            for asset in ws.assets
+            if asset.selected_candidate_id is not None
+        }
+        asset_ids = pickable.keys() | selected_ids.keys()
         selected_count = sum(
             1
-            for asset_id in pickable
-            if self._is_asset_selected(
-                asset_id,
-                assets_by_id[asset_id].selected_candidate_id if asset_id in assets_by_id else None,
-            )
+            for asset_id in asset_ids
+            if self._is_asset_selected(asset_id, selected_ids.get(asset_id), candidates.get(asset_id, []))
         )
 
         payload = StatusOut(
@@ -174,7 +210,7 @@ class DashboardContext:
                 candidates=candidate_count,
                 candidate_assets=candidate_assets,
                 selected=selected_count,
-                total_assets=len(pickable),
+                total_assets=len(asset_ids),
             ),
         )
         return payload.model_dump(mode="json")
@@ -219,8 +255,8 @@ class DashboardContext:
         return None
 
     def get_assets_json(self) -> list[dict[str, Any]]:
-        candidates = self._pickable_assets()
         ws = self._ensure_workspace_state()
+        candidates = self._pickable_assets(self._ensure_candidates(), ws)
         assets_by_id = {asset.asset_id: asset for asset in ws.assets}
         tag_settings, hosts = load_episode_tag_settings(self.workspace)
 
@@ -228,12 +264,13 @@ class DashboardContext:
         for asset_key in sorted(candidates):
             cands = candidates[asset_key]
             existing = assets_by_id.get(asset_key)
-            selected_id = str(existing.selected_candidate_id) if existing and existing.selected_candidate_id else None
+            selected_uuid = existing.selected_candidate_id if existing else None
+            selected_id = str(selected_uuid) if selected_uuid else None
             current = self._read_selected_text(asset_key)
             is_tag = _is_tag_asset(asset_key)
             selected_tags = parse_tag_list(current) if is_tag else []
-            has_text = bool(selected_tags) if is_tag else bool(current and current.strip())
-            has_selection = selected_id is not None or has_text
+            has_text = _has_usable_selected_text(asset_key, current)
+            has_selection = _selection_counts(asset_key, selected_uuid, cands, current)
             custom_selected = selected_id is None and has_text
 
             candidate_items: list[AssetCandidateOut] = []
@@ -328,7 +365,7 @@ class DashboardContext:
         except ValueError as exc:
             return str(exc)
 
-        candidates = self._pickable_assets()
+        candidates = self._pickable_assets(self._ensure_candidates(), self._ensure_workspace_state())
         if asset_id not in candidates:
             return f"Unknown asset_id: {asset_id}"
         asset_candidates = candidates[asset_id]
@@ -368,7 +405,7 @@ class DashboardContext:
             validate_asset_id(asset_id)
         except ValueError as exc:
             return str(exc)
-        candidates = self._pickable_assets()
+        candidates = self._pickable_assets(self._ensure_candidates(), self._ensure_workspace_state())
         if asset_id not in candidates:
             return f"Unknown asset_id: {asset_id}"
         current = self._read_selected_text(asset_id)
@@ -562,13 +599,25 @@ class DashboardContext:
             return text.replace("\r\n", "\n").replace("\r", "\n")
         return None
 
-    def _is_asset_selected(self, asset_id: str, selected_candidate_id: UUID | None) -> bool:
-        if selected_candidate_id is not None:
-            return True
-        selected_text = self._read_selected_text(asset_id)
-        if _is_tag_asset(asset_id):
-            return bool(parse_tag_list(selected_text))
-        return bool(selected_text and selected_text.strip())
+    def _is_asset_selected(
+        self, asset_id: str, selected_candidate_id: UUID | None, candidates: list[Candidate]
+    ) -> bool:
+        return _selection_counts(asset_id, selected_candidate_id, candidates, self._read_selected_text(asset_id))
+
+
+def _has_usable_selected_text(asset_id: str, selected_text: str | None) -> bool:
+    if _is_tag_asset(asset_id):
+        return bool(parse_tag_list(selected_text))
+    return bool(selected_text and selected_text.strip())
+
+
+def _selection_counts(
+    asset_id: str, selected_candidate_id: UUID | None, candidates: list[Candidate], selected_text: str | None
+) -> bool:
+    """Shared selection rule for the status counter and the Pick tab badge."""
+    if selected_candidate_id is not None and find_candidate_by_id(candidates, selected_candidate_id) is None:
+        return False
+    return _has_usable_selected_text(asset_id, selected_text)
 
 
 def _count_chunk_entries(path: Path) -> int | None:
@@ -584,7 +633,11 @@ def _count_chunk_entries(path: Path) -> int | None:
             for index, entry in enumerate(scan, start=1):
                 if index > MAX_CHUNK_INVENTORY_ENTRIES:
                     return None
-                if entry.name.startswith("chunk_") and entry.name.endswith(".txt"):
+                if (
+                    entry.name.startswith("chunk_")
+                    and entry.name.endswith(".txt")
+                    and entry.is_file(follow_symlinks=False)
+                ):
                     count += 1
     except OSError:
         return None

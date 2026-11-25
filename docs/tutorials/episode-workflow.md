@@ -594,11 +594,18 @@ tag updates retain the equivalent control's focus, and background saves preserve
 Composing or already-handled Enter in tag/refinement inputs never submits; committed Enter and explicit
 buttons still work. See [standalone picker limits](../reference/configuration.md#standalone-picker-limits).
 
+Each dashboard status refresh reads the latest workspace state, including selections saved by other
+CLI processes or dashboards. A missing candidates directory counts as empty. If a candidate read fails,
+status displays an error and the next refresh tries again. Candidate selections count only while the
+same asset still has that candidate and usable published text. Assets with stale candidate selections
+remain in the total as unselected. Saved manual text also counts as a selection. The Pick tab check mark
+uses the same rule against its loaded candidate list.
+
 The dashboard counts chunks from the published manifest when it passes structural validation. This status
 counts the entries recorded at publication. Drafting separately verifies the source and chunk contents.
-Without a usable manifest, status looks for `chunk_*.txt` names in at most 8,192 directory entries, with one
-extra entry checked to detect overflow. An oversized or unreadable inventory displays “Count incomplete”
-and returns `null` in `/api/status` at `stages.chunks`. A missing chunk directory reports zero.
+Without a usable manifest, status counts regular `chunk_*.txt` files and skips symlinks. It scans
+at most 8,192 directory entries and checks one extra entry to detect overflow. An oversized or unreadable
+inventory displays “Count incomplete” and returns `null` in `/api/status` at `stages.chunks`. A missing chunk directory reports zero.
 
 Saving or clearing an asset's editorial notes validates the stored `episode.yaml` first. If its
 `editorial_notes` value is malformed, the dashboard returns HTTP 400 and preserves the file for repair.
@@ -699,7 +706,8 @@ changes workspace state, and external request cancellation propagates. A worker 
 returns 503 and permits immediate retry while preserving single-flight admission.
 If a worker exits without recording an outcome, job polling and streaming report a failed job
 with the message `Background worker exited unexpectedly`. The stage can then be retried.
-Each job retains the latest 128 KiB / 1024 progress entries; oversized writes retain a UTF-8 tail.
+Each job retains the latest 128 KiB / 1024 progress entries. Oversized writes retain a UTF-8 tail
+prepared before acquiring the dashboard lock.
 JSON/SSE responses include an earlier-progress-truncated notice when history was evicted.
 SSE progress IDs increase monotonically and support `Last-Event-ID` reconnects across eviction.
 A cursor ahead of the job's newest event replays the retained history and resumes live progress.
@@ -708,9 +716,10 @@ Both local UIs admit an explicit Host port only as one to five ASCII decimal dig
 Malformed ports return the existing 403 Forbidden host response before reading a body, including
 oversized numbers, Unicode digits and out-of-range values. IPv4/IPv6 loopback hosts remain supported.
 Workspace reads/writes, job admission and context-lock acquisition run in Starlette's worker pool.
-Snapshots are serialized or copied under that same lock; HTTP/SSE sends and waits happen after it is
-released. A slow workspace operation or a worker-held lock can delay snapshots and the interactive
-shutdown check while the event loop remains responsive. Initialization and ingest use this boundary too.
+Status reads workspace state, inventory and selected files under the publication lock. Job snapshots
+are copied under the context lock. HTTP/SSE sends and waits happen after those locks are released.
+A slow workspace operation or a worker-held lock can delay snapshots and the interactive shutdown
+check while the event loop remains responsive. Initialization and ingest use this boundary too.
 
 ### Concurrent selections and RSS imports
 

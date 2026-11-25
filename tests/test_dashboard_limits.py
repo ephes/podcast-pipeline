@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import sys
 import threading
 from collections.abc import AsyncIterator, Iterator
 from contextlib import contextmanager
@@ -24,6 +25,66 @@ from tests.session_support import SESSION_HEADERS, SESSION_TOKEN
 @pytest.fixture
 def ctx(tmp_path: Path) -> context.DashboardContext:
     return context.DashboardContext(workspace=tmp_path)
+
+
+def test_status_retries_rejected_candidate_inventory(ctx: context.DashboardContext) -> None:
+    candidate = Candidate(asset_id="description", content="Synthetic description")
+    path = ctx.layout.candidate_json_path(candidate.asset_id, candidate.candidate_id)
+    path.parent.mkdir(parents=True)
+    path.write_text("{", encoding="utf-8")
+
+    api = web._DashboardApi(ctx=ctx, on_done=None)
+    request = Request({"type": "http"})
+    failed = api.serve_status(request)
+
+    ctx.store.write_candidate(candidate)
+    assert ctx.get_status_json()["stages"]["candidates"] == 1
+    assert failed.status_code == 500
+
+    assert len(ctx.get_assets_json()) == 1
+    path.write_text("{", encoding="utf-8")
+    assert api.serve_status(request).status_code == 500
+    assert len(ctx.get_assets_json()) == 1
+
+
+@pytest.mark.parametrize("missing", ["candidate", "output"])
+def test_status_requires_selected_candidate_and_output(ctx: context.DashboardContext, missing: str) -> None:
+    candidate = Candidate(asset_id="description", content="Synthetic description")
+    ctx.store.write_candidate(candidate)
+    assert ctx.select_candidate(candidate.asset_id, str(candidate.candidate_id)) is None
+    assert ctx.get_status_json()["stages"]["selected"] == 1
+
+    if missing == "candidate":
+        ctx.store.delete_candidate_files(candidate.asset_id, candidate.candidate_id)
+        ctx.store.write_candidate(candidate.model_copy(update={"asset_id": "shownotes"}))
+    else:
+        ctx.store.clear_selected_text(candidate.asset_id)
+
+    stages = ctx.get_status_json()["stages"]
+    assert stages["selected"] == 0
+    assert stages["total_assets"] == (2 if missing == "candidate" else 1)
+
+
+@pytest.mark.parametrize("missing", ["candidate", "output"])
+def test_pick_badge_matches_status_selection(ctx: context.DashboardContext, missing: str) -> None:
+    chosen = Candidate(asset_id="description", content="Synthetic description")
+    other = Candidate(asset_id="description", content="Other synthetic description")
+    ctx.store.write_candidate(chosen)
+    ctx.store.write_candidate(other)
+    assert ctx.select_candidate(chosen.asset_id, str(chosen.candidate_id)) is None
+    assert ctx.get_status_json()["stages"]["selected"] == 1
+    assert ctx.get_assets_json()[0]["has_selection"] is True
+
+    if missing == "candidate":
+        ctx.store.delete_candidate_files(chosen.asset_id, chosen.candidate_id)
+        ctx.reload_candidates()
+    else:
+        ctx.store.clear_selected_text(chosen.asset_id)
+
+    assert ctx.get_status_json()["stages"]["selected"] == 0
+    (asset,) = ctx.get_assets_json()
+    assert asset["has_selection"] is False
+    assert asset["custom_selected"] is False
 
 
 def test_status_bounds_chunk_directory_entries(ctx: context.DashboardContext, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -51,6 +112,17 @@ def test_status_bounds_chunk_directory_entries(ctx: context.DashboardContext, mo
     monkeypatch.setattr(os, "scandir", track_chunk_entries)
     assert ctx.get_status_json()["stages"]["chunks"] is None
     assert visited == 9
+
+
+def test_status_counts_only_regular_legacy_chunks(ctx: context.DashboardContext) -> None:
+    directory = ctx.layout.transcript_chunks_dir
+    directory.mkdir(parents=True)
+    regular = directory / "chunk_0001.txt"
+    regular.touch()
+    (directory / "chunk_0002.txt").mkdir()
+    (directory / "chunk_0003.txt").symlink_to(regular)
+
+    assert ctx.get_status_json()["stages"]["chunks"] == 1
 
 
 def test_status_counts_published_chunks_from_manifest(ctx: context.DashboardContext) -> None:
@@ -126,10 +198,10 @@ def test_progress_byte_and_entry_caps(ctx: context.DashboardContext, monkeypatch
     capture = web._ProgressCapture(ctx, job)
     for i in range(20):
         capture.write(str(i))
-    assert list(job.progress) == ["17", "18", "19"]
+    assert [entry.text for entry in job.progress] == ["17", "18", "19"]
     assert job.progress_start == 17
     capture.write("é" * 1000)
-    assert sum(len(line.encode()) for line in job.progress) <= 64
+    assert sum(len(entry.text.encode()) for entry in job.progress) <= 64
     assert job.progress_bytes <= 64
     assert job.progress_start >= 20
     with TestClient(
@@ -139,6 +211,35 @@ def test_progress_byte_and_entry_caps(ctx: context.DashboardContext, monkeypatch
     ) as client:
         result = client.get(f"/api/jobs/{job.job_id}").json()
     assert result["progress"][0] == context.PROGRESS_TRUNCATED
+
+
+def test_progress_only_encodes_bounded_tail_before_lock(
+    ctx: context.DashboardContext, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(context, "MAX_PROGRESS_BYTES", 65)
+    job = ctx.create_job("test")
+    capture = web._ProgressCapture(ctx, job)
+    capture.write("first")
+    text = " " + "é" * 200_000 + " \n"
+    encodes: list[tuple[int, bool]] = []
+
+    def trace(frame: Any, event: str, call: Any) -> None:
+        if event == "c_call" and getattr(call, "__name__", None) == "encode" and isinstance(call.__self__, str):
+            encodes.append((len(call.__self__), ctx.lock.locked()))
+
+    previous_profile = sys.getprofile()
+    sys.setprofile(trace)
+    try:
+        assert capture.write(text) == len(text)
+        assert [entry.text for entry in job.progress] == ["é" * 32]
+        assert job.progress_bytes == 64
+        capture.write("last")
+    finally:
+        sys.setprofile(previous_profile)
+
+    assert encodes and all(length <= 65 and not locked for length, locked in encodes)
+    assert job.progress_bytes == 4
+    assert job.progress_start + len(job.progress) == 4
 
 
 def test_completed_job_retention_keeps_running(

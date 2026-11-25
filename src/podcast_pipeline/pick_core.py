@@ -62,21 +62,28 @@ def load_candidates(
     *,
     layout: EpisodeWorkspaceLayout,
     asset_id: str | None,
+    allow_missing_root: bool = False,
 ) -> dict[str, list[Candidate]]:
     """Load candidate JSON files from workspace, optionally filtered by asset_id."""
     root = layout.copy_candidates_dir
-    if not root.exists():
-        raise ValueError(f"Missing candidates directory: {root}")
 
     asset_dirs: list[Path]
     if asset_id is not None:
+        if not root.exists():
+            raise ValueError(f"Missing candidates directory: {root}")
         validate_asset_id(asset_id)
         asset_dir = root / asset_id
         if not asset_dir.exists():
             raise ValueError(f"Missing candidates directory for asset {asset_id}: {asset_dir}")
         asset_dirs = [asset_dir]
     else:
-        asset_dirs = [path for path in sorted(root.iterdir()) if path.is_dir()]
+        try:
+            entries = sorted(root.iterdir())
+        except FileNotFoundError:
+            if allow_missing_root:
+                return {}
+            raise ValueError(f"Missing candidates directory: {root}") from None
+        asset_dirs = [path for path in entries if path.is_dir()]
 
     candidates_by_asset: dict[str, list[Candidate]] = {}
     for asset_dir in asset_dirs:
