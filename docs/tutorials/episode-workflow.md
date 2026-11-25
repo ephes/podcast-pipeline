@@ -373,7 +373,7 @@ redone) in the Auphonic account. `state.json` therefore records every production
 in `auphonic_productions`, not only the current one in `auphonic_production_uuid`. Each entry has the production's
 `uuid`, its `status` in the history (`current`, `superseded` or `deleted`), `created_at`, `last_known_state` (the
 Auphonic state last seen: `done`, `error`, `not_started`, `changed`, `running` or `missing`), `outputs_downloaded_at`
-for the current one, and for a replaced one `superseded_at`, `superseded_by` and `superseded_reason` (for example
+and `output_receipt` (workspace-relative paths and byte lengths of the downloaded files), and for a replaced one `superseded_at`, `superseded_by` and `superseded_reason` (for example
 "replaced by `podcast produce --restart`"). A production UUID stored before this history existed is added to it the
 next time `produce` replaces it (without `created_at`).
 
@@ -393,9 +393,10 @@ What is deleted, and when:
 - Only `superseded` entries of the workspace's own history. The current production, productions already marked
   `deleted`, and anything that is not in the history (for example productions of other episodes, or ones created in
   the Auphonic web UI) are never deleted.
-- Nothing is deleted unless the current production is Done with downloaded outputs: `state.json` must record its
-  outputs as downloaded after its latest run, and Auphonic is asked first that it is still Done. An `--update`
-  re-run counts as a new run until its outputs are downloaded, so a failed re-run blocks the cleanup.
+- Before deleting, cleanup confirms with Auphonic that the current production is still Done and checks that every
+  file in its latest output receipt is a regular file at the recorded workspace path with the recorded byte length.
+  Run `podcast produce` again to refresh the current outputs if a legacy workspace lacks a receipt or a file no longer
+  matches. An `--update` clears the receipt until the new run's outputs have been downloaded.
 - A superseded production that Auphonic reports as still running is skipped; one that no longer exists (404 on the
   status check or on the delete request, for example because it was deleted in the Auphonic web UI) is recorded as
   deleted. Failed deletions stay `superseded` and are retried by the next cleanup.

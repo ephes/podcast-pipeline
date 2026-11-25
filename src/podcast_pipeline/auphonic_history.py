@@ -74,13 +74,17 @@ def update_record(workspace: EpisodeWorkspace, uuid: str, **changes: object) -> 
     return workspace.model_copy(update={"auphonic_productions": updated})
 
 
-def mark_outputs_downloaded(workspace: EpisodeWorkspace, uuid: str) -> EpisodeWorkspace:
-    return update_record(workspace, uuid, last_known_state="done", outputs_downloaded_at=_now())
+def mark_outputs_downloaded(
+    workspace: EpisodeWorkspace, uuid: str, output_receipt: dict[str, int]
+) -> EpisodeWorkspace:
+    return update_record(
+        workspace, uuid, last_known_state="done", outputs_downloaded_at=_now(), output_receipt=output_receipt
+    )
 
 
 def mark_rerun_started(workspace: EpisodeWorkspace, uuid: str) -> EpisodeWorkspace:
     """The production runs again (``--update``): the downloaded outputs no longer match its latest run."""
-    return update_record(workspace, uuid, last_known_state=None, outputs_downloaded_at=None)
+    return update_record(workspace, uuid, last_known_state=None, outputs_downloaded_at=None, output_receipt={})
 
 
 def mark_deleted(workspace: EpisodeWorkspace, uuid: str, *, last_known_state: str | None = None) -> EpisodeWorkspace:
@@ -99,8 +103,8 @@ class CleanupPlan:
 
     ``blocked_reason`` is set when the local state already rules out a cleanup:
     there is no current production, or the outputs of its latest run were not
-    downloaded. Callers must still confirm with Auphonic that the current
-    production is Done before deleting anything.
+    downloaded or have no receipt. Callers must still verify the local files
+    and confirm with Auphonic that the current production is Done.
     """
 
     current: AuphonicProductionRecord | None
@@ -130,6 +134,8 @@ def plan_cleanup(workspace: EpisodeWorkspace) -> CleanupPlan:
             f"the outputs of the current Auphonic production {current.uuid} have not been downloaded "
             "after it finished; run `podcast produce` first"
         )
+    elif not current.output_receipt:
+        blocked = f"no output receipt for the current Auphonic production {current.uuid}; run `podcast produce` first"
     return CleanupPlan(current=current, candidates=candidates, blocked_reason=blocked)
 
 

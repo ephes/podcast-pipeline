@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Verify downloaded Auphonic output paths and byte lengths before deleting superseded productions.
+
 - Require a matching generation receipt for automatic CMS transcript requests and report already-active jobs separately.
 
 - Reject NaN and infinite Auphonic track offsets in episode YAML during production planning.

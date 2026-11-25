@@ -327,8 +327,11 @@ class _FakeAuphonicClient:
     def list_output_files(self, _uuid: str) -> list[object]:
         return []
 
-    def download_outputs(self, _files: object, _target: Path) -> None:
-        return None
+    def download_outputs(self, _files: object, target: Path) -> tuple[Path, ...]:
+        target.mkdir(parents=True, exist_ok=True)
+        output = target / "ep.mp3"
+        output.write_bytes(b"mp3-bytes")
+        return (output,)
 
 
 @pytest.fixture()
