@@ -392,6 +392,33 @@ def test_timeout_releases_custom_save_without_repeating_mutation(page: Page) -> 
     page.wait_for_function("server.requests.filter(r => r.key.endsWith('/selection')).length === 2")
 
 
+def test_close_conflict_preserves_progress_and_allows_retry(page: Page) -> None:
+    page.wait_for_function("state.jobPollInterval !== null")
+    page.evaluate("""() => {
+      server.holds = ['POST /api/done'];
+      streamJob('synthetic', elements.produceLog, elements.produceProgress);
+      window.jobStream = state.currentJobStreams.synthetic;
+    }""")
+    close = page.get_by_role("button", name="Close", exact=True)
+    close.click()
+    page.wait_for_function("server.pending.length === 1")
+    error = "A produce job is still running. Wait for it to finish, then close the dashboard."
+    page.evaluate(
+        """error => server.pending.shift().resolve({
+          ok: false, status: 409, text: async () => JSON.stringify({error, job_id: 'synthetic'})
+        })""",
+        error,
+    )
+    page.wait_for_function("error => window.lastAlert === error", arg=error)
+    assert page.evaluate("state.currentJobStreams.synthetic === window.jobStream && state.jobPollInterval !== null")
+    expect(close).to_be_enabled()
+
+    page.evaluate("server.holds = []")
+    close.click()
+    expect(page.get_by_text("Dashboard closed.")).to_be_visible()
+    assert page.evaluate("state.jobPollInterval === null && Object.keys(state.currentJobStreams).length === 0")
+
+
 def test_stalled_health_check_can_recover(page: Page) -> None:
     page.clock.install()
     page.evaluate("""() => {

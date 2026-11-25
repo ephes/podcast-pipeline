@@ -1736,6 +1736,18 @@ async function runProduce() {
 }
 
 async function handleDone() {
+  elements.closeBtn.disabled = true;
+  // Let queued tag saves finish before the server shuts down.
+  await tagUpdateQueue;
+
+  try {
+    await apiJson("POST", "/api/done", {});
+  } catch (error) {
+    elements.closeBtn.disabled = false;
+    alert(error instanceof Error ? error.message : String(error));
+    return;
+  }
+
   if (state.jobPollInterval !== null) {
     window.clearInterval(state.jobPollInterval);
     state.jobPollInterval = null;
@@ -1745,15 +1757,6 @@ async function handleDone() {
     stream.close();
   });
   state.currentJobStreams = {};
-
-  // Let queued tag saves finish before the server shuts down.
-  await tagUpdateQueue;
-
-  try {
-    await apiJson("POST", "/api/done", {});
-  } catch (_) {
-    // Server shutdown might race with response handling.
-  }
 
   document.body.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100vh;font-size:1.5rem;color:var(--success)">Dashboard closed.</div>';
 }
@@ -1905,7 +1908,9 @@ function wireEvents() {
 async function init() {
   wireEvents();
   await Promise.allSettled([loadStatus(), loadEpisode(), loadJobs(), loadReviewAssets()]);
-  state.jobPollInterval = window.setInterval(loadJobs, 5000);
+  if (elements.closeBtn.isConnected) {
+    state.jobPollInterval = window.setInterval(loadJobs, 5000);
+  }
 }
 
 init();

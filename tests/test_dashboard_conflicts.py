@@ -15,6 +15,15 @@ from podcast_pipeline.workspace_store import EpisodeWorkspaceStore
 from tests.session_support import SESSION_HEADERS, SESSION_TOKEN
 
 
+def poll_job(client: TestClient, job_id: str) -> dict[str, Any]:
+    deadline = time.monotonic() + 2
+    while True:
+        job: dict[str, Any] = client.get(f"/api/jobs/{job_id}").json()
+        if job["status"] != "running" or time.monotonic() >= deadline:
+            return job
+        time.sleep(0.01)
+
+
 @pytest.mark.parametrize(
     ("first", "body", "blocked"),
     [
@@ -144,23 +153,54 @@ def test_worker_exit_settles_job_and_permits_retry(tmp_path: Path, monkeypatch: 
         assert response.status_code == 200
         job_id = response.json()["job_id"]
 
-        def poll_job(job_id: str) -> dict[str, Any]:
-            deadline = time.monotonic() + 2
-            while True:
-                job: dict[str, Any] = client.get(f"/api/jobs/{job_id}").json()
-                if job["status"] != "running" or time.monotonic() >= deadline:
-                    return job
-                time.sleep(0.01)
-
-        failed = poll_job(job_id)
+        failed = poll_job(client, job_id)
         assert failed["status"] == "failed"
         assert failed["error"] == "Background worker exited unexpectedly"
 
         retry = client.post("/api/produce", json={})
         assert retry.status_code == 200
-        completed = poll_job(retry.json()["job_id"])
+        completed = poll_job(client, retry.json()["job_id"])
         assert completed["status"] == "completed"
         assert completed["error"] is None
+
+
+def test_done_waits_for_publication_and_then_closes_admission(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from podcast_pipeline.entrypoints import produce
+
+    ctx = DashboardContext(workspace=tmp_path)
+    publishing, release, shutdown = threading.Event(), threading.Event(), threading.Event()
+
+    def run_produce(**kwargs: Any) -> None:
+        publishing.set()
+        assert release.wait(5)
+
+    monkeypatch.setattr(produce, "run_produce", run_produce)
+    with TestClient(
+        dashboard_web.create_dashboard_app(ctx=ctx, on_done=shutdown.set, session_token=SESSION_TOKEN),
+        base_url="http://127.0.0.1",
+        headers=SESSION_HEADERS,
+    ) as client:
+        first = client.post("/api/produce", json={})
+        assert first.status_code == 200
+        job_id = first.json()["job_id"]
+        try:
+            assert publishing.wait(5)
+            blocked = client.post("/api/done", json={})
+            assert blocked.status_code == 409
+            assert blocked.json()["job_id"] == job_id
+            assert not shutdown.is_set()
+            assert client.get(f"/api/jobs/{job_id}").json()["status"] == "running"
+        finally:
+            release.set()
+            completed = poll_job(client, job_id)
+
+        assert completed["status"] == "completed"
+        assert client.post("/api/done", json={}).status_code == 200
+        assert shutdown.wait(5)
+        assert client.post("/api/produce", json={}).status_code == 503
+        assert client.get("/api/jobs").json() == [
+            {"job_id": job_id, "stage": "produce", "status": "completed", "error": None}
+        ]
 
 
 def test_different_assets_remain_independent(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

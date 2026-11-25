@@ -1,4 +1,4 @@
-"""Storage barriers must not block the ASGI event loop or shutdown endpoint."""
+"""Storage barriers must not block the ASGI event loop."""
 
 from __future__ import annotations
 
@@ -149,18 +149,23 @@ def test_slow_storage_allows_other_requests(
             watchdog.start()
             started = time.monotonic()
             pending = asyncio.create_task(client.request(method, path, json={"episode_id": "synthetic"}))
+            done = None
             try:
                 assert await asyncio.to_thread(entered.wait, 1)
-                assert (await asyncio.wait_for(client.get("/"), 0.5)).status_code == 200
+                done = asyncio.create_task(client.post("/api/done", json={}))
                 with pytest.raises(TimeoutError):
                     await asyncio.wait_for(client.get("/api/status"), 0.05)
-                assert (await asyncio.wait_for(client.post("/api/done", json={}), 0.5)).status_code == 200
+                assert (await asyncio.wait_for(client.get("/"), 0.5)).status_code == 200
+                assert not done.done()
+                assert not shutdown.is_set()
                 assert time.monotonic() - started < 1
                 assert not release.is_set()
             finally:
                 release.set()
                 watchdog.cancel()
                 response = await pending
+                if done is not None:
+                    assert (await done).status_code == 200
                 watchdog.join()
             assert response.status_code == 200
             assert response.json() == (result if method == "GET" else {"ok": True})
@@ -201,7 +206,7 @@ def test_worker_held_lock_keeps_event_loop_responsive(
             pending = asyncio.create_task(client.post(path, json={}) if path == "/api/produce" else client.get(path))
             try:
                 await asyncio.sleep(0.05)
-                assert (await asyncio.wait_for(client.post("/api/done", json={}), 0.5)).status_code == 200
+                assert (await asyncio.wait_for(client.get("/"), 0.5)).status_code == 200
                 assert time.monotonic() - started < 1
                 assert not pending.done()
             finally:
@@ -257,7 +262,6 @@ def test_sse_poll_waits_for_lock_off_event_loop(tmp_path: Path) -> None:
             # The stream polls every 0.5 seconds; inspect it while its next snapshot waits for the lock.
             await asyncio.sleep(0.6)
             assert not pending.done()
-            assert (await api.handle_done(request)).status_code == 200
             assert time.monotonic() - started < 1.5
         finally:
             release.set()

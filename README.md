@@ -82,7 +82,8 @@ and `docs/decisions/cms-draft.md`.
 hostnames, and state-changing requests without `Content-Type: application/json`. Each run uses a new random
 session token: the browser receives the URL without a process argument, and the printed
 `http://127.0.0.1:<port>/?token=...` URL works too; requests without the token get `403`. Their responses forbid framing by other sites. Dashboard jobs such as Auphonic
-production run single-flight per episode. Details: `docs/tutorials/episode-workflow.md` ("Local web UIs").
+production run single-flight per episode. **Close** reports an active job and keeps its progress visible.
+Click **Close** again after the job finishes. Details: `docs/tutorials/episode-workflow.md` ("Local web UIs").
 
 ## Custom selected text
 
@@ -161,8 +162,8 @@ Malformed ports return the existing 403 Forbidden host response before reading a
 oversized numbers, Unicode digits and out-of-range values. IPv4/IPv6 loopback hosts remain supported.
 Workspace reads/writes, job admission and context-lock acquisition run in Starlette's worker pool.
 Snapshots are serialized or copied under that same lock; HTTP/SSE sends and waits happen after it is
-released. A slow workspace operation or a worker-held lock can delay dependent snapshots, while the
-event loop and Done/shutdown endpoint remain responsive. Initialization and ingest use this boundary too.
+released. A slow workspace operation or a worker-held lock can delay snapshots and the interactive
+shutdown check while the event loop remains responsive. Initialization and ingest use this boundary too.
 
 ### Concurrent selections and RSS imports
 
