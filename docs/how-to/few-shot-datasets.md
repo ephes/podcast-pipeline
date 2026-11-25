@@ -6,7 +6,10 @@ Use these commands to fetch recent episodes and write JSONL files for few-shot s
 ## Before you start
 
 - Ensure the `podcast` CLI is available (run `podcast --help`).
-- RSS feeds must expose RSS 2.0 `<item>` entries with `<description>` or `<content:encoded>`.
+- The RSS importer expects an unnamespaced `<rss>` document root with a direct, unnamespaced
+  `<channel>` child. It uses that RSS 2.0 structure even when the root omits `version`.
+  Items need a title and `<description>` or `<content:encoded>` to become examples.
+  Namespaced extension fields such as `<itunes:keywords>` are supported.
 - Wagtail/CMS endpoints must return a list under `items`, `results`, or `pages`.
 
 ## RSS feed examples
@@ -21,7 +24,7 @@ podcast rss-examples \
 Notes:
 
 - `--output` defaults to `datasets/rss_examples.jsonl` if you omit it.
-- `--limit` caps how many episodes are written (default `25`).
+- `--limit` caps the number of usable items collected (default `25`). The reported episode count is the number of unique records written.
 - `--timeout-seconds` sets the whole-transfer deadline (default 20 seconds).
 - RSS XML is capped at 8 MiB, 100,000 elements, 64 levels and 4 MiB of UTF-8 text/attribute values.
   DTD/entity declarations are refused. Parsing retains only one requested item subtree at a time;
@@ -29,6 +32,8 @@ Notes:
 - The original source URL is used only for transport. JSONL and CLI diagnostics omit userinfo,
   query and fragment; re-export old corpora to remove previously stored source credentials.
   Episode text is not scanned for secrets.
+- Identical records with the same example ID are written once. Conflicting records with the same ID
+  abort the export before replacing an existing file. The error shows the hashed example ID.
 - The JSONL `output` field contains normalized episode description HTML.
 - `<itunes:keywords>` are exported as `keywords`. Point `tags.examples` at the file to show past episodes'
   keywords to the tag-asset prompts (see `reference/configuration.md`, "Tag assets").

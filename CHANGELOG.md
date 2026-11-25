@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Coalesce identical RSS example records and preserve the previous export when the same ID has conflicting records.
+
+- Require an RSS root and a direct channel for RSS examples, skipping namespaced channel extensions.
+
+- Read picker tag overrides and host exclusions from the same admitted episode YAML snapshot.
+
+- Apply workspace YAML structure checks and a 1 MiB regular-file limit to the optional global CMS configuration (a symlinked config is followed to its target).
+
 - Omit invalid or unreadable episode summaries from review prompts with a warning, keeping other available episode context.
 
 - Validate the persisted episode summary before LLM candidate regeneration using the same workspace file and JSON rules as stub drafting.

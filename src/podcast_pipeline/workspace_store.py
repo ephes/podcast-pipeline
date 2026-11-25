@@ -30,6 +30,7 @@ from podcast_pipeline.domain.models import (
     ReviewIteration,
     TextFormat,
 )
+from podcast_pipeline.file_inputs import read_regular_utf8
 from podcast_pipeline.markdown_html import markdown_to_deterministic_html
 from podcast_pipeline.yaml_inputs import DuplicateYamlKeyError, UniqueKeySafeLoader
 
@@ -274,9 +275,20 @@ def _admit_episode_yaml_graph(root: Node) -> None:
     visit(root, 1)
 
 
-def _read_yaml_mapping(path: Path) -> dict[str, Any]:
+def read_optional_yaml_mapping(path: Path, *, max_bytes: int) -> dict[str, Any]:
+    """Read an optional YAML mapping from one bounded regular file generation."""
     try:
-        loaded = yaml.load(_read_text(path), Loader=_EpisodeYamlLoader)
+        text = read_regular_utf8(path, max_bytes=max_bytes)
+    except FileNotFoundError:
+        return {}
+    except (OSError, ValueError) as exc:
+        raise WorkspaceStoreError(f"Could not read YAML at {path}: {exc}") from exc
+    return _parse_yaml_mapping(text, path)
+
+
+def _parse_yaml_mapping(text: str, path: Path) -> dict[str, Any]:
+    try:
+        loaded = yaml.load(text, Loader=_EpisodeYamlLoader)
     except DuplicateYamlKeyError as exc:
         mark = exc.problem_mark
         assert mark is not None
@@ -458,7 +470,7 @@ class EpisodeWorkspaceStore:
         self.layout = EpisodeWorkspaceLayout(root=root)
 
     def read_episode_yaml(self) -> dict[str, Any]:
-        raw = _read_yaml_mapping(self.layout.episode_yaml)
+        raw = _parse_yaml_mapping(_read_text(self.layout.episode_yaml), self.layout.episode_yaml)
         result = try_load_episode_yaml(raw)
         if result.error is not None:
             raise WorkspaceStoreError(f"Invalid episode.yaml at {self.layout.episode_yaml}: {result.error}")

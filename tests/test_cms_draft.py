@@ -523,6 +523,60 @@ def test_dry_run_prints_payloads_without_token_or_http(
     assert not (workspace / "cms").exists()
 
 
+@pytest.mark.parametrize(
+    ("invalid_config", "message"),
+    [
+        ("cms: {base_url: https://cms.test/, parent_id: 1, parent_id: 2}\n", "Duplicate YAML key"),
+        (
+            "cms: {base_url: https://cms.test/, parent_id: 2}\n"
+            "leaf: &leaf [a, b, c, d]\n"
+            + "".join(
+                f"layer{i}: &layer{i} [" + ", ".join(["*leaf" if i == 0 else f"*layer{i - 1}"] * 10) + "]\n"
+                for i in range(5)
+            ),
+            "YAML node limit exceeded",
+        ),
+        ("cms: {base_url: https://cms.test/}\n#" + "x" * (1024 * 1024), "byte limit"),
+    ],
+    ids=["duplicate-parent", "nested-aliases", "oversized-config"],
+)
+def test_dry_run_rejects_unadmitted_cms_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, invalid_config: str, message: str
+) -> None:
+    workspace = _workspace(tmp_path)
+    config = _config(tmp_path, monkeypatch)
+    config.write_text(invalid_config, encoding="utf-8")
+
+    def no_client(*args: object, **kwargs: object) -> None:
+        pytest.fail("CMS planning must finish before creating an API client")
+
+    monkeypatch.setattr(cms_entry, "DjangoCastClient", no_client)
+    with pytest.raises(typer.BadParameter, match=message) as error:
+        cms_entry.run_cms_draft(workspace=workspace, dry_run=True)
+    assert str(config) in str(error.value)
+    assert not (workspace / "cms").exists()
+
+
+def test_load_cms_config_follows_symlinked_global_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    target = _config(tmp_path, monkeypatch)
+    link = tmp_path / "dotfiles-link.yaml"
+    link.symlink_to(target)
+    monkeypatch.setenv("PODCAST_PIPELINE_CONFIG", str(link))
+
+    config = load_cms_config({})
+
+    assert config.parent_id == PODCAST_ID
+
+
+def test_load_cms_config_treats_dangling_symlink_as_missing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    link = tmp_path / "dangling.yaml"
+    link.symlink_to(tmp_path / "missing.yaml")
+    monkeypatch.setenv("PODCAST_PIPELINE_CONFIG", str(link))
+
+    with pytest.raises(CmsConfigError, match="base_url"):
+        load_cms_config({})
+
+
 def test_creates_draft_uploads_one_file_and_lists_manual_steps_in_order(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake: FakeCast, capsys: pytest.CaptureFixture[str]
 ) -> None:

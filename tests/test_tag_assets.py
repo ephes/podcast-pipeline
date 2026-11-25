@@ -6,6 +6,7 @@ from typing import Any
 from unittest.mock import Mock
 
 import pytest
+import yaml
 
 from podcast_pipeline.asset_candidates_llm import generate_draft_candidates_llm, generate_single_asset_candidates_llm
 from podcast_pipeline.domain.intermediate_formats import EpisodeSummary
@@ -281,6 +282,41 @@ def test_load_episode_tag_settings_falls_back_on_invalid_config(tmp_path: Path, 
     settings, hosts = load_episode_tag_settings(tmp_path / "episode")
     assert settings == TagSettings()
     assert hosts == ["Jochen"]
+
+
+def test_picker_uses_one_episode_yaml_generation(
+    tmp_path: Path, isolated_config: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    isolated_config.write_text("tags: {exclude: [Shared], max: 7, examples: missing.jsonl}\n", encoding="utf-8")
+    episode = tmp_path / "episode.yaml"
+    first = "episode_id: ep\nhosts: [Avery]\ntags: {exclude: [First], max: 2}\n"
+    episode.write_text(first, encoding="utf-8")
+    replacement = tmp_path / "new-episode.yaml"
+    replacement.write_text("episode_id: ep\nhosts: [Blair]\ntags: {exclude: [Second], max: 3}\n", encoding="utf-8")
+
+    original_load = yaml.load
+
+    def load_and_swap(stream: str, Loader: type[yaml.SafeLoader]) -> Any:
+        data = original_load(stream, Loader)
+        if stream == first:
+            replacement.replace(episode)
+        return data
+
+    monkeypatch.setattr(yaml, "load", load_and_swap)
+    settings, hosts = load_episode_tag_settings(tmp_path)
+    assert hosts == ["Avery"]
+    assert settings.max_tags == 2
+    assert settings.examples == ()
+    assert build_tag_pool(["Avery, Blair, First, Shared, Second"], settings=settings, hosts=hosts) == [
+        TagPoolEntry("Blair", 1),
+        TagPoolEntry("Second", 1),
+    ]
+    assert "Blair" in episode.read_text(encoding="utf-8")
+
+
+def test_picker_ignores_unadmitted_episode_yaml(tmp_path: Path) -> None:
+    (tmp_path / "episode.yaml").write_text("episode_id: ep\nhosts: [Avery]\nhosts: [Blair]\n", encoding="utf-8")
+    assert load_episode_tag_settings(tmp_path) == (TagSettings(), [])
 
 
 def test_load_episode_tag_settings_skips_examples(tmp_path: Path, isolated_config: Path) -> None:

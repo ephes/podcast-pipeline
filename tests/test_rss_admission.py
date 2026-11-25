@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 from xml.etree import ElementTree
 
@@ -87,3 +88,32 @@ def test_transport_error_diagnostic_is_safe(monkeypatch: pytest.MonkeyPatch) -> 
     with pytest.raises(rss.RssExamplesError) as error:
         rss.fetch_rss_examples(feed_url="https://SENTINEL@feed.test/rss", limit=1)
     assert "SENTINEL" not in str(error.value)
+
+
+@pytest.mark.parametrize("guid", ["synthetic-guid-sentinel" * 1000, ""], ids=["guid", "title-fallback"])
+def test_conflicting_rss_id_preserves_previous_corpus(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, guid: str
+) -> None:
+    output = tmp_path / "examples.jsonl"
+    output.write_text("old corpus")
+    first = ITEM.replace("episode-1", guid)
+    second = first.replace("Desc", "Different")
+    monkeypatch.setattr(rss, "_fetch_rss_xml", lambda **kw: f"<rss><channel>{first}{second}</channel></rss>")
+
+    with pytest.raises(typer.BadParameter, match=r"^Conflicting RSS examples for ID rss_[0-9a-f]{12}\.$"):
+        run_rss_examples(feed_url="https://feed.test/rss", output=output, limit=2, timeout_seconds=2)
+    assert output.read_text() == "old corpus"
+    assert list(tmp_path.iterdir()) == [output]
+
+
+def test_identical_rss_records_are_exported_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    output = tmp_path / "examples.jsonl"
+    second = ITEM.replace("episode-1", "episode-2").replace("One", "Two")
+    monkeypatch.setattr(rss, "_fetch_rss_xml", lambda **kw: f"<rss><channel>{ITEM}{second}{ITEM}</channel></rss>")
+
+    run_rss_examples(feed_url="https://feed.test/rss", output=output, limit=3, timeout_seconds=2)
+
+    assert [json.loads(line)["title"] for line in output.read_text().splitlines()] == ["One", "Two"]
+    assert "Episodes: 2" in capsys.readouterr().out

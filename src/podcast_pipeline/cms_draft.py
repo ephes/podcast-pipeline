@@ -17,14 +17,17 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
-import yaml
-
 from podcast_pipeline.agent_cli_config import global_config_path
 from podcast_pipeline.domain.models import TextFormat
 from podcast_pipeline.markdown_html import markdown_to_deterministic_html
 from podcast_pipeline.pick_core import read_current_selection, validate_slug
 from podcast_pipeline.tag_parsing import itunes_keyword_delimiter_error, parse_tag_list
-from podcast_pipeline.workspace_store import EpisodeWorkspaceLayout, EpisodeWorkspaceStore
+from podcast_pipeline.workspace_store import (
+    EpisodeWorkspaceLayout,
+    EpisodeWorkspaceStore,
+    WorkspaceStoreError,
+    read_optional_yaml_mapping,
+)
 
 
 class CmsConfigError(ValueError):
@@ -599,17 +602,12 @@ def _plain_text(text: str | None) -> str:
 
 
 def _load_yaml_mapping(path: Path) -> dict[str, Any]:
-    if not path.exists():
-        return {}
+    # The global config is user-owned, not workspace content, and other readers follow a
+    # dotfiles symlink: resolve it, then read the target as one bounded regular file.
     try:
-        data = yaml.safe_load(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, yaml.YAMLError) as exc:
-        raise CmsConfigError(f"Could not read {path}: {exc}") from exc
-    if data is None:
-        return {}
-    if not isinstance(data, dict):
-        raise CmsConfigError(f"{path} must contain a mapping")
-    return data
+        return read_optional_yaml_mapping(path.resolve(), max_bytes=1024 * 1024)
+    except WorkspaceStoreError as exc:
+        raise CmsConfigError(str(exc)) from exc
 
 
 def _cms_section(data: Mapping[str, Any], *, source: str) -> dict[str, Any]:

@@ -73,6 +73,8 @@ RSS IDs hash a JSON pair of canonical credential-free feed source and episode GU
 to link, then title). Host case/default ports are normalized; userinfo, query and fragment do not
 change identity. Different source origins or paths remain distinct, including feeds with local
 GUIDs such as `episode-1`. Repeat exports from a canonical source keep stable IDs.
+Within one export, only the first copy of an identical record is written. If records with the same
+ID differ in any field, the exporter reports the hashed ID and leaves the prior corpus in place.
 
 Regenerate existing RSS corpora with `podcast rss-examples` and replace old files rather than
 combining old and new identifiers. Record schema version remains 1. Sources distinguished only by

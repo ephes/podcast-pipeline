@@ -23,6 +23,7 @@ from podcast_pipeline.domain.models import AssetKind
 from podcast_pipeline.few_shot_selector import FewShotExampleRecord, load_few_shot_records, select_few_shot_records
 from podcast_pipeline.prompting import FewShotExample
 from podcast_pipeline.tag_parsing import parse_tag_list
+from podcast_pipeline.workspace_store import WorkspaceStoreError, read_optional_yaml_mapping
 
 TAG_ASSET_IDS: frozenset[str] = frozenset(
     {AssetKind.cms_tags.value, AssetKind.audio_tags.value, AssetKind.itunes_keywords.value},
@@ -75,19 +76,22 @@ def load_tag_settings(*, workspace: Path | None, include_examples: bool = True) 
     ``examples`` path resolves against the directory of the file that sets it. With
     *include_examples* false the examples file is not read.
     """
-    global_path = global_config_path()
-    sections: list[tuple[Mapping[str, Any], str, Path]] = [
-        (_load_tags_section(global_path), str(global_path), global_path.parent),
-    ]
+    paths = [global_config_path()]
     if workspace is not None:
-        episode_path = workspace / "episode.yaml"
-        sections.append((_load_tags_section(episode_path), str(episode_path), workspace))
+        paths.append(workspace / "episode.yaml")
+    sections = [(_load_tags_section(path), path) for path in paths]
+    return _resolve_tag_settings(sections, include_examples=include_examples)
 
+
+def _resolve_tag_settings(
+    sections: Sequence[tuple[Mapping[str, Any], Path]], *, include_examples: bool
+) -> TagSettings:
     exclude: list[str] = list(DEFAULT_EXCLUDED_TAGS)
     max_tags = DEFAULT_MAX_TAGS
     examples_path: Path | None = None
     examples_limit = DEFAULT_EXAMPLES_LIMIT
-    for section, source, base_dir in sections:
+    for section, path in sections:
+        source = str(path)
         exclude.extend(_parse_exclude(section.get("exclude"), source=source))
         max_tags = _parse_positive_int(section.get("max"), max_tags, source=source, key="tags.max")
         examples_limit = _parse_positive_int(
@@ -96,7 +100,7 @@ def load_tag_settings(*, workspace: Path | None, include_examples: bool = True) 
             source=source,
             key="tags.examples_limit",
         )
-        examples_path = _parse_examples_path(section.get("examples"), examples_path, source=source, base=base_dir)
+        examples_path = _parse_examples_path(section.get("examples"), examples_path, source=source, base=path.parent)
 
     examples: tuple[FewShotExampleRecord, ...] = ()
     if examples_path is not None and include_examples:
@@ -114,19 +118,24 @@ def load_episode_tag_settings(workspace: Path) -> tuple[TagSettings, list[str]]:
 
     Invalid tag configuration falls back to the built-in defaults so pickers stay usable.
     """
+    episode_path = workspace / "episode.yaml"
     try:
-        settings = load_tag_settings(workspace=workspace, include_examples=False)
+        episode = read_optional_yaml_mapping(episode_path, max_bytes=1024 * 1024)
+    except WorkspaceStoreError:
+        return TagSettings(), []
+
+    global_path = global_config_path()
+    try:
+        sections = [
+            (_load_tags_section(global_path), global_path),
+            (_tags_section(episode, episode_path), episode_path),
+        ]
+        settings = _resolve_tag_settings(sections, include_examples=False)
     except TagConfigError:
         settings = TagSettings()
-    hosts: list[str] = []
-    try:
-        loaded = yaml.safe_load((workspace / "episode.yaml").read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, yaml.YAMLError):
-        loaded = None
-    if isinstance(loaded, Mapping):
-        raw_hosts = loaded.get("hosts")
-        if isinstance(raw_hosts, list):
-            hosts = [host for host in raw_hosts if isinstance(host, str)]
+
+    raw_hosts = episode.get("hosts")
+    hosts = [host for host in raw_hosts if isinstance(host, str)] if isinstance(raw_hosts, list) else []
     return settings, hosts
 
 
@@ -298,7 +307,11 @@ def _load_tags_section(path: Path) -> Mapping[str, Any]:
         return {}
     if not isinstance(loaded, Mapping):
         raise TagConfigError(f"Expected mapping YAML at {path}")
-    section = loaded.get("tags")
+    return _tags_section(loaded, path)
+
+
+def _tags_section(data: Mapping[str, Any], path: Path) -> Mapping[str, Any]:
+    section = data.get("tags")
     if section is None:
         return {}
     if not isinstance(section, Mapping):
