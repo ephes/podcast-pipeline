@@ -8,8 +8,15 @@ from pathlib import Path
 import pytest
 
 from podcast_pipeline.agent_runners import FakeCreatorRunner, FakeReviewerRunner
-from podcast_pipeline.domain.models import Candidate, EpisodeWorkspace, ProvenanceRef, ReviewVerdict, TextFormat
-from podcast_pipeline.review_loop_engine import CreatorOutput, LoopOutcome, LoopProtocolError
+from podcast_pipeline.domain.models import (
+    Candidate,
+    EpisodeWorkspace,
+    ProvenanceRef,
+    ReviewIteration,
+    ReviewVerdict,
+    TextFormat,
+)
+from podcast_pipeline.review_loop_engine import CreatorOutput, LoopOutcome, LoopProtocolError, ReviewerInput
 from podcast_pipeline.review_loop_orchestrator import run_review_loop_orchestrator
 from podcast_pipeline.workspace_store import EpisodeWorkspaceStore
 
@@ -277,6 +284,34 @@ def test_nonfinite_candidate_cannot_publish_checkpoint(tmp_path: Path, score: fl
         provenance=[ProvenanceRef(kind="test", ref="synthetic", metadata={"metrics": [{"score": score}]})],
     )
     reviewer = FakeReviewerRunner(layout=store.layout, reviewer="synthetic", replies=[{"verdict": "ok"}])
+    before = store.layout.state_json.read_bytes()
+    with pytest.raises(LoopProtocolError, match="nonfinite"):
+        run_review_loop_orchestrator(
+            workspace=tmp_path,
+            asset_id="description",
+            max_iterations=1,
+            creator=lambda _: CreatorOutput(candidate=candidate, done=True),
+            reviewer=reviewer,
+        )
+    assert not store.layout.protocol_state_json_path("description").exists()
+    assert not store.layout.protocol_iteration_json_path("description", 1).exists()
+    assert not store.layout.candidate_json_path("description", candidate.candidate_id).exists()
+    assert store.layout.state_json.read_bytes() == before
+
+
+@pytest.mark.parametrize("score", [float("nan"), float("inf"), float("-inf")], ids=["nan", "inf", "negative-inf"])
+def test_nonfinite_review_cannot_publish_checkpoint(tmp_path: Path, score: float) -> None:
+    store = _init_workspace(tmp_path)
+    candidate = Candidate(asset_id="description", content="synthetic copy")
+
+    def reviewer(inp: ReviewerInput) -> ReviewIteration:
+        return ReviewIteration(
+            iteration=inp.iteration,
+            verdict=ReviewVerdict.ok,
+            reviewer="synthetic",
+            provenance=[ProvenanceRef(kind="test", ref="synthetic", metadata={"metrics": [{"score": score}]})],
+        )
+
     before = store.layout.state_json.read_bytes()
     with pytest.raises(LoopProtocolError, match="nonfinite"):
         run_review_loop_orchestrator(

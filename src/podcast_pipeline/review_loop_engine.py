@@ -49,11 +49,11 @@ class LoopProtocolIteration:
             "iteration": self.iteration,
             "creator": {
                 "done": self.creator_done,
-                # Keep nonfinite floats visible to the strict writer. Pydantic's
-                # JSON-mode model dump would turn them into null.
+                # Keep nonfinite floats visible to the strict writer (here and for
+                # the reviewer). Pydantic's JSON-mode model dump would turn them into null.
                 "candidate": to_jsonable_python(self.candidate.model_dump(), inf_nan_mode="constants"),
             },
-            "reviewer": self.review.model_dump(mode="json"),
+            "reviewer": to_jsonable_python(self.review.model_dump(), inf_nan_mode="constants"),
         }
 
 

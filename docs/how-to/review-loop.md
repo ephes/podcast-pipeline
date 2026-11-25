@@ -65,8 +65,8 @@ Notes:
   Review stops before calling either agent or changing the checkpoint or selection.
 - Each completed candidate/review is checkpointed before the next agent call. After an agent
   failure, fix the cause and repeat the command. Invalid protocol state stops before agent calls.
-  Protocol JSON accepts only finite numbers, including in candidate provenance metadata.
-  Nonfinite numbers in a new candidate stop publication of that round's checkpoint.
+  Protocol JSON accepts only finite numbers, including in candidate and review provenance metadata.
+  Nonfinite numbers in a new candidate or review stop publication of that round's checkpoint.
 - For an intentional fresh run, archive `copy/protocol/<asset_id>/` and
   `copy/reviews/<asset_id>/` outside their active paths (for example, under
   `review-archive/<timestamp>/<asset_id>/`) before repeating the command. Keep the candidate
