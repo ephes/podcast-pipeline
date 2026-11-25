@@ -91,6 +91,17 @@ def test_status_bounds_chunk_directory_entries(ctx: context.DashboardContext, mo
     assert visited == 9
 
 
+def test_status_counts_only_regular_legacy_chunks(ctx: context.DashboardContext) -> None:
+    directory = ctx.layout.transcript_chunks_dir
+    directory.mkdir(parents=True)
+    regular = directory / "chunk_0001.txt"
+    regular.touch()
+    (directory / "chunk_0002.txt").mkdir()
+    (directory / "chunk_0003.txt").symlink_to(regular)
+
+    assert ctx.get_status_json()["stages"]["chunks"] == 1
+
+
 def test_status_counts_published_chunks_from_manifest(ctx: context.DashboardContext) -> None:
     transcript = ctx.layout.transcript_dir / "transcript.txt"
     transcript.parent.mkdir(parents=True)

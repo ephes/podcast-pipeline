@@ -594,7 +594,11 @@ def _count_chunk_entries(path: Path) -> int | None:
             for index, entry in enumerate(scan, start=1):
                 if index > MAX_CHUNK_INVENTORY_ENTRIES:
                     return None
-                if entry.name.startswith("chunk_") and entry.name.endswith(".txt"):
+                if (
+                    entry.name.startswith("chunk_")
+                    and entry.name.endswith(".txt")
+                    and entry.is_file(follow_symlinks=False)
+                ):
                     count += 1
     except OSError:
         return None

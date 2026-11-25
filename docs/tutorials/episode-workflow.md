@@ -602,8 +602,8 @@ remain in the total as unselected. Saved manual text also counts as a selection.
 
 The dashboard counts chunks from the published manifest when it passes structural validation. This status
 counts the entries recorded at publication. Drafting separately verifies the source and chunk contents.
-Without a usable manifest, status looks for `chunk_*.txt` names in at most 8,192 directory entries, with one
-extra entry checked to detect overflow. An oversized or unreadable inventory displays “Count incomplete”
+Without a usable manifest, status counts regular `chunk_*.txt` files and skips symlinks. It scans
+at most 8,192 directory entries and checks one extra entry to detect overflow. An oversized or unreadable inventory displays “Count incomplete”
 and returns `null` in `/api/status` at `stages.chunks`. A missing chunk directory reports zero.
 
 Saving or clearing an asset's editorial notes validates the stored `episode.yaml` first. If its
