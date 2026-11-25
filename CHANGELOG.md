@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Check Auphonic downloads against their declared Content-Length before staging, preserving existing outputs on mismatch.
+
+- Refuse nonregular review protocol state files before calling either agent.
+
 - Validate curated tag Markdown in `podcast status` when no candidate selection is recorded.
 
 - Count only regular workspace files as chunk, chunk-summary and candidate evidence in `podcast status`.

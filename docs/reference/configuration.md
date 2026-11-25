@@ -298,6 +298,8 @@ block `podcast auphonic-cleanup --delete` (listing still works). Library callers
 The per-file limit and the remaining set budget both apply to declared lengths and streamed bytes.
 If either limit is exceeded, staging is discarded and the published set stays intact. Final responses must be HTTP 200,
 without a Content-Range header, with identity Content-Encoding and a nonempty body.
+A valid declared Content-Length must match the number of bytes received before the download
+is admitted to staging. Downloads without a declared length still use the streaming byte limits.
 Unsolicited partial responses (including HTTP 206), other statuses and empty outputs fail
 without replacing the previous output set. Signed download URLs are omitted from download error messages.
 

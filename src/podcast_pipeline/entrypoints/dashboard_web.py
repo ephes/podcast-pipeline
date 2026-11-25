@@ -1008,7 +1008,9 @@ def _run_review_job(
         from podcast_pipeline.workspace_store import EpisodeWorkspaceLayout
 
         protocol_path = EpisodeWorkspaceLayout(root=ctx.workspace).protocol_state_json_path(asset_id)
-        previous = load_loop_protocol_state(protocol_path) if protocol_path.exists() else None
+        previous = (
+            load_loop_protocol_state(protocol_path) if protocol_path.is_symlink() or protocol_path.exists() else None
+        )
         capture = _ProgressCapture(ctx, job)
         _thread_local.capture = capture
         try:

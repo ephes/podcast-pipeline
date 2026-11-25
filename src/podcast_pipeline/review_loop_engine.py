@@ -10,6 +10,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, StrictBool, StrictInt, field_validator
 
 from podcast_pipeline.domain.models import Candidate, ReviewIteration, ReviewVerdict
+from podcast_pipeline.file_inputs import read_regular_bytes
 from podcast_pipeline.workspace_store import EpisodeWorkspaceLayout
 
 
@@ -192,10 +193,7 @@ def _check_candidate_identity(candidate: Candidate, known: dict[object, Candidat
 
 def load_loop_protocol_state(path: Path) -> LoopProtocolState:
     try:
-        with path.open("rb") as stream:
-            body = stream.read(8 * 1024 * 1024 + 1)
-        if len(body) > 8 * 1024 * 1024:
-            raise ValueError("protocol byte limit")
+        body = read_regular_bytes(path, max_bytes=8 * 1024 * 1024)
         return parse_loop_protocol_state(json.loads(body, object_pairs_hook=unique_json_members))
     except (OSError, ValueError, RecursionError):
         raise LoopProtocolError("Invalid review protocol state; restore or repair the saved evidence.") from None

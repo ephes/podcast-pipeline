@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import os
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -185,6 +188,37 @@ def test_terminal_resume_makes_no_calls_or_selection_changes(tmp_path: Path) -> 
     assert len(creator.calls) == len(reviewer.calls) == 1
     assert store.layout.state_json.read_bytes() == state_before
     assert store.layout.selected_text_path("description", TextFormat.markdown).read_text() == "manual\n"
+
+
+@pytest.mark.parametrize("kind", ["fifo", "dangling-symlink"])
+def test_nonregular_protocol_fails_before_callbacks_without_waiting(tmp_path: Path, kind: str) -> None:
+    store = _init_workspace(tmp_path)
+    path = store.layout.protocol_state_json_path("description")
+    path.parent.mkdir(parents=True)
+    if kind == "fifo":
+        os.mkfifo(path)
+    else:
+        path.symlink_to("missing.json")
+    script = """
+import sys
+from pathlib import Path
+from podcast_pipeline.review_loop_engine import LoopProtocolError
+from podcast_pipeline.review_loop_orchestrator import run_review_loop_orchestrator
+
+def forbidden(_):
+    raise AssertionError("unexpected review callback")
+
+try:
+    run_review_loop_orchestrator(
+        workspace=Path(sys.argv[1]), asset_id="description", max_iterations=1,
+        creator=forbidden, reviewer=forbidden,
+    )
+except LoopProtocolError as exc:
+    assert "restore or repair" in str(exc)
+else:
+    raise AssertionError("admitted nonregular protocol state")
+"""
+    subprocess.run([sys.executable, "-c", script, str(tmp_path)], timeout=3, check=True)
 
 
 def test_malformed_protocol_fails_before_callbacks_or_writes(tmp_path: Path) -> None:

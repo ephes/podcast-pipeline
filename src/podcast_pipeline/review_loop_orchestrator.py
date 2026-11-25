@@ -157,7 +157,9 @@ def run_review_loop_orchestrator(
     store = EpisodeWorkspaceStore(workspace)
     layout = store.layout
     protocol_path = layout.protocol_state_json_path(asset_id)
-    existing = load_loop_protocol_state(protocol_path) if protocol_path.exists() else None
+    existing = (
+        load_loop_protocol_state(protocol_path) if protocol_path.is_symlink() or protocol_path.exists() else None
+    )
     default = EpisodeWorkspace(episode_id=_episode_id_from_yaml(store), root_dir=".")
     selected_workspace, selected_texts = store.read_selection_snapshot(asset_id, default=default)
     selection_generation = _selection_generation(selected_workspace, asset_id, selected_texts)
