@@ -222,7 +222,13 @@ failures restore the previous files and their permissions. If recovery itself fa
 are still restored where possible. File restores use a staged copy and sync the containing directory
 before retiring the sibling backup. If recovery cannot confirm the restore, the error identifies
 retained backups for manual repair. A summary JSON alone is never a reusable completed generation.
-Rerun draft to rebuild incomplete legacy sets. Explicit contradictory LLM chunk identities are rejected;
+Draft resume requires each file to be regular and stable during its read. The summary
+marker is limited to 4 KiB and parsed as strict JSON. Verification streams the SHA-256 digests within
+2 MiB for the chunk manifest, 32 MiB for summary Markdown and 64 MiB for HTML. It takes a bounded
+snapshot of the summary JSON (up to 64 MiB) and verifies its digest. The larger JSON and HTML
+budgets allow for escaping and formatting. Candidate generation uses the model parsed from those
+verified JSON bytes. Rerun draft to rebuild summaries whose files or model fail validation.
+Explicit contradictory LLM chunk identities are rejected;
 omitted identities are supplied from the request. Each validated chunk summary is fully serialized,
 then written to a unique sibling temporary file, flushed/synced and atomically replaced. Partial-write,
 flush, sync, replacement and catchable interruption failures before replacement keep the previous

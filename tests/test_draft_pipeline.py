@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 from typing import Any
@@ -198,13 +199,16 @@ def test_run_draft_pipeline_non_dry_run_new_workspace(
     assert fake_runner.call_count > 0
 
 
-@pytest.mark.parametrize("incomplete", [False, True])
+@pytest.mark.parametrize("cache_state", ["complete", "missing", "replaced", "invalid"])
 def test_run_draft_pipeline_reuses_existing_summary(
-    incomplete: bool,
+    cache_state: str,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """When episode summary already exists, summarization is skipped."""
+    """Draft reuses the verified snapshot and regenerates incomplete caches."""
+    import podcast_pipeline.asset_candidates_llm as candidates_module
+    import podcast_pipeline.summarization_stub as summary_module
+
     workspace = tmp_path / "ws"
     workspace.mkdir()
 
@@ -218,16 +222,46 @@ def test_run_draft_pipeline_reuses_existing_summary(
     write_transcript_chunks(
         layout=store.layout, transcript_path=transcript_dir / "transcript.txt", config=ChunkerConfig()
     )
-    write_episode_summary_artifacts(
+    existing = "# Existing\n\nAlready done\n"
+    summary_path, _, html_path = write_episode_summary_artifacts(
         layout=store.layout,
         episode_summary=EpisodeSummary(
-            summary_markdown="# Existing\n\nAlready done\n",
+            summary_markdown=existing,
             key_points=["existing"],
             topics=["existing_topic"],
         ),
     )
-    if incomplete:
-        store.layout.episode_summary_html_path().unlink()
+    replacement = "unverified replacement"
+    if cache_state == "missing":
+        html_path.unlink()
+    elif cache_state == "replaced":
+        digest_file = summary_module.sha256_regular_file
+
+        def replace_after_verification(path: Path, *, max_bytes: int) -> str:
+            digest = digest_file(path, max_bytes=max_bytes)
+            if path == html_path:
+                staged = path.with_name("replacement.json")
+                staged.write_text(EpisodeSummary(summary_markdown=replacement).model_dump_json(), encoding="utf-8")
+                staged.replace(summary_path)
+            return digest
+
+        monkeypatch.setattr(summary_module, "sha256_regular_file", replace_after_verification)
+    elif cache_state == "invalid":
+        invalid = b"{}"
+        summary_path.write_bytes(invalid)
+        marker_path = summary_path.with_name("complete.json")
+        marker = json.loads(marker_path.read_text())
+        marker["files"][summary_path.name] = hashlib.sha256(invalid).hexdigest()
+        marker_path.write_text(json.dumps(marker), encoding="utf-8")
+
+    used_summaries: list[str] = []
+    generate = candidates_module.generate_draft_candidates_llm
+
+    def capture_summary(*, episode_summary: EpisodeSummary, **kwargs: Any) -> Any:
+        used_summaries.append(episode_summary.summary_markdown)
+        return generate(episode_summary=episode_summary, **kwargs)
+
+    monkeypatch.setattr(candidates_module, "generate_draft_candidates_llm", capture_summary)
 
     fake_runner = _FakeRunner()
 
@@ -254,14 +288,12 @@ def test_run_draft_pipeline_reuses_existing_summary(
         timeout_seconds=None,
     )
 
-    # Summary should still contain the pre-existing content (not overwritten)
-    summary = json.loads(store.layout.episode_summary_json_path().read_text())
-    assert summary["summary_markdown"] == (
-        "# Episode\n\nStub episode\n" if incomplete else "# Existing\n\nAlready done\n"
-    )
-
-    # Runner should only have been called for asset candidates (13), not for summarization
-    assert fake_runner.call_count == len(AssetKind) + (2 if incomplete else 0)
+    regenerated = cache_state in {"missing", "invalid"}
+    expected = "# Episode\n\nStub episode\n" if regenerated else existing
+    summary = json.loads(summary_path.read_text())
+    assert summary["summary_markdown"] == (replacement if cache_state == "replaced" else expected)
+    assert used_summaries == [expected]
+    assert fake_runner.call_count == len(AssetKind) + (2 if regenerated else 0)
 
 
 def test_run_draft_pipeline_transcript_override_invalidates_cache(
