@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Refresh dashboard status from the current workspace state so external selections appear without a restart.
+
 - Preserve the agent CLI exit code when stdout contains invalid UTF-8 on a nonzero exit.
 
 - Retire agent and transcription CLI processes and close their pipes if supervision setup fails after launch.

@@ -899,6 +899,21 @@ def test_dashboard_context_status(tmp_path: Path) -> None:
     assert status["stages"]["candidates"] == 3
 
 
+def test_dashboard_status_observes_external_selection(tmp_path: Path) -> None:
+    store = _setup_workspace(tmp_path)
+    candidate = Candidate(asset_id="summary_short", content="Synthetic summary")
+    ctx = DashboardContext(workspace=tmp_path)
+    assert ctx.get_status_json()["stages"]["selected"] == 0
+    ctx.get_assets_json()
+
+    store.write_candidate(candidate)
+    writer = DashboardContext(workspace=tmp_path)
+    assert writer.select_custom_text(candidate.asset_id, "Synthetic manual summary", None) is None
+    store.delete_candidate_files(candidate.asset_id, candidate.candidate_id)
+
+    assert ctx.get_status_json()["stages"]["selected"] == 1
+
+
 def test_dashboard_context_editorial_notes(tmp_path: Path) -> None:
     _setup_workspace(tmp_path)
     ctx = DashboardContext(workspace=tmp_path)

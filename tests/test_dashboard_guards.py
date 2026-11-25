@@ -376,7 +376,7 @@ def test_run_produce_rejects_concurrent_run_for_same_workspace(
 def test_stale_dashboard_state_does_not_drop_production_uuid(
     tmp_path: Path, fake_auphonic: type[_FakeAuphonicClient], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """GET status caches state; produce saves a UUID then fails; a later selection must keep the UUID."""
+    """GET assets caches state; produce saves a UUID then fails; a later selection must keep the UUID."""
     store = EpisodeWorkspaceStore(_workspace(tmp_path))
     candidate = Candidate(asset_id="description", content="# Description\n\nText.")
     store.write_candidate(candidate)
@@ -386,7 +386,7 @@ def test_stale_dashboard_state_does_not_drop_production_uuid(
         base_url=_BASE,
         headers=SESSION_HEADERS,
     )
-    assert client.get("/api/status").status_code == 200  # caches workspace state without a UUID
+    assert client.get("/api/assets").status_code == 200  # caches workspace state without a UUID
 
     def wait_times_out(self: _FakeAuphonicClient, uuid: str, **_kwargs: object) -> _FakeProduction:
         raise AuphonicApiError("timed out")
@@ -525,7 +525,7 @@ def test_stale_dashboard_state_does_not_roll_back_restarted_production_uuid(
         base_url=_BASE,
         headers=SESSION_HEADERS,
     )
-    assert client.get("/api/status").status_code == 200  # caches state with old-prod
+    assert client.get("/api/assets").status_code == 200  # caches state with old-prod
 
     produce.run_produce(workspace=tmp_path, dry_run=False, restart=True)
     assert store.read_state().auphonic_production_uuid == "prod-1"

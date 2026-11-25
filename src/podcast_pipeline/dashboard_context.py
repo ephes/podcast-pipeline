@@ -107,10 +107,10 @@ class DashboardContext:
                 self._candidates_by_asset = {}
         return self._candidates_by_asset
 
-    def _pickable_assets(self) -> dict[str, list[Candidate]]:
+    def _pickable_assets(
+        self, candidates: dict[str, list[Candidate]], ws: EpisodeWorkspace
+    ) -> dict[str, list[Candidate]]:
         """Assets shown in the Pick tab: those with candidates plus custom selections whose candidates are gone."""
-        candidates = self._ensure_candidates()
-        ws = self._ensure_workspace_state()
         pickable = dict(candidates)
         for ref in ws.provenance:
             if (
@@ -133,13 +133,17 @@ class DashboardContext:
     def get_status_json(self) -> dict[str, Any]:
         # A publisher can report progress through the dashboard while holding the workspace lock.
         with self.store.publication_lock():
+            ws = load_workspace(self.store)
             chunk_count = read_published_chunk_count(self.layout)
             if chunk_count is None:
                 chunk_count = _count_chunk_entries(self.layout.transcript_chunks_dir)
         with self.lock:
-            return self._status_snapshot(chunk_count)
+            if self._workspace_state is not None and self._workspace_state != ws:
+                self._workspace_state = None
+                self._candidates_by_asset = None
+            return self._status_snapshot(chunk_count, ws)
 
-    def _status_snapshot(self, chunk_count: int | None) -> dict[str, Any]:
+    def _status_snapshot(self, chunk_count: int | None, ws: EpisodeWorkspace) -> dict[str, Any]:
         layout = self.layout
         episode_yaml = self._read_episode_yaml_safe()
 
@@ -148,9 +152,8 @@ class DashboardContext:
         candidates = self._ensure_candidates()
         candidate_count = sum(len(v) for v in candidates.values())
         candidate_assets = len(candidates)
-        pickable = self._pickable_assets()
+        pickable = self._pickable_assets(candidates, ws)
 
-        ws = self._ensure_workspace_state()
         assets_by_id = {asset.asset_id: asset for asset in ws.assets}
         selected_count = sum(
             1
@@ -219,8 +222,8 @@ class DashboardContext:
         return None
 
     def get_assets_json(self) -> list[dict[str, Any]]:
-        candidates = self._pickable_assets()
         ws = self._ensure_workspace_state()
+        candidates = self._pickable_assets(self._ensure_candidates(), ws)
         assets_by_id = {asset.asset_id: asset for asset in ws.assets}
         tag_settings, hosts = load_episode_tag_settings(self.workspace)
 
@@ -328,7 +331,7 @@ class DashboardContext:
         except ValueError as exc:
             return str(exc)
 
-        candidates = self._pickable_assets()
+        candidates = self._pickable_assets(self._ensure_candidates(), self._ensure_workspace_state())
         if asset_id not in candidates:
             return f"Unknown asset_id: {asset_id}"
         asset_candidates = candidates[asset_id]
@@ -368,7 +371,7 @@ class DashboardContext:
             validate_asset_id(asset_id)
         except ValueError as exc:
             return str(exc)
-        candidates = self._pickable_assets()
+        candidates = self._pickable_assets(self._ensure_candidates(), self._ensure_workspace_state())
         if asset_id not in candidates:
             return f"Unknown asset_id: {asset_id}"
         current = self._read_selected_text(asset_id)

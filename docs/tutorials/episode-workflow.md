@@ -594,6 +594,9 @@ tag updates retain the equivalent control's focus, and background saves preserve
 Composing or already-handled Enter in tag/refinement inputs never submits; committed Enter and explicit
 buttons still work. See [standalone picker limits](../reference/configuration.md#standalone-picker-limits).
 
+Each dashboard status refresh reads the latest workspace state, including selections saved by other
+CLI processes or dashboards.
+
 The dashboard counts chunks from the published manifest when it passes structural validation. This status
 counts the entries recorded at publication. Drafting separately verifies the source and chunk contents.
 Without a usable manifest, status looks for `chunk_*.txt` names in at most 8,192 directory entries, with one
