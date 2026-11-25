@@ -4,6 +4,7 @@ import json
 import socket
 import sys
 import threading
+from dataclasses import dataclass
 from functools import partial
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -197,6 +198,15 @@ def _refine_deadline_ms(workspace: Path) -> int:
     return min(int((seconds + _REFINE_DEADLINE_MARGIN_SECONDS) * 1000), _MAX_BROWSER_TIMEOUT_MS)
 
 
+@dataclass(frozen=True)
+class _AssetSnapshot:
+    asset_id: str
+    candidates: list[Candidate]
+    selected_id: str | None
+    selected_text: str | None
+    selected_tags: list[str] | None
+
+
 class _ServerContext:
     """Shared mutable state for the pick web server."""
 
@@ -244,21 +254,32 @@ class _ServerContext:
         return error
 
     def get_assets_json(self) -> list[dict[str, object]]:
-        with self.store.read_snapshot(default=self.workspace_state) as ws:
+        with self.lock, self.store.read_snapshot(default=self.workspace_state) as ws:
             self.workspace_state = ws
             self.candidates_by_asset = load_candidates(layout=self.store.layout, asset_id=self.asset_filter)
-            return self._assets_snapshot_json(ws)
-
-    def _assets_snapshot_json(self, ws: EpisodeWorkspace) -> list[dict[str, object]]:
-        assets_by_id = {asset.asset_id: asset for asset in ws.assets}
+            assets_by_id = {asset.asset_id: asset for asset in ws.assets}
+            snapshots = []
+            for asset_id, candidates in sorted(self.candidates_by_asset.items()):
+                existing = assets_by_id.get(asset_id)
+                selected_id = (
+                    str(existing.selected_candidate_id) if existing and existing.selected_candidate_id else None
+                )
+                current = read_current_selection(self.store.layout, asset_id)
+                snapshots.append(
+                    _AssetSnapshot(
+                        asset_id=asset_id,
+                        candidates=candidates,
+                        selected_id=selected_id,
+                        selected_text=current[1] if selected_id is None and current and current[1].strip() else None,
+                        selected_tags=self.get_selected_tags(asset_id) if asset_id in TAG_ASSET_IDS else None,
+                    )
+                )
 
         result: list[dict[str, object]] = []
-        for asset_key in sorted(self.candidates_by_asset):
-            candidates = self.candidates_by_asset[asset_key]
-            existing = assets_by_id.get(asset_key)
-            selected_id = str(existing.selected_candidate_id) if existing and existing.selected_candidate_id else None
-            current = read_current_selection(self.store.layout, asset_key)
-            custom_selected = selected_id is None and current is not None and bool(current[1].strip())
+        for snapshot in snapshots:
+            asset_key = snapshot.asset_id
+            candidates = snapshot.candidates
+            custom_selected = snapshot.selected_text is not None
 
             candidate_items: list[dict[str, object]] = []
             for c in candidates:
@@ -274,17 +295,17 @@ class _ServerContext:
 
             asset_data: dict[str, object] = {
                 "asset_id": asset_key,
-                "selected_candidate_id": selected_id,
-                "has_selection": selected_id is not None or custom_selected,
+                "selected_candidate_id": snapshot.selected_id,
+                "has_selection": snapshot.selected_id is not None or custom_selected,
                 "custom_selected": custom_selected,
-                "selected_text": current[1] if custom_selected and current is not None else None,
+                "selected_text": snapshot.selected_text,
                 "selection_format": custom_selection_format(asset_key).value,
                 "candidates": candidate_items,
                 "is_tag_asset": asset_key in TAG_ASSET_IDS,
             }
             if asset_key in TAG_ASSET_IDS:
                 asset_data["tag_pool"] = tag_pool_json(candidates, settings=self.tag_settings, hosts=self.hosts)
-                asset_data["selected_tags"] = self.get_selected_tags(asset_key)
+                asset_data["selected_tags"] = snapshot.selected_tags
                 asset_data["max_tags"] = self.tag_settings.max_tags
             result.append(asset_data)
         return result
@@ -523,8 +544,7 @@ class _PickWebHandler(BaseHTTPRequestHandler):
 
     def _serve_assets_json(self) -> None:
         try:
-            with self.ctx.lock:
-                data = self.ctx.get_assets_json()
+            data = self.ctx.get_assets_json()
         except Exception as exc:
             # Unreadable workspace state: answer without paths or diagnostics.
             reference = uuid4().hex[:12]

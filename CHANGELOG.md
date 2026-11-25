@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Release the standalone picker workspace lock before rendering candidate previews and tag pools.
+
 - Preserve completed cleanup receipts and report Auphonic deletions pending a local state update.
 
 - Verify downloaded Auphonic output paths and byte lengths before deleting superseded productions.

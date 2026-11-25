@@ -580,7 +580,8 @@ instead of an error.
 shutdown, new background job requests receive 503.
 
 The standalone picker reads authoritative selections and refreshed candidate membership whenever it loads
-assets. Custom drafts survive these refreshes and asset switches in the current page. A save acknowledges
+assets. Each response uses one workspace snapshot for candidate membership and selections. Preview and
+tag-pool rendering run after the workspace lock is released. Custom drafts survive these refreshes and asset switches in the current page. A save acknowledges
 only the submitted revision; text typed while saving stays unsaved. Candidate and custom selections admit
 one pending choice per asset. After an uncertain mutation the picker reloads stored state before allowing
 another choice; it never automatically repeats a mutation.

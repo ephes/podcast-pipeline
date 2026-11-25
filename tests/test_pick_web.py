@@ -6,6 +6,7 @@ import urllib.error
 import urllib.request
 import webbrowser
 from collections.abc import Generator
+from concurrent.futures import ThreadPoolExecutor
 from functools import partial
 from http.server import HTTPServer, ThreadingHTTPServer
 from pathlib import Path
@@ -17,6 +18,7 @@ import pytest
 from podcast_pipeline import asset_refine_llm
 from podcast_pipeline.asset_refine_llm import RefineRequest, parse_refined_candidate
 from podcast_pipeline.domain.models import Candidate, EpisodeWorkspace, TextFormat
+from podcast_pipeline.entrypoints import pick_web
 from podcast_pipeline.entrypoints.pick_web import _PickWebHandler, _ServerContext
 from podcast_pipeline.local_web_guard import SESSION_HEADER
 from podcast_pipeline.pick_core import has_manual_selection_provenance
@@ -825,6 +827,49 @@ def test_json_control_admission(pick_server: _PickServerTuple, endpoint: str, bo
     assert error.value.code == 400
     assert json.loads(error.value.read()) == {"error": "Invalid JSON object"}
     assert not ctx.store.layout.state_json.exists()
+
+
+def test_assets_release_workspace_snapshot_before_rendering(
+    pick_server: _PickServerTuple, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _, url, ctx, candidates = pick_server
+    other = _ServerContext(
+        store=EpisodeWorkspaceStore(ctx.store.layout.root),
+        candidates_by_asset=candidates,
+        workspace_state=ctx.workspace_state,
+        session_token=SESSION_TOKEN,
+    )
+    assert other.select_custom_text("description", "Original selection", None) is None
+    started, release = threading.Event(), threading.Event()
+    render = pick_web.markdown_to_deterministic_html
+
+    def render_paused(content: str) -> str:
+        started.set()
+        assert release.wait(10)
+        return render(content)
+
+    monkeypatch.setattr(pick_web, "markdown_to_deterministic_html", render_paused)
+
+    def update() -> None:
+        replacement = candidates["description"][0].model_copy(update={"content": "New candidate content"})
+        other.store.write_candidate(replacement)
+        assert other.select_custom_text("description", "New selection", None) is None
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        response = executor.submit(_assets_by_id, url)
+        try:
+            assert started.wait(5)
+            executor.submit(update).result(timeout=3)
+        finally:
+            release.set()
+        snapshot = response.result(timeout=5)["description"]
+
+    assert snapshot["custom_selected"] is True
+    assert snapshot["selected_candidate_id"] is None
+    assert str(snapshot["selected_text"]).strip() == "Original selection"
+    first = cast(list[dict[str, str]], snapshot["candidates"])[0]
+    assert first["content"] == candidates["description"][0].content
+    assert first["content_html"] == render(first["content"])
 
 
 def test_assets_refresh_external_selection_and_candidates(pick_server: _PickServerTuple) -> None:
