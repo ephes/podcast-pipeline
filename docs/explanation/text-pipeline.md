@@ -96,6 +96,12 @@ drafts are stripped nonblank lines. Exceeding either limit stops candidate gener
 the prompt or calling the candidate model. Earlier versions silently kept only the first 200 chapter
 lines; a longer chapters file now stops the run after summarization instead. The summary is cached, so
 shorten the supplemental context and retry.
+Per-asset LLM regeneration and `podcast draft-candidates` require a coherent regular UTF-8
+`summaries/episode/episode_summary.json` within the workspace, with no symlink components and a 1 MiB
+limit. Both validate the structure and refuse excessive nesting, duplicate members and non-finite numbers.
+A missing summary asks for the draft pipeline first in regeneration. Invalid summaries stop the operation
+before an agent call.
+
 For per-asset regeneration, `inputs.chapters` is read through nonblocking regular-file and
 workspace-directory descriptors. Every path component must stay inside that opened workspace;
 symlinks, changed file/directory names, in-place changes, invalid UTF-8, more than 1 MiB or more than

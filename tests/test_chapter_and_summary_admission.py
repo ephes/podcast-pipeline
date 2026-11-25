@@ -82,15 +82,17 @@ def test_chapter_open_swap_refused(tmp_path: Path, monkeypatch: pytest.MonkeyPat
 
 def test_chapter_changes_during_read(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     runner = chapter_workspace(tmp_path, monkeypatch)
+    chapters = tmp_path / "chapters.txt"
+    chapter_inode = chapters.stat().st_ino
     original = os.read
     changed = False
 
     def read(fd: int, size: int) -> bytes:
         nonlocal changed
         data = original(fd, size)
-        if data and not changed:
+        if data and not changed and os.fstat(fd).st_ino == chapter_inode:
             changed = True
-            (tmp_path / "chapters.txt").write_text("00:00 Changed\n")
+            chapters.write_text("00:00 Changed\n")
         return data
 
     monkeypatch.setattr(os, "read", read)
@@ -105,13 +107,14 @@ def test_chapter_named_authority_after_read(
 ) -> None:
     root = tmp_path / "episode"
     runner = chapter_workspace(root, monkeypatch, "nested/chapters.txt")
+    chapter_inode = (root / "nested/chapters.txt").stat().st_ino
     original = os.read
     changed = False
 
     def read(fd: int, size: int) -> bytes:
         nonlocal changed
         data = original(fd, size)
-        if data and not changed:
+        if data and not changed and os.fstat(fd).st_ino == chapter_inode:
             changed = True
             if replace_parent:
                 (root / "nested").rename(root / "saved")

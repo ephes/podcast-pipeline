@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Validate the persisted episode summary before LLM candidate regeneration using the same workspace file and JSON rules as stub drafting.
+
 - Check Auphonic production UUIDs after updates and starts, keeping the saved production available for recovery.
 
 - Require matching Auphonic production UUIDs when resuming, polling or checking whether cleanup can delete a production.
