@@ -10,6 +10,7 @@ from typing import Any
 import pytest
 
 from podcast_pipeline import agent_runners as runners
+from podcast_pipeline.agent_cli_config import AgentCliConfig
 
 
 def run(script: str, text: str = "") -> subprocess.CompletedProcess[str]:
@@ -64,6 +65,45 @@ def test_group_signal_precedes_reap(monkeypatch: pytest.MonkeyPatch) -> None:
     runners._kill_process_group(process)
     assert signaled
     assert process.returncode is not None
+
+
+def test_thread_construction_failure_reaps_child_and_closes_pipes(monkeypatch: pytest.MonkeyPatch) -> None:
+    real_popen = subprocess.Popen
+    real_thread = runners.threading.Thread
+    children: list[subprocess.Popen[bytes]] = []
+    threads: list[runners.threading.Thread] = []
+
+    def spawn(*args: Any, **kwargs: Any) -> subprocess.Popen[bytes]:
+        child = real_popen(*args, **kwargs)
+        children.append(child)
+        return child
+
+    def construct_thread(**kwargs: Any) -> runners.threading.Thread:
+        if threads:
+            raise RuntimeError("synthetic thread construction failure")
+        thread = real_thread(**kwargs)
+        threads.append(thread)
+        return thread
+
+    monkeypatch.setattr(runners.subprocess, "Popen", spawn)
+    monkeypatch.setattr(runners.threading, "Thread", construct_thread)
+    try:
+        with pytest.raises(RuntimeError, match="synthetic thread construction failure"):
+            run("import time; time.sleep(10)")
+        (child,) = children
+        assert child.returncode is not None
+        assert child.stdin is not None and child.stdin.closed
+        assert child.stdout is not None and child.stdout.closed
+        assert child.stderr is not None and child.stderr.closed
+        assert threads[0].ident is None
+    finally:
+        for child in children:
+            if child.returncode is None:
+                child.kill()
+                child.wait(timeout=3)
+            for pipe in (child.stdin, child.stdout, child.stderr):
+                if pipe is not None:
+                    pipe.close()
 
 
 def test_cleanup_is_finite_and_preserves_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -129,6 +169,18 @@ def test_missing_waitid_refuses_before_launch(monkeypatch: pytest.MonkeyPatch) -
 def test_protocol_stdout_requires_exact_utf8() -> None:
     with pytest.raises(runners.AgentRunnerError, match="UTF-8"):
         run('import os; os.write(1, b\'{"content":"\\xff"}\')')
+
+
+def test_invalid_stdout_preserves_nonzero_agent_exit() -> None:
+    config = AgentCliConfig(
+        role="drafter",
+        command=sys.executable,
+        args=("-c", 'import os, sys; sys.stdin.read(); os.write(1, b"synthetic \\xff"); sys.exit(73)'),
+    )
+
+    with pytest.raises(runners.AgentRunnerError, match=r"Drafter CLI failed with exit code 73;") as caught:
+        runners.run_agent_cli(config=config, prompt_text="synthetic", cwd=None, timeout_seconds=3, label="Drafter")
+    assert "synthetic" not in str(caught.value)
 
 
 def test_non_protocol_stdout_keeps_replacement_decoding() -> None:
@@ -218,7 +270,6 @@ def test_external_reap_revokes_group_authority(monkeypatch: pytest.MonkeyPatch) 
 @pytest.mark.parametrize("role", ["creator", "reviewer"])
 @pytest.mark.parametrize("output", [b'{"content":"\xff"}', b'{"done":false,"done":true}'])
 def test_invalid_protocol_never_publishes(tmp_path: Path, role: str, output: bytes) -> None:
-    from podcast_pipeline.agent_cli_config import AgentCliConfig
     from podcast_pipeline.workspace_store import EpisodeWorkspaceLayout
 
     config = AgentCliConfig(role=role, command=sys.executable, args=("-c", f"import os; os.write(1,{output!r})"))
