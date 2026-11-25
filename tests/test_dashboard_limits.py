@@ -65,6 +65,28 @@ def test_status_requires_selected_candidate_and_output(ctx: context.DashboardCon
     assert stages["total_assets"] == (2 if missing == "candidate" else 1)
 
 
+@pytest.mark.parametrize("missing", ["candidate", "output"])
+def test_pick_badge_matches_status_selection(ctx: context.DashboardContext, missing: str) -> None:
+    chosen = Candidate(asset_id="description", content="Synthetic description")
+    other = Candidate(asset_id="description", content="Other synthetic description")
+    ctx.store.write_candidate(chosen)
+    ctx.store.write_candidate(other)
+    assert ctx.select_candidate(chosen.asset_id, str(chosen.candidate_id)) is None
+    assert ctx.get_status_json()["stages"]["selected"] == 1
+    assert ctx.get_assets_json()[0]["has_selection"] is True
+
+    if missing == "candidate":
+        ctx.store.delete_candidate_files(chosen.asset_id, chosen.candidate_id)
+        ctx.reload_candidates()
+    else:
+        ctx.store.clear_selected_text(chosen.asset_id)
+
+    assert ctx.get_status_json()["stages"]["selected"] == 0
+    (asset,) = ctx.get_assets_json()
+    assert asset["has_selection"] is False
+    assert asset["custom_selected"] is False
+
+
 def test_status_bounds_chunk_directory_entries(ctx: context.DashboardContext, monkeypatch: pytest.MonkeyPatch) -> None:
     directory = ctx.layout.transcript_chunks_dir
     directory.mkdir(parents=True)

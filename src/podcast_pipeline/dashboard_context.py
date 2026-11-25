@@ -264,12 +264,13 @@ class DashboardContext:
         for asset_key in sorted(candidates):
             cands = candidates[asset_key]
             existing = assets_by_id.get(asset_key)
-            selected_id = str(existing.selected_candidate_id) if existing and existing.selected_candidate_id else None
+            selected_uuid = existing.selected_candidate_id if existing else None
+            selected_id = str(selected_uuid) if selected_uuid else None
             current = self._read_selected_text(asset_key)
             is_tag = _is_tag_asset(asset_key)
             selected_tags = parse_tag_list(current) if is_tag else []
-            has_text = bool(selected_tags) if is_tag else bool(current and current.strip())
-            has_selection = selected_id is not None or has_text
+            has_text = _has_usable_selected_text(asset_key, current)
+            has_selection = _selection_counts(asset_key, selected_uuid, cands, current)
             custom_selected = selected_id is None and has_text
 
             candidate_items: list[AssetCandidateOut] = []
@@ -601,12 +602,22 @@ class DashboardContext:
     def _is_asset_selected(
         self, asset_id: str, selected_candidate_id: UUID | None, candidates: list[Candidate]
     ) -> bool:
-        if selected_candidate_id is not None and find_candidate_by_id(candidates, selected_candidate_id) is None:
-            return False
-        selected_text = self._read_selected_text(asset_id)
-        if _is_tag_asset(asset_id):
-            return bool(parse_tag_list(selected_text))
-        return bool(selected_text and selected_text.strip())
+        return _selection_counts(asset_id, selected_candidate_id, candidates, self._read_selected_text(asset_id))
+
+
+def _has_usable_selected_text(asset_id: str, selected_text: str | None) -> bool:
+    if _is_tag_asset(asset_id):
+        return bool(parse_tag_list(selected_text))
+    return bool(selected_text and selected_text.strip())
+
+
+def _selection_counts(
+    asset_id: str, selected_candidate_id: UUID | None, candidates: list[Candidate], selected_text: str | None
+) -> bool:
+    """Shared selection rule for the status counter and the Pick tab badge."""
+    if selected_candidate_id is not None and find_candidate_by_id(candidates, selected_candidate_id) is None:
+        return False
+    return _has_usable_selected_text(asset_id, selected_text)
 
 
 def _count_chunk_entries(path: Path) -> int | None:

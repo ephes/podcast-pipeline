@@ -937,7 +937,7 @@ function renderPickSidebar() {
     label.textContent = asset.asset_id;
     item.appendChild(label);
 
-    if (asset.has_selection || asset.selected_candidate_id) {
+    if (asset.has_selection) {
       const check = document.createElement("span");
       check.className = "check";
       check.innerHTML = "&#10003;";

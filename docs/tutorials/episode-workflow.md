@@ -598,7 +598,8 @@ Each dashboard status refresh reads the latest workspace state, including select
 CLI processes or dashboards. A missing candidates directory counts as empty. If a candidate read fails,
 status displays an error and the next refresh tries again. Candidate selections count only while the
 same asset still has that candidate and usable published text. Assets with stale candidate selections
-remain in the total as unselected. Saved manual text also counts as a selection.
+remain in the total as unselected. Saved manual text also counts as a selection. The Pick tab check mark
+uses the same rule against its loaded candidate list.
 
 The dashboard counts chunks from the published manifest when it passes structural validation. This status
 counts the entries recorded at publication. Drafting separately verifies the source and chunk contents.

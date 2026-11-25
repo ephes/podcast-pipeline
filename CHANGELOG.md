@@ -6,7 +6,7 @@
 
 - Count only regular files in the dashboard’s legacy chunk inventory.
 
-- Count a dashboard candidate selection only when its asset still has the candidate and usable published text.
+- Count a dashboard candidate selection only when its asset still has the candidate and usable published text; the Pick tab check mark uses the same rule.
 
 - Retry failed candidate inventory reads on the next dashboard status refresh and report the read error.
 
