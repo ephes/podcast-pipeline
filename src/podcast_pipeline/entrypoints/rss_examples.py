@@ -32,10 +32,10 @@ def run_rss_examples(
             limit=limit,
             timeout_seconds=timeout_seconds,
         )
+        written = write_rss_examples_jsonl(examples=examples, output_path=output)
     except RssExamplesError as exc:
         raise typer.BadParameter(str(exc)) from exc
 
-    write_rss_examples_jsonl(examples=examples, output_path=output)
     typer.echo(f"RSS feed: {safe_rss_source(feed_url)}")
-    typer.echo(f"Episodes: {len(examples)}")
+    typer.echo(f"Episodes: {written}")
     typer.echo(f"Output: {output.expanduser().resolve()}")

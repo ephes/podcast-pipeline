@@ -24,7 +24,7 @@ podcast rss-examples \
 Notes:
 
 - `--output` defaults to `datasets/rss_examples.jsonl` if you omit it.
-- `--limit` caps how many episodes are written (default `25`).
+- `--limit` caps the number of usable items collected (default `25`). The reported episode count is the number of unique records written.
 - `--timeout-seconds` sets the whole-transfer deadline (default 20 seconds).
 - RSS XML is capped at 8 MiB, 100,000 elements, 64 levels and 4 MiB of UTF-8 text/attribute values.
   DTD/entity declarations are refused. Parsing retains only one requested item subtree at a time;
@@ -32,6 +32,8 @@ Notes:
 - The original source URL is used only for transport. JSONL and CLI diagnostics omit userinfo,
   query and fragment; re-export old corpora to remove previously stored source credentials.
   Episode text is not scanned for secrets.
+- Identical records with the same example ID are written once. Conflicting records with the same ID
+  abort the export before replacing an existing file. The error shows the hashed example ID.
 - The JSONL `output` field contains normalized episode description HTML.
 - `<itunes:keywords>` are exported as `keywords`. Point `tags.examples` at the file to show past episodes'
   keywords to the tag-asset prompts (see `reference/configuration.md`, "Tag assets").

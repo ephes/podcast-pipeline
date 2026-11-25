@@ -183,12 +183,18 @@ def write_rss_examples_jsonl(
     *,
     examples: Sequence[RssEpisodeExample],
     output_path: Path,
-) -> None:
-    output_path = output_path.expanduser()
-    content = "".join(
-        json.dumps(example.to_record(), ensure_ascii=False, sort_keys=True) + "\n" for example in examples
-    )
-    atomic_write_text(output_path, content)
+) -> int:
+    """Publish unique records atomically and return the number written."""
+    records: dict[str, str] = {}
+    for example in examples:
+        record = example.to_record()
+        example_id = record["example_id"]
+        line = json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n"
+        previous = records.setdefault(example_id, line)
+        if previous != line:
+            raise RssExamplesError(f"Conflicting RSS examples for ID {example_id}.")
+    atomic_write_text(output_path.expanduser(), "".join(records.values()))
+    return len(records)
 
 
 MAX_RSS_BYTES = 8 * 1024 * 1024

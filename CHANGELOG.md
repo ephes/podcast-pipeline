@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Coalesce identical RSS example records and preserve the previous export when the same ID has conflicting records.
+
 - Require an RSS root and a direct channel for RSS examples, skipping namespaced channel extensions.
 
 - Read picker tag overrides and host exclusions from the same admitted episode YAML snapshot.
