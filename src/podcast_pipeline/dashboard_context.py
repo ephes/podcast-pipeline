@@ -134,6 +134,7 @@ class DashboardContext:
         # A publisher can report progress through the dashboard while holding the workspace lock.
         with self.store.publication_lock():
             ws = load_workspace(self.store)
+            candidates = load_candidates(layout=self.layout, asset_id=None, allow_missing_root=True)
             chunk_count = read_published_chunk_count(self.layout)
             if chunk_count is None:
                 chunk_count = _count_chunk_entries(self.layout.transcript_chunks_dir)
@@ -141,15 +142,16 @@ class DashboardContext:
             if self._workspace_state is not None and self._workspace_state != ws:
                 self._workspace_state = None
                 self._candidates_by_asset = None
-            return self._status_snapshot(chunk_count, ws)
+            return self._status_snapshot(chunk_count, ws, candidates)
 
-    def _status_snapshot(self, chunk_count: int | None, ws: EpisodeWorkspace) -> dict[str, Any]:
+    def _status_snapshot(
+        self, chunk_count: int | None, ws: EpisodeWorkspace, candidates: dict[str, list[Candidate]]
+    ) -> dict[str, Any]:
         layout = self.layout
         episode_yaml = self._read_episode_yaml_safe()
 
         transcript_ok = (layout.transcript_dir / "transcript.txt").exists()
         summary_ok = layout.episode_summary_json_path().exists()
-        candidates = self._ensure_candidates()
         candidate_count = sum(len(v) for v in candidates.values())
         candidate_assets = len(candidates)
         pickable = self._pickable_assets(candidates, ws)

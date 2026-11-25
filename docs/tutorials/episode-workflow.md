@@ -595,7 +595,8 @@ Composing or already-handled Enter in tag/refinement inputs never submits; commi
 buttons still work. See [standalone picker limits](../reference/configuration.md#standalone-picker-limits).
 
 Each dashboard status refresh reads the latest workspace state, including selections saved by other
-CLI processes or dashboards.
+CLI processes or dashboards. A missing candidates directory counts as empty. If a candidate read fails,
+status displays an error and the next refresh tries again.
 
 The dashboard counts chunks from the published manifest when it passes structural validation. This status
 counts the entries recorded at publication. Drafting separately verifies the source and chunk contents.

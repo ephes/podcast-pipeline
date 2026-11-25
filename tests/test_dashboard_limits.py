@@ -26,6 +26,26 @@ def ctx(tmp_path: Path) -> context.DashboardContext:
     return context.DashboardContext(workspace=tmp_path)
 
 
+def test_status_retries_rejected_candidate_inventory(ctx: context.DashboardContext) -> None:
+    candidate = Candidate(asset_id="description", content="Synthetic description")
+    path = ctx.layout.candidate_json_path(candidate.asset_id, candidate.candidate_id)
+    path.parent.mkdir(parents=True)
+    path.write_text("{", encoding="utf-8")
+
+    api = web._DashboardApi(ctx=ctx, on_done=None)
+    request = Request({"type": "http"})
+    failed = api.serve_status(request)
+
+    ctx.store.write_candidate(candidate)
+    assert ctx.get_status_json()["stages"]["candidates"] == 1
+    assert failed.status_code == 500
+
+    assert len(ctx.get_assets_json()) == 1
+    path.write_text("{", encoding="utf-8")
+    assert api.serve_status(request).status_code == 500
+    assert len(ctx.get_assets_json()) == 1
+
+
 def test_status_bounds_chunk_directory_entries(ctx: context.DashboardContext, monkeypatch: pytest.MonkeyPatch) -> None:
     directory = ctx.layout.transcript_chunks_dir
     directory.mkdir(parents=True)

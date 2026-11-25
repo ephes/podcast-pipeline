@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Retry failed candidate inventory reads on the next dashboard status refresh and report the read error.
+
 - Refresh dashboard status from the current workspace state so external selections appear without a restart.
 
 - Preserve the agent CLI exit code when stdout contains invalid UTF-8 on a nonzero exit.
