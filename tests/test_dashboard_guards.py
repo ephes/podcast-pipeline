@@ -727,3 +727,48 @@ def test_pick_web_base_class_error_pages_forbid_framing(pick_port: int) -> None:
     status, headers = _pick_response_headers(pick_port, "PATCH", "/", headers)
     assert status == 501
     _assert_not_frameable(headers)
+
+
+@pytest.mark.parametrize("invalid_yaml", [b"episode_id: [synthetic", b"episode_id: \xff"])
+def test_dashboard_episode_metadata_reports_invalid_file_and_recovers(
+    ctx: DashboardContext, client: TestClient, monkeypatch: pytest.MonkeyPatch, invalid_yaml: bytes
+) -> None:
+    monkeypatch.setenv("PODCAST_PIPELINE_CONFIG", str(ctx.workspace / "missing-config.yaml"))
+    path = ctx.layout.episode_yaml
+    path.unlink()
+
+    missing = client.get("/api/status")
+    assert missing.status_code == 200
+    assert missing.json()["stages"]["episode_yaml"] is False
+    assert client.get("/api/episode").json()["episode_id"] == ""
+
+    path.write_bytes(invalid_yaml)
+    invalid = client.get("/api/status")
+    assert invalid.status_code == 200
+    stages = invalid.json()["stages"]
+    assert stages["episode_yaml"] is True
+    diagnostic = stages["episode_yaml_error"]
+    assert "episode.yaml" in diagnostic and "repair" in diagnostic.lower()
+    assert "synthetic" not in diagnostic
+    for method, url in [("GET", "/api/episode"), ("POST", "/api/produce/preview")]:
+        response = client.request(method, url, json={} if method == "POST" else None)
+        assert response.status_code == 400
+        assert response.json() == {"error": diagnostic}
+    assert path.read_bytes() == invalid_yaml
+
+    (ctx.workspace / "speaker.flac").touch()
+    path.write_text(
+        "episode_id: synthetic\n"
+        "hosts: [Host One]\n"
+        "auphonic:\n"
+        "  preset_id: test-preset\n"
+        "  tracks: [{id: speaker, path: speaker.flac}]\n",
+        encoding="utf-8",
+    )
+    repaired = client.get("/api/status").json()
+    assert repaired["stages"]["episode_yaml_error"] is None
+    assert repaired["episode_id"] == "synthetic"
+    assert client.get("/api/episode").json()["hosts"] == ["Host One"]
+    preview = client.post("/api/produce/preview", json={})
+    assert preview.status_code == 200
+    assert preview.json()["preset"] == "test-preset"

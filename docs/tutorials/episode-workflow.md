@@ -615,14 +615,19 @@ Each dashboard status refresh reads the latest workspace state, including select
 CLI processes or dashboards. A missing candidates directory counts as empty. If a candidate read fails,
 status displays an error and the next refresh tries again. Candidate selections count only while the
 same asset still has that candidate and usable published text. Assets with stale candidate selections
-remain in the total as unselected. Saved manual text also counts as a selection. The Pick tab check mark
-uses the same rule against its loaded candidate list.
+remain in the total as unselected. Saved manual text also counts as a selection. Status reads each manual
+selection without candidates once per refresh, using that read for both asset eligibility and selection counts.
+The Pick tab check mark uses the same selection rule against its loaded candidate list.
 
 The dashboard counts chunks from the published manifest when it passes structural validation. This status
 counts the entries recorded at publication. Drafting separately verifies the source and chunk contents.
 Without a usable manifest, status counts regular `chunk_*.txt` files and skips symlinks. It scans
 at most 8,192 directory entries and checks one extra entry to detect overflow. An oversized or unreadable
 inventory displays “Count incomplete” and returns `null` in `/api/status` at `stages.chunks`. A missing chunk directory reports zero.
+
+The dashboard marks an unreadable or invalid `episode.yaml` as **Invalid** in Overview. Metadata and production
+preview show a repair message. Repair the file as regular UTF-8 YAML of at most 1 MiB, then reload metadata
+or retry the preview. A missing file still shows **Missing** and allows initial setup.
 
 Saving or clearing an asset's editorial notes validates the stored `episode.yaml` first. If its
 `editorial_notes` value is malformed, the dashboard returns HTTP 400 and preserves the file for repair.

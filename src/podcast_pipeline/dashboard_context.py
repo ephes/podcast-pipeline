@@ -4,6 +4,7 @@ import os
 import threading
 import uuid
 from collections import deque
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -48,9 +49,14 @@ from podcast_pipeline.workspace_store import EpisodeWorkspaceStore, WorkspaceSto
 MAX_PROGRESS_BYTES = 128 * 1024
 MAX_PROGRESS_ENTRIES = 1024
 MAX_COMPLETED_JOBS = 64
+MAX_EPISODE_METADATA_BYTES = 1024 * 1024
 MAX_SELECTED_ARTIFACT_BYTES = 8 * 1024 * 1024
 MAX_CHUNK_INVENTORY_ENTRIES = 2 * DEFAULT_LIMITS.chunks
 PROGRESS_TRUNCATED = "[Earlier progress truncated]"
+
+
+class EpisodeMetadataError(WorkspaceStoreError):
+    """An existing episode.yaml could not be read as valid metadata."""
 
 
 class SelectedArtifactError(WorkspaceStoreError):
@@ -140,14 +146,19 @@ class DashboardContext:
     ) -> dict[str, list[Candidate]]:
         """Assets shown in the Pick tab: those with candidates plus custom selections whose candidates are gone."""
         pickable = dict(candidates)
-        for ref in ws.provenance:
-            if (
-                ref.kind == MANUAL_SELECTION_PROVENANCE_KIND
-                and ref.ref not in pickable
-                and self._read_selected_text(ref.ref) is not None
-            ):
-                pickable[ref.ref] = []
+        for asset_id, text in self._manual_selection_texts(candidates, ws):
+            if text is not None:
+                pickable[asset_id] = []
         return pickable
+
+    def _manual_selection_texts(
+        self, candidates: dict[str, list[Candidate]], ws: EpisodeWorkspace
+    ) -> Iterator[tuple[str, str | None]]:
+        seen = set(candidates)
+        for ref in ws.provenance:
+            if ref.kind == MANUAL_SELECTION_PROVENANCE_KIND and ref.ref not in seen:
+                seen.add(ref.ref)
+                yield ref.ref, self._read_selected_text(ref.ref)
 
     def _ensure_workspace_state(self) -> EpisodeWorkspace:
         if self._workspace_state is None:
@@ -161,12 +172,24 @@ class DashboardContext:
     def get_status_json(self) -> dict[str, Any]:
         # A publisher can report progress through the dashboard while holding the workspace lock.
         with self.store.publication_lock():
-            ws = load_workspace(self.store)
+            metadata_error = None
+            try:
+                episode_yaml = self.read_episode_metadata()
+            except EpisodeMetadataError as exc:
+                episode_yaml = None
+                metadata_error = str(exc)
+            if self.layout.state_json.exists():
+                ws = self.store.read_state()
+            else:
+                episode_id = (episode_yaml or {}).get("episode_id", "")
+                ws = EpisodeWorkspace(
+                    episode_id=episode_id if episode_id.strip() else self.workspace.name, root_dir="."
+                )
             candidates = load_candidates(layout=self.layout, asset_id=None, allow_missing_root=True)
             chunk_count = read_published_chunk_count(self.layout)
             if chunk_count is None:
                 chunk_count = _count_chunk_entries(self.layout.transcript_chunks_dir)
-            snapshot = self._status_snapshot(chunk_count, ws, candidates)
+            snapshot = self._status_snapshot(chunk_count, ws, candidates, episode_yaml, metadata_error)
         with self.lock:
             if self._workspace_state is not None and self._workspace_state != ws:
                 self._workspace_state = None
@@ -174,35 +197,45 @@ class DashboardContext:
         return snapshot
 
     def _status_snapshot(
-        self, chunk_count: int | None, ws: EpisodeWorkspace, candidates: dict[str, list[Candidate]]
+        self,
+        chunk_count: int | None,
+        ws: EpisodeWorkspace,
+        candidates: dict[str, list[Candidate]],
+        episode_yaml: dict[str, Any] | None,
+        metadata_error: str | None,
     ) -> dict[str, Any]:
         layout = self.layout
-        episode_yaml = self._read_episode_yaml_safe()
+        metadata = episode_yaml or {}
 
         transcript_ok = (layout.transcript_dir / "transcript.txt").exists()
         summary_ok = layout.episode_summary_json_path().exists()
         candidate_count = sum(len(v) for v in candidates.values())
         candidate_assets = len(candidates)
-        pickable = self._pickable_assets(candidates, ws)
-
         selected_ids = {
             asset.asset_id: asset.selected_candidate_id
             for asset in ws.assets
             if asset.selected_candidate_id is not None
         }
-        asset_ids = pickable.keys() | selected_ids.keys()
+        manual_counts = {
+            asset_id: None if text is None else _selection_counts(asset_id, selected_ids.get(asset_id), [], text)
+            for asset_id, text in self._manual_selection_texts(candidates, ws)
+        }
+        manual_assets = {asset_id for asset_id, selected in manual_counts.items() if selected is not None}
+        asset_ids = candidates.keys() | selected_ids.keys() | manual_assets
         selected_count = sum(
-            1
+            bool(manual_counts[asset_id])
+            if asset_id in manual_counts
+            else self._is_asset_selected(asset_id, selected_ids.get(asset_id), candidates.get(asset_id, []))
             for asset_id in asset_ids
-            if self._is_asset_selected(asset_id, selected_ids.get(asset_id), candidates.get(asset_id, []))
         )
 
         payload = StatusOut(
             workspace=str(self.workspace.resolve()),
-            episode_id=episode_yaml.get("episode_id", ""),
-            hosts=episode_yaml.get("hosts") or [],
+            episode_id=metadata.get("episode_id", ""),
+            hosts=metadata.get("hosts") or [],
             stages=StatusStagesOut(
-                episode_yaml=layout.episode_yaml.exists(),
+                episode_yaml=episode_yaml is not None or metadata_error is not None,
+                episode_yaml_error=metadata_error,
                 state_json=layout.state_json.exists(),
                 transcript=transcript_ok,
                 chunks=chunk_count,
@@ -216,7 +249,7 @@ class DashboardContext:
         return payload.model_dump(mode="json")
 
     def get_episode_json(self) -> dict[str, Any]:
-        data = self._read_episode_yaml_safe()
+        data = self.read_episode_metadata() or {}
         return {
             "episode_id": data.get("episode_id", ""),
             "hosts": data.get("hosts") or [],
@@ -480,7 +513,7 @@ class DashboardContext:
         return None
 
     def get_editorial_notes(self, asset_id: str) -> str:
-        data = self._read_episode_yaml_safe()
+        data = self.read_episode_metadata() or {}
         notes = data.get("editorial_notes") or {}
         if isinstance(notes, dict):
             value = notes.get(asset_id, "")
@@ -577,13 +610,16 @@ class DashboardContext:
         for key in terminal[:-MAX_COMPLETED_JOBS]:
             del self.jobs[key]
 
-    def _read_episode_yaml_safe(self) -> dict[str, Any]:
-        if not self.layout.episode_yaml.exists():
-            return {}
+    def read_episode_metadata(self) -> dict[str, Any] | None:
+        """Return None when episode.yaml is missing, or report unreadable metadata."""
         try:
-            return self.store.read_episode_yaml()
-        except Exception:
-            return {}
+            return self.store.read_episode_yaml(max_bytes=MAX_EPISODE_METADATA_BYTES)
+        except FileNotFoundError:
+            return None
+        except (WorkspaceStoreError, OSError, ValueError, RecursionError, OverflowError):
+            raise EpisodeMetadataError(
+                "Cannot read episode.yaml. Repair it as a valid UTF-8 YAML file (up to 1 MiB), then retry."
+            ) from None
 
     def _read_selected_text(self, asset_id: str) -> str | None:
         for fmt in (TextFormat.markdown, TextFormat.plain, TextFormat.html):
