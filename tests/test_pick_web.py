@@ -945,6 +945,39 @@ def test_done_refuses_active_refinement(pick_server: _PickServerTuple) -> None:
     assert urllib.request.urlopen(f"{url}/api/assets").status == 200
 
 
+def test_done_stops_server_after_acknowledgment_times_out(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    store, candidates = _setup_workspace(tmp_path)
+    ctx = _ServerContext(
+        store=store,
+        candidates_by_asset=candidates,
+        workspace_state=EpisodeWorkspace(episode_id="test_ep", root_dir="."),
+        session_token=SESSION_TOKEN,
+    )
+    handler = object.__new__(_PickWebHandler)
+    handler.ctx = ctx
+    monkeypatch.setattr(handler, "_read_object", dict)
+    statuses = []
+
+    def respond(status: int, data: dict[str, object]) -> None:
+        statuses.append(status)
+        if status == 200:
+            raise TimeoutError("Synthetic response write timeout")
+
+    monkeypatch.setattr(handler, "_respond_json", respond)
+    with pick_web._PickHTTPServer(("127.0.0.1", 0), partial(_PickWebHandler, ctx)) as server:
+        handler.server = server
+        ctx.refining.add("description")
+        handler._handle_done()
+        assert not server.stop_requested.is_set()
+
+        ctx.refining.clear()
+        with pytest.raises(TimeoutError, match="response write timeout"):
+            handler._handle_done()
+        assert ctx.closing
+        assert statuses == [409, 200]
+        assert server.stop_requested.is_set()
+
+
 @pytest.mark.parametrize("failure", ["browser", "timer"])
 def test_startup_failure_closes_server(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str) -> None:
     import socket

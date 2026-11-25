@@ -594,7 +594,8 @@ retrying. After a failed or timed-out refinement the picker reloads the assets, 
 published meanwhile appears; check it before starting more paid work.
 Pending controls are released on failure, drafts remain available, and errors stay with their asset.
 Done waits for tag saves and is unavailable during refinements or pending choices. The server also refuses
-Done while refinement work is running. The thirty-minute fallback stops accepting work, then waits for
+Done while refinement work is running. Once it accepts Done, it shuts down even if the acknowledgment
+cannot reach the browser. The thirty-minute fallback stops accepting work, then waits for
 accepted handlers to finish (including the configured agent timeout); closing the browser does not cancel them.
 
 Sidebar assets are native buttons: Tab/Shift-Tab reaches them and Enter/Space activates them. Selection and

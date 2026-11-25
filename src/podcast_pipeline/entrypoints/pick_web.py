@@ -727,11 +727,13 @@ class _PickWebHandler(BaseHTTPRequestHandler):
                 self._respond_json(409, {"error": "Refinement pending; wait before Done"})
                 return
             self.ctx.closing = True
-        self._respond_json(200, {"ok": True})
-        if isinstance(self.server, _PickHTTPServer):
-            self.server.stop_requested.set()
-        else:
-            threading.Thread(target=self.server.shutdown, daemon=True).start()
+        try:
+            self._respond_json(200, {"ok": True})
+        finally:
+            if isinstance(self.server, _PickHTTPServer):
+                self.server.stop_requested.set()
+            else:
+                threading.Thread(target=self.server.shutdown, daemon=True).start()
 
     def _read_object(self) -> dict[str, object] | None:
         body = self._read_body()
