@@ -202,6 +202,11 @@ before any agent runs.
 
 The `tags` section can live in the global config and in `episode.yaml`: `exclude` lists are combined, while `max`,
 `examples` and `examples_limit` from `episode.yaml` override the global values.
+The web picker and dashboard read the episode's tag policy and host exclusions from one YAML snapshot.
+For picking, an existing `episode.yaml` must be a regular, non-symlink UTF-8 file of at most 1 MiB
+and pass workspace YAML structure checks. An unreadable or structurally invalid snapshot uses the
+built-in tag defaults with an empty host list. Invalid tag settings still use built-in defaults
+and keep the hosts from an admitted episode snapshot. Pickers do not load example corpora.
 
 ## django-cast episode drafts (cms)
 

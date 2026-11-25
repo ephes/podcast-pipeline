@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Read picker tag overrides and host exclusions from the same admitted episode YAML snapshot.
+
 - Apply workspace YAML structure checks and a 1 MiB regular-file limit to the optional global CMS configuration.
 
 - Omit invalid or unreadable episode summaries from review prompts with a warning, keeping other available episode context.
