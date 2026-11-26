@@ -54,6 +54,9 @@ a refused transcript.
 The default `podcast draft` flow uses `podcast_pipeline.summarization_llm`. It renders structured prompts for each
 chunk, validates each JSON response, writes chunk summaries, and then renders a roll-up prompt for the episode summary.
 The drafter CLI is selected from the workspace or global agent configuration.
+Chunk IDs must be unique. Duplicate IDs are rejected before reading sources or calling the
+drafter. Distinct IDs are summarized in the order supplied. Progress messages go to stderr.
+If stderr is unavailable, the model calls and artifact writes continue.
 
 Each chunk source must be one coherent regular UTF-8 file of at most 256 KiB (no symlinks/FIFOs).
 Actual reads enforce the ceiling and check descriptor/name generations. Each complete rendered

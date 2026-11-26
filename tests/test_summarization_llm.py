@@ -1,12 +1,17 @@
 from __future__ import annotations
 
+import io
+import sys
 from pathlib import Path
 from typing import Any
+
+import pytest
 
 from podcast_pipeline.domain.intermediate_formats import ChunkSummary
 from podcast_pipeline.prompting import PromptRenderer, default_prompt_registry
 from podcast_pipeline.summarization_llm import (
     reduce_chunk_summaries_to_episode_summary_llm,
+    run_llm_summarization,
     summarize_transcript_chunks_llm,
 )
 from podcast_pipeline.workspace_store import EpisodeWorkspaceLayout
@@ -54,21 +59,19 @@ def test_summarize_transcript_chunks_llm(tmp_path: Path) -> None:
         },
     ]
 
-    runner = FakeDrafterRunner(responses)
+    runner = FakeDrafterRunner(list(reversed(responses)))
     renderer = PromptRenderer(default_prompt_registry())
 
     summaries = summarize_transcript_chunks_llm(
         layout=layout,
-        chunk_ids=[1, 2],
+        chunk_ids=[2, 1],
         runner=runner,
         renderer=renderer,
     )
 
-    assert len(summaries) == 2
-    assert summaries[0].chunk_id == 1
-    assert summaries[1].chunk_id == 2
-    assert summaries[0].bullets == ["Willkommen"]
-    assert summaries[1].entities == ["Thema X"]
+    assert [summary.chunk_id for summary in summaries] == [2, 1]
+    assert summaries[1].bullets == ["Willkommen"]
+    assert summaries[0].entities == ["Thema X"]
 
     # Check artifacts were written
     assert layout.chunk_summary_json_path(1).exists()
@@ -116,3 +119,67 @@ def test_reduce_chunk_summaries_to_episode_summary_llm() -> None:
     # Verify the prompt included chunk summaries
     assert len(runner.prompts) == 1
     assert "chunk_id" in runner.prompts[0]
+
+
+def test_duplicate_chunk_ids_are_rejected_before_reading_sources(tmp_path: Path) -> None:
+    layout = EpisodeWorkspaceLayout(root=tmp_path)
+    runner = FakeDrafterRunner([])
+
+    with pytest.raises(ValueError, match="Duplicate summary chunk ID: 2"):
+        run_llm_summarization(
+            layout=layout,
+            chunk_ids=[2, 1, 2],
+            runner=runner,
+            renderer=PromptRenderer(default_prompt_registry()),
+        )
+
+    assert not runner.prompts
+    assert not list(tmp_path.iterdir())
+
+
+@pytest.mark.parametrize("stream_error", [BrokenPipeError, ValueError])
+def test_summary_progress_write_failure_preserves_all_artifacts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stream_error: type[Exception]
+) -> None:
+    layout = EpisodeWorkspaceLayout(root=tmp_path)
+    layout.transcript_chunks_dir.mkdir(parents=True)
+    for chunk_id in (1, 2):
+        layout.transcript_chunk_text_path(chunk_id).write_text(f"Transcript {chunk_id}", encoding="utf-8")
+
+    failed_writes: list[str] = []
+
+    class FailingProgressStream(io.StringIO):
+        def write(self, text: str) -> int:
+            if layout.chunk_summary_json_path(1).exists():
+                failed_writes.append(text.strip())
+                raise stream_error("Progress stream unavailable")
+            return super().write(text)
+
+    progress = FailingProgressStream()
+    monkeypatch.setattr(sys, "stderr", progress)
+    runner = FakeDrafterRunner(
+        [
+            {"summary_markdown": "First chunk"},
+            {"summary_markdown": "Second chunk"},
+            {"summary_markdown": "Episode summary"},
+        ]
+    )
+
+    summary = run_llm_summarization(
+        layout=layout,
+        chunk_ids=[1, 2],
+        runner=runner,
+        renderer=PromptRenderer(default_prompt_registry()),
+    )
+
+    assert "Summarizing chunk 1" in progress.getvalue()
+    assert failed_writes == ["Summarizing chunk 2...", "Generating episode summary..."]
+    assert len(runner.prompts) == 3
+    assert "First chunk" in runner.prompts[2]
+    assert "Second chunk" in runner.prompts[2]
+    assert summary.summary_markdown == "Episode summary"
+    assert layout.chunk_summary_json_path(1).is_file()
+    assert layout.chunk_summary_json_path(2).is_file()
+    assert layout.episode_summary_json_path().is_file()
+    assert layout.episode_summary_markdown_path().is_file()
+    assert layout.episode_summary_html_path().is_file()

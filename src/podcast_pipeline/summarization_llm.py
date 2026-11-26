@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Sequence
+from contextlib import suppress
 
 import typer
 
@@ -63,6 +64,12 @@ def _bounded_summaries_json(chunk_summaries: list[ChunkSummary]) -> str:
     return "".join(parts)
 
 
+def _echo_progress(message: str) -> None:
+    # stderr may be broken or closed while model work can still complete.
+    with suppress(OSError, ValueError):
+        typer.echo(message, err=True)
+
+
 def summarize_transcript_chunks_llm(
     *,
     layout: EpisodeWorkspaceLayout,
@@ -71,7 +78,13 @@ def summarize_transcript_chunks_llm(
     renderer: PromptRenderer,
     hosts: Sequence[str] | None = None,
 ) -> list[ChunkSummary]:
-    """Summarize each transcript chunk via an LLM call."""
+    """Summarize unique transcript chunks via LLM calls in the given order."""
+    seen_ids: set[int] = set()
+    for chunk_id in chunk_ids:
+        if chunk_id in seen_ids:
+            raise ValueError(f"Duplicate summary chunk ID: {chunk_id}")
+        seen_ids.add(chunk_id)
+
     summaries: list[ChunkSummary] = []
     _admit_hosts(hosts)
 
@@ -91,7 +104,7 @@ def summarize_transcript_chunks_llm(
             hosts=hosts,
         )
         _text_bytes(prompt.text)
-        typer.echo(f"  Summarizing chunk {chunk_id}...", err=True)
+        _echo_progress(f"  Summarizing chunk {chunk_id}...")
         payload = runner.run(prompt.text)
 
         payload.setdefault("chunk_id", chunk_id)
@@ -132,7 +145,7 @@ def reduce_chunk_summaries_to_episode_summary_llm(
         hosts=hosts,
     )
     _text_bytes(prompt.text)
-    typer.echo("  Generating episode summary...", err=True)
+    _echo_progress("  Generating episode summary...")
     payload = runner.run(prompt.text)
 
     payload.setdefault("version", 1)

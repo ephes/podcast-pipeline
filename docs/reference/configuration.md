@@ -492,9 +492,11 @@ Agent protocol stdout must contain exactly one JSON object, optionally wrapped i
 ```` ```json ```` code block with no surrounding prose. Multiple results, duplicate members at any depth,
 nonstandard constants, nonfinite floats and surrogate strings are refused. Before JSON hydration,
 control input is capped at 8 MiB UTF-8, 64 container levels, 100,000 tokens (container starts,
-member names and scalar values), and 256 characters per numeric scalar. Admission is a single linear
-scan; an unterminated string is refused immediately. Invalid/excessive results
-raise a content-free agent error before candidate or review publication; fix the wrapper and retry.
+member names and scalar values), and 256 characters per numeric scalar. Byte inputs are capped before
+strict UTF-8 decoding. Text inputs are measured in bounded UTF-8 blocks, and decoded JSON strings
+are checked for escaped unpaired surrogates. The structural scan refuses unterminated strings.
+Invalid or excessive results raise a content-free agent error before candidate or review publication.
+Fix the wrapper and retry.
 
 Complete runner stdin, whether inline or from a prompt file, is limited to 1 MiB UTF-8 before launch.
 Prompt files must be regular, coherent, non-symlink files; FIFOs, oversized/growing files and observed
