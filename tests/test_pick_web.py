@@ -15,7 +15,7 @@ from uuid import UUID
 
 import pytest
 
-from podcast_pipeline import asset_refine_llm
+from podcast_pipeline import asset_refine_llm, pick_core
 from podcast_pipeline.asset_refine_llm import RefineRequest, parse_refined_candidate
 from podcast_pipeline.domain.models import Candidate, EpisodeWorkspace, TextFormat
 from podcast_pipeline.entrypoints import pick_web
@@ -145,6 +145,38 @@ def test_post_api_select_writes_selection(
     assets_data = json.loads(resp2.read().decode("utf-8"))
     desc_asset = next(a for a in assets_data if a["asset_id"] == "description")
     assert desc_asset["selected_candidate_id"] == str(candidate.candidate_id)
+
+
+def test_over_budget_refresh_refuses_assets_and_cached_selection(
+    pick_server: _PickServerTuple, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _server, base_url, ctx, candidates = pick_server
+    candidate = candidates["description"][0]
+    selected = ctx.store.write_selected_text("description", TextFormat.markdown, "Original text")
+    before = selected.read_bytes()
+    monkeypatch.setattr(pick_core, "MAX_CATALOG_ENTRIES", 1, raising=False)
+
+    with pytest.raises(urllib.error.HTTPError) as failure:
+        urllib.request.urlopen(f"{base_url}/api/assets", timeout=5)
+    assert failure.value.code == 409
+    assert "directory entries" in json.load(failure.value)["error"]
+
+    request = urllib.request.Request(
+        f"{base_url}/api/select",
+        data=json.dumps({"asset_id": "description", "candidate_id": str(candidate.candidate_id)}).encode(),
+        headers={"Content-Type": "application/json"},
+    )
+    with pytest.raises(urllib.error.HTTPError) as refusal:
+        urllib.request.urlopen(request, timeout=5)
+    assert refusal.value.code == 409
+    assert selected.read_bytes() == before
+    assert not ctx.store.layout.state_json.exists()
+
+    monkeypatch.setattr(pick_core, "MAX_CATALOG_ENTRIES", 100)
+    with urllib.request.urlopen(f"{base_url}/api/assets", timeout=5) as response:
+        assert response.status == 200
+    with urllib.request.urlopen(request, timeout=5) as response:
+        assert response.status == 200
 
 
 def test_post_api_select_invalid_candidate_returns_400(

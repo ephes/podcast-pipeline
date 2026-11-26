@@ -458,7 +458,12 @@ JSON must be a UTF-8 object with unique members, at most 64 container levels, in
 finite constants and encodable strings. Invalid objects receive a payload-free 400; oversized bodies receive 413.
 
 Each assets response reads current state, candidate membership and selection artifacts under the workspace
-publication lock. `--asset` continues to restrict the picker to that asset. Browser drafts remain local.
+publication lock. The CLI picker and dashboard use the same catalog limits as the standalone web picker.
+Each load inspects at most 4,096 directory entries, including unrelated files, and admits at most 32 MiB of
+candidate JSON in total, with an 8 MiB limit per file. With `--asset-id`, only the chosen asset directory is
+scanned. Over-budget catalogs are refused before any choices are offered. If a standalone web refresh exceeds
+a limit, it returns 409 and pauses edits until the next successful catalog load. Move unused artifacts out of
+the candidate directories and reload. Browser drafts remain local.
 The picker refuses Done with 409 while a refinement is pending and rejects mutations after accepting Done.
 The thirty-minute server timeout stops admission, then drains accepted handlers and their agent publication;
 agent execution retains its configured finite timeout (default fifteen minutes). It does not cancel paid work

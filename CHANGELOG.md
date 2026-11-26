@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Bound directory scans and total candidate JSON bytes before offering picker choices.
+
 - Preserve the canonical workspace artifact when its temporary stage accepts fewer bytes than requested.
 
 - Refuse oversized refinement inputs before assembling the prompt when their trimmed lengths already exceed the limit.
