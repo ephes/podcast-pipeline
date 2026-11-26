@@ -463,7 +463,9 @@ Each load inspects at most 4,096 directory entries, including unrelated files, a
 candidate JSON in total, with an 8 MiB limit per file. With `--asset-id`, only the chosen asset directory is
 scanned. Over-budget catalogs are refused before any choices are offered. If a standalone web refresh exceeds
 a limit, it returns 409 and pauses edits until the next successful catalog load. Move unused artifacts out of
-the candidate directories and reload. Browser drafts remain local.
+the candidate directories and reload. The picker reads selected text as regular workspace UTF-8 files up to
+8 MiB per file, preferring Markdown, plain text, then HTML. A missing file permits fallback to the next format.
+The assets response derives selected text and tags from the same file read. Browser drafts remain local.
 The picker refuses Done with 409 while a refinement is pending and rejects mutations after accepting Done.
 The thirty-minute server timeout stops admission, then drains accepted handlers and their agent publication;
 agent execution retains its configured finite timeout (default fifteen minutes). It does not cancel paid work

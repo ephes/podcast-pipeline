@@ -224,8 +224,7 @@ class _AssetSnapshot:
     asset_id: str
     candidates: list[Candidate]
     selected_id: str | None
-    selected_text: str | None
-    selected_tags: list[str] | None
+    selection_text: str | None
 
 
 class _ServerContext:
@@ -252,11 +251,8 @@ class _ServerContext:
         self.closing = False
 
     def get_selected_tags(self, asset_id: str) -> list[str]:
-        for fmt in (TextFormat.markdown, TextFormat.plain, TextFormat.html):
-            path = self.store.layout.selected_text_path(asset_id, fmt)
-            if path.exists():
-                return parse_tag_list(path.read_text(encoding="utf-8"))
-        return []
+        current = read_current_selection(self.store.layout, asset_id)
+        return parse_tag_list(current[1]) if current is not None else []
 
     def set_selected_tags(self, asset_id: str, tags: list[str]) -> str | None:
         """Write a curated tag selection. Returns error message on failure, None on success."""
@@ -297,8 +293,7 @@ class _ServerContext:
                         asset_id=asset_id,
                         candidates=candidates,
                         selected_id=selected_id,
-                        selected_text=current[1] if selected_id is None and current and current[1].strip() else None,
-                        selected_tags=self.get_selected_tags(asset_id) if asset_id in TAG_ASSET_IDS else None,
+                        selection_text=current[1] if current is not None else None,
                     )
                 )
 
@@ -306,7 +301,8 @@ class _ServerContext:
         for snapshot in snapshots:
             asset_key = snapshot.asset_id
             candidates = snapshot.candidates
-            custom_selected = snapshot.selected_text is not None
+            selected_text = snapshot.selection_text if snapshot.selected_id is None else None
+            custom_selected = selected_text is not None and bool(selected_text.strip())
 
             candidate_items: list[dict[str, object]] = []
             for c in candidates:
@@ -326,14 +322,14 @@ class _ServerContext:
                 "selected_candidate_id": snapshot.selected_id,
                 "has_selection": snapshot.selected_id is not None or custom_selected,
                 "custom_selected": custom_selected,
-                "selected_text": snapshot.selected_text,
+                "selected_text": selected_text if custom_selected else None,
                 "selection_format": custom_selection_format(asset_key).value,
                 "candidates": candidate_items,
                 "is_tag_asset": asset_key in TAG_ASSET_IDS,
             }
             if asset_key in TAG_ASSET_IDS:
                 asset_data["tag_pool"] = tag_pool_json(candidates, settings=self.tag_settings, hosts=self.hosts)
-                asset_data["selected_tags"] = snapshot.selected_tags
+                asset_data["selected_tags"] = parse_tag_list(snapshot.selection_text)
                 asset_data["max_tags"] = self.tag_settings.max_tags
             result.append(asset_data)
         return result
@@ -434,8 +430,8 @@ class _ServerContext:
             return str(exc)
         if asset_id not in self.candidates_by_asset:
             return f"Unknown asset_id: {asset_id}"
-        current = read_current_selection(self.store.layout, asset_id)
         try:
+            current = read_current_selection(self.store.layout, asset_id)
             return build_refine_request(
                 asset_id=asset_id,
                 instruction=instruction,

@@ -39,6 +39,7 @@ MANUAL_SELECTION_PROVENANCE_KIND = "manual_selection"
 MAX_CATALOG_ENTRIES = 4096
 MAX_CATALOG_BYTES = 32 * 1024 * 1024
 _MAX_CANDIDATE_BYTES = 8 * 1024 * 1024
+_MAX_SELECTED_ARTIFACT_BYTES = 8 * 1024 * 1024
 
 # Short single-value assets are stored as plain text; everything else as markdown
 # (which also publishes the derived ``.html`` next to it).
@@ -354,8 +355,13 @@ def read_current_selection(layout: EpisodeWorkspaceLayout, asset_id: str) -> tup
     """Return the format and text of the published selection for ``asset_id``, if any."""
     for fmt in (TextFormat.markdown, TextFormat.plain, TextFormat.html):
         path = layout.selected_text_path(asset_id, fmt)
-        if path.exists():
-            return fmt, path.read_text(encoding="utf-8")
+        try:
+            text = read_workspace_utf8(
+                layout.root, path.relative_to(layout.root), max_bytes=_MAX_SELECTED_ARTIFACT_BYTES
+            )
+        except FileNotFoundError:
+            continue
+        return fmt, text.replace("\r\n", "\n").replace("\r", "\n")
     return None
 
 

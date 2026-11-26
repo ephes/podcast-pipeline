@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Derive standalone picker tags and selected text from the same bounded selection read.
+
 - Bound directory scans and total candidate JSON bytes before offering picker choices.
 
 - Preserve the canonical workspace artifact when its temporary stage accepts fewer bytes than requested.

@@ -22,7 +22,7 @@ from podcast_pipeline.entrypoints import pick_web
 from podcast_pipeline.entrypoints.pick_web import _PickWebHandler, _ServerContext
 from podcast_pipeline.local_web_guard import SESSION_HEADER
 from podcast_pipeline.pick_core import has_manual_selection_provenance
-from podcast_pipeline.workspace_store import EpisodeWorkspaceStore
+from podcast_pipeline.workspace_store import EpisodeWorkspaceLayout, EpisodeWorkspaceStore
 from tests.session_support import SESSION_TOKEN, launch_target
 
 
@@ -399,6 +399,7 @@ def test_get_api_assets_includes_tag_pool(pick_server_with_tags: _PickServerTupl
     assert keywords["is_tag_asset"] is True
     assert keywords["max_tags"] == 3
     assert keywords["selected_tags"] == []
+    assert keywords["selected_text"] is None
     assert keywords["tag_pool"] == [
         {"tag": "python", "count": 2},
         {"tag": "jit", "count": 2},
@@ -407,6 +408,58 @@ def test_get_api_assets_includes_tag_pool(pick_server_with_tags: _PickServerTupl
     description = next(a for a in assets if a["asset_id"] == "description")
     assert description["is_tag_asset"] is False
     assert "tag_pool" not in description
+
+
+def test_picker_tag_snapshot_uses_the_selected_text_generation(
+    pick_server_with_tags: _PickServerTuple, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _server, base_url, ctx, _candidates = pick_server_with_tags
+    asset_id = "itunes_keywords"
+    path = ctx.store.layout.selected_text_path(asset_id, TextFormat.markdown)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"- original\r\n")
+    read = pick_web.read_current_selection
+    reads = 0
+
+    def replace_after_read(layout: EpisodeWorkspaceLayout, requested: str) -> tuple[TextFormat, str] | None:
+        nonlocal reads
+        selection = read(layout, requested)
+        if requested == asset_id:
+            reads += 1
+            replacement = path.with_suffix(".replacement")
+            replacement.write_text("- replacement\n", encoding="utf-8")
+            replacement.replace(path)
+        return selection
+
+    monkeypatch.setattr(pick_web, "read_current_selection", replace_after_read)
+    with urllib.request.urlopen(f"{base_url}/api/assets", timeout=5) as response:
+        assets = json.load(response)
+    keywords = next(asset for asset in assets if asset["asset_id"] == asset_id)
+    assert reads == 1
+    assert keywords["selected_text"] == "- original\n"
+    assert keywords["selected_tags"] == ["original"]
+    assert path.read_text(encoding="utf-8") == "- replacement\n"
+
+
+def test_picker_refuses_oversized_selected_tags_without_format_fallback(
+    pick_server_with_tags: _PickServerTuple,
+) -> None:
+    _server, base_url, ctx, _candidates = pick_server_with_tags
+    asset_id = "itunes_keywords"
+    fallback = ctx.store.layout.selected_text_path(asset_id, TextFormat.plain)
+    fallback.parent.mkdir(parents=True, exist_ok=True)
+    fallback.write_text("fallback", encoding="utf-8")
+    with urllib.request.urlopen(f"{base_url}/api/assets", timeout=5) as response:
+        keywords = next(asset for asset in json.load(response) if asset["asset_id"] == asset_id)
+    assert keywords["selected_text"] == "fallback"
+    assert keywords["selected_tags"] == ["fallback"]
+
+    markdown = ctx.store.layout.selected_text_path(asset_id, TextFormat.markdown)
+    markdown.write_bytes(b"x" * (8 * 1024 * 1024 + 1))
+    with pytest.raises(urllib.error.HTTPError) as failure:
+        urllib.request.urlopen(f"{base_url}/api/assets", timeout=5)
+    assert failure.value.code == 500
+    assert fallback.read_text(encoding="utf-8") == "fallback"
 
 
 def test_post_api_tags_writes_selection(pick_server_with_tags: _PickServerTuple) -> None:
