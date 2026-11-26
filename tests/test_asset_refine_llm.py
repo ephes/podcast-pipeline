@@ -6,6 +6,7 @@ from typing import Any
 
 import pytest
 
+from podcast_pipeline.asset_candidates_llm import generate_single_asset_candidates_llm
 from podcast_pipeline.asset_refine_llm import (
     REFINE_PROVENANCE_KIND,
     RefineRequest,
@@ -16,7 +17,7 @@ from podcast_pipeline.asset_refine_llm import (
     refine_instruction,
 )
 from podcast_pipeline.domain.models import Candidate, TextFormat
-from podcast_pipeline.workspace_store import EpisodeWorkspaceLayout
+from podcast_pipeline.workspace_store import EpisodeWorkspaceLayout, EpisodeWorkspaceStore
 
 
 class _FakeDrafter:
@@ -160,24 +161,52 @@ def test_build_refine_request_rejects_bad_input(kwargs: dict[str, Any], message:
         build_refine_request(**args)
 
 
-def test_refine_asset_text_runs_drafter_with_summary_context(tmp_path: Path) -> None:
-    summary_path = EpisodeWorkspaceLayout(root=tmp_path).episode_summary_json_path()
-    summary_path.parent.mkdir(parents=True, exist_ok=True)
-    summary_path.write_text(
-        json.dumps({"summary_markdown": "Python 3.15 Release", "key_points": [], "topics": []}),
-        encoding="utf-8",
-    )
-    drafter = _FakeDrafter({"content": "python-315"})
+@pytest.mark.parametrize(
+    ("summary_json", "draft_error", "warns"),
+    [
+        (b'{"summary_markdown":"Episode context"}', None, False),
+        (None, "Episode summary not found", False),
+        (b'{"summary_markdown":"First","summary_markdown":"Episode context"}', "summary JSON evidence", True),
+    ],
+    ids=["valid", "missing", "duplicate-member"],
+)
+def test_refine_and_drafting_agree_on_summary_admission(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    summary_json: bytes | None,
+    draft_error: str | None,
+    warns: bool,
+) -> None:
+    monkeypatch.setenv("PODCAST_PIPELINE_CONFIG", str(tmp_path / "absent.yaml"))
+    EpisodeWorkspaceStore(tmp_path).write_episode_yaml({"episode_id": "synthetic"})
+    if summary_json is not None:
+        _write_optional_summary(tmp_path, summary_json)
+    draft_drafter = _FakeDrafter({"candidates": [{"content": "python-neuigkeiten"}]})
+    monkeypatch.setattr("podcast_pipeline.drafter_runner.DrafterCliRunner", lambda **kwargs: draft_drafter)
 
+    if draft_error is None:
+        generate_single_asset_candidates_llm(workspace=tmp_path, asset_id="slug", candidates_per_asset=1)
+        (draft_prompt,) = draft_drafter.prompts
+        assert "Episode context" in draft_prompt
+    else:
+        with pytest.raises(RuntimeError, match=draft_error):
+            generate_single_asset_candidates_llm(workspace=tmp_path, asset_id="slug", candidates_per_asset=1)
+        assert draft_drafter.prompts == []
+
+    refine_drafter = _FakeDrafter({"content": "python-315"})
     candidate = refine_asset_text(
         workspace=tmp_path,
         request=RefineRequest(asset_id="slug", instruction="Slug nur python-315", source_text="python-neuigkeiten"),
-        runner=drafter,
+        runner=refine_drafter,
     )
 
     assert candidate.content == "python-315"
     assert candidate.format == TextFormat.plain
-    assert "Python 3.15 Release" in drafter.prompts[0]
+    (refine_prompt,) = refine_drafter.prompts
+    assert ("Episode context" in refine_prompt) is (draft_error is None)
+    assert ("Episode summary (context only)" in refine_prompt) is (draft_error is None)
+    assert ("omitted the optional episode summary" in capsys.readouterr().err) is warns
 
 
 def _write_optional_summary(workspace: Path, content: bytes) -> Path:
@@ -207,7 +236,7 @@ def test_refine_fifo_summary_does_not_block(tmp_path: Path) -> None:
         timeout=5,
     )
     assert result.returncode == 0, result.stderr
-    assert b"optional episode summary omitted" in result.stderr
+    assert b"omitted the optional episode summary" in result.stderr
 
 
 @pytest.mark.parametrize(
@@ -231,7 +260,7 @@ def test_refine_omits_unusable_summary_with_safe_diagnostic(
         runner=drafter,
     )
     assert "Episode summary (context only)" not in drafter.prompts[0]
-    assert "optional episode summary omitted" in capsys.readouterr().err
+    assert "omitted the optional episode summary" in capsys.readouterr().err
 
 
 def test_refine_omits_summary_changed_during_read(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -260,8 +289,6 @@ def test_refine_omits_summary_changed_during_read(tmp_path: Path, monkeypatch: p
 
 @pytest.mark.parametrize("oversized_part", ["source", "notes", "summary", "combined"])
 def test_refine_rejects_complete_oversized_prompt_without_writes(tmp_path: Path, oversized_part: str) -> None:
-    from podcast_pipeline.workspace_store import EpisodeWorkspaceStore
-
     store = EpisodeWorkspaceStore(tmp_path)
     candidate = Candidate(asset_id="description", content="Vorher")
     candidate_path = store.write_candidate(candidate)

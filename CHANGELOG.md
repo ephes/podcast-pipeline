@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Share episode summary validation with drafting, so refinement omits rejected context such as duplicate JSON members and reports why.
+
 - Reject duplicate chunk IDs before LLM summarization reads sources or calls the drafter.
 
 - Continue writing chunk and episode summaries when stderr cannot report progress.
