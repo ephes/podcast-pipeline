@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Preserve the previous transcript chunk generation when staging its replacement encounters a short write.
+
 - Derive standalone picker tags and selected text from the same bounded selection read.
 
 - Bound directory scans and total candidate JSON bytes before offering picker choices. The dashboard reports

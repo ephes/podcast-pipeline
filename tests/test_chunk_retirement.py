@@ -1,5 +1,6 @@
 import logging
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -7,6 +8,34 @@ from podcast_pipeline import transcript_chunker as chunker
 from podcast_pipeline.entrypoints.draft_pipeline import _ingest_transcript
 from podcast_pipeline.workspace_store import EpisodeWorkspaceStore
 from tests.test_chunk_publication_processes import _initial
+
+
+@pytest.mark.parametrize("member", ["chunk_0001.txt", "chunk_0001.json", "complete.json"])
+def test_short_stage_write_preserves_previous_generation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, member: str
+) -> None:
+    layout = _initial(tmp_path, "fünf eins zwei drei vier sechs".encode())
+    previous_config = chunker.ChunkerConfig(max_tokens=2, overlap_tokens=0)
+    destination = layout.transcript_chunks_dir
+    before = {path.name: path.read_bytes() for path in destination.iterdir()}
+    write_text = Path.write_text
+
+    def short_write(path: Path, content: str, *args: Any, **kwargs: Any) -> int:
+        if path.parent.name == "new" and path.name == member:
+            content = content[:-2]
+        return write_text(path, content, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "write_text", short_write)
+    with pytest.raises(OSError, match=rf"Short write staging .*{member}"):
+        chunker.write_transcript_chunks(
+            layout=layout,
+            transcript_path=layout.transcript_dir / "transcript.txt",
+            config=chunker.ChunkerConfig(max_tokens=4, overlap_tokens=0),
+        )
+
+    assert chunker.discover_complete_chunk_ids(layout, config=previous_config) == [1, 2, 3]
+    assert {path.name: path.read_bytes() for path in destination.iterdir()} == before
+    assert not list(destination.parent.glob(".chunks-*"))
 
 
 def test_failed_restore_preserves_publication_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
