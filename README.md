@@ -254,8 +254,8 @@ Content-bound draft caches rebuild for changed bytes and survive identical outpu
 Normal writers refuse invalid or unreadable existing `state.json`; they never initialize over damaged
 paid-production history. Repair the existing file explicitly before retrying. Candidate/custom selection
 metadata is validated before publication under the state lock. Handled text, provenance or final-state write
-failures restore the previous selection files and state. Atomic writes and rollback use short temporary
-names in the destination directory, so filenames at the filesystem limit are supported. Recovery errors
+failures restore the previous selection files and state. Atomic artifact writes reject a short stage write before replacing the last canonical file.
+Atomic writes and rollback use short temporary names in the destination directory, so filenames at the filesystem limit are supported. Recovery errors
 report the original paths and their retained sibling backups.
 This covers handled errors, not process death between file replacements.
 

@@ -7,7 +7,8 @@ import pytest
 import typer
 from typer.testing import CliRunner
 
-from podcast_pipeline.domain.models import Candidate, EpisodeWorkspace
+from podcast_pipeline import pick_core
+from podcast_pipeline.domain.models import Candidate, EpisodeWorkspace, TextFormat
 from podcast_pipeline.entrypoints import pick
 from podcast_pipeline.entrypoints.cli import app
 from podcast_pipeline.pick_core import save_candidate_selection
@@ -19,6 +20,44 @@ def _candidates(store: EpisodeWorkspaceStore, asset_id: str) -> list[Candidate]:
     for candidate in candidates:
         store.write_candidate(candidate)
     return candidates
+
+
+@pytest.mark.parametrize("asset_filter", [None, "description"])
+@pytest.mark.parametrize("limit", ["directory entries", "candidate JSON bytes"])
+def test_picker_refuses_over_budget_catalog_before_selection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, asset_filter: str | None, limit: str
+) -> None:
+    store = EpisodeWorkspaceStore(tmp_path)
+    candidate = Candidate(asset_id="description", content="Synthetic first candidate")
+    first = store.write_candidate(candidate)
+    store.write_state(EpisodeWorkspace(episode_id="synthetic", root_dir="."))
+    selected = store.write_selected_text("description", TextFormat.markdown, "Original text")
+    preserved = {path: path.read_bytes() for path in (store.layout.state_json, selected)}
+
+    if limit == "directory entries":
+        directory = first.parent if asset_filter else store.layout.copy_candidates_dir
+        for index in range(12):
+            (directory / f"unrelated_{index}.txt").touch()
+        monkeypatch.setattr(pick_core, "MAX_CATALOG_ENTRIES", 10, raising=False)
+    else:
+        asset_id = "description" if asset_filter else "shownotes"
+        extra = [
+            store.write_candidate(Candidate(asset_id=asset_id, content=f"Synthetic candidate {index}"))
+            for index in range(12)
+        ]
+        budget = first.stat().st_size + max(path.stat().st_size for path in extra)
+        monkeypatch.setattr(pick_core, "MAX_CATALOG_BYTES", budget, raising=False)
+
+    args = ["pick", "--workspace", str(tmp_path)]
+    if asset_filter:
+        args += ["--asset-id", asset_filter, "--candidate-id", str(candidate.candidate_id)]
+    result = CliRunner().invoke(app, args, input="1\n")
+
+    assert result.exit_code != 0, result.output
+    assert "Picker catalog exceeds" in result.output
+    assert limit in result.output
+    assert "Workspace:" not in result.output
+    assert {path: path.read_bytes() for path in preserved} == preserved
 
 
 @pytest.mark.parametrize("change", ["replace", "delete", "same_bytes_new_inode", "changed_json_bytes"])

@@ -333,6 +333,82 @@ def test_post_api_select(dashboard_server: _DashboardServerTuple) -> None:
     assert desc2["selected_candidate_id"] == cid
 
 
+def test_over_budget_catalog_is_reported_not_emptied(
+    dashboard_server: _DashboardServerTuple, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from podcast_pipeline import pick_core
+
+    _server, base_url, ctx = dashboard_server
+    description = ctx.store.layout.copy_candidates_dir / "description"
+    candidate_id = sorted(description.glob("candidate_*.json"))[0].stem.removeprefix("candidate_")
+    monkeypatch.setattr(pick_core, "MAX_CATALOG_ENTRIES", 1)
+
+    def request(method: str, path: str, body: dict[str, str] | None = None) -> tuple[int, Any]:
+        req = urllib.request.Request(
+            f"{base_url}{path}",
+            data=None if body is None else json.dumps(body).encode(),
+            headers={"Content-Type": "application/json"},
+            method=method,
+        )
+        try:
+            with urllib.request.urlopen(req) as resp:
+                return resp.status, json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            return exc.code, json.loads(exc.read().decode("utf-8"))
+
+    selection = {"asset_id": "description", "candidate_id": candidate_id}
+    for method, path, body in (
+        ("GET", "/api/status", None),
+        ("GET", "/api/assets", None),
+        ("POST", "/api/select", selection),
+    ):
+        status, payload = request(method, path, body)
+        assert status == 409, (path, payload)
+        assert payload == {"error": "Picker catalog exceeds 1 directory entries."}
+    assert not ctx.store.layout.selected_text_path("description", TextFormat.markdown).exists()
+
+    monkeypatch.setattr(pick_core, "MAX_CATALOG_ENTRIES", 4096)
+    status, assets = request("GET", "/api/assets")
+    assert status == 200
+    assert {asset["asset_id"] for asset in assets} == {"description", "shownotes"}
+
+
+def test_publication_over_catalog_budget_keeps_job_result(
+    dashboard_server: _DashboardServerTuple, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from podcast_pipeline import pick_core
+    from podcast_pipeline.asset_refine_llm import RefineRequest
+    from podcast_pipeline.entrypoints import dashboard_web
+
+    _server, base_url, ctx = dashboard_server
+    refined = Candidate(asset_id="description", content="# Refined\n\nSynthetic refinement.")
+    monkeypatch.setattr("podcast_pipeline.asset_refine_llm.refine_asset_text", lambda *, workspace, request: refined)
+    # The current catalog fills the entry budget exactly; one more candidate exceeds it.
+    root = ctx.store.layout.copy_candidates_dir
+    budget = sum(1 + len(list(asset_dir.iterdir())) for asset_dir in root.iterdir())
+    monkeypatch.setattr(pick_core, "MAX_CATALOG_ENTRIES", budget)
+    assert len(ctx.get_assets_json()) == 2
+    job = BackgroundJob(job_id="refine-over-budget", stage="refine")
+    ctx.jobs[job.job_id] = job
+
+    dashboard_web._run_refine_job(ctx, job, cast(RefineRequest, None))
+
+    assert job.status == "completed", job.error
+    assert job.result == {"candidate_id": str(refined.candidate_id)}
+    assert ctx.store.layout.copy_candidates_dir.joinpath(
+        "description", f"candidate_{refined.candidate_id}.json"
+    ).exists()
+    try:
+        urllib.request.urlopen(f"{base_url}/api/assets")
+    except urllib.error.HTTPError as exc:
+        assert exc.code == 409
+        assert json.loads(exc.read().decode("utf-8")) == {
+            "error": f"Picker catalog exceeds {budget} directory entries."
+        }
+    else:
+        pytest.fail("the over-budget catalog must be reported on the next request")
+
+
 def test_delete_candidate_removes_it_from_assets(dashboard_server: _DashboardServerTuple) -> None:
     _server, base_url, _ctx = dashboard_server
 

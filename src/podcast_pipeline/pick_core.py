@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import unicodedata
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from fnmatch import fnmatchcase
+from itertools import islice
 from pathlib import Path
 from typing import Any
 from uuid import UUID
@@ -21,7 +24,7 @@ from podcast_pipeline.domain.models import (
     ProvenanceRef,
     TextFormat,
 )
-from podcast_pipeline.file_inputs import read_regular_utf8, read_workspace_utf8
+from podcast_pipeline.file_inputs import FileByteLimitExceeded, read_regular_bytes, read_workspace_utf8
 from podcast_pipeline.tag_assets import (
     TAG_ASSET_IDS,
     TagSettings,
@@ -33,6 +36,10 @@ from podcast_pipeline.tag_parsing import itunes_keyword_delimiter_error, normali
 from podcast_pipeline.workspace_store import EpisodeWorkspaceLayout, EpisodeWorkspaceStore
 
 MANUAL_SELECTION_PROVENANCE_KIND = "manual_selection"
+MAX_CATALOG_ENTRIES = 4096
+MAX_CATALOG_BYTES = 32 * 1024 * 1024
+_MAX_CANDIDATE_BYTES = 8 * 1024 * 1024
+_MAX_SELECTED_ARTIFACT_BYTES = 8 * 1024 * 1024
 
 # Short single-value assets are stored as plain text; everything else as markdown
 # (which also publishes the derived ``.html`` next to it).
@@ -58,6 +65,14 @@ _NON_SLUG_CHARS_RE = re.compile(r"[^a-z0-9]+")
 _GERMAN_TRANSLITERATIONS = str.maketrans({"ä": "ae", "ö": "oe", "ü": "ue", "ß": "ss"})
 
 
+class CandidateCatalogTooLarge(ValueError):
+    """A complete candidate catalog would exceed the picker's load budget."""
+
+
+class SelectedTextUnreadable(ValueError):
+    """A published selection artifact exists but is not a bounded regular UTF-8 file."""
+
+
 def load_candidates(
     *,
     layout: EpisodeWorkspaceLayout,
@@ -66,6 +81,8 @@ def load_candidates(
 ) -> dict[str, list[Candidate]]:
     """Load candidate JSON files from workspace, optionally filtered by asset_id."""
     root = layout.copy_candidates_dir
+    entries_remaining = MAX_CATALOG_ENTRIES
+    bytes_remaining = MAX_CATALOG_BYTES
 
     asset_dirs: list[Path]
     if asset_id is not None:
@@ -75,10 +92,11 @@ def load_candidates(
         asset_dir = root / asset_id
         if not asset_dir.exists():
             raise ValueError(f"Missing candidates directory for asset {asset_id}: {asset_dir}")
-        asset_dirs = [asset_dir]
+        asset_dirs = [asset_dir] if asset_dir.is_dir() else []
     else:
         try:
-            entries = sorted(root.iterdir())
+            entries = _scan_catalog(root, entries_remaining)
+            entries_remaining -= len(entries)
         except FileNotFoundError:
             if allow_missing_root:
                 return {}
@@ -87,7 +105,9 @@ def load_candidates(
 
     candidates_by_asset: dict[str, list[Candidate]] = {}
     for asset_dir in asset_dirs:
-        candidates = _load_candidates_from_dir(asset_dir)
+        entries = _scan_catalog(asset_dir, entries_remaining)
+        entries_remaining -= len(entries)
+        candidates, bytes_remaining = _load_candidates_from_dir(entries, bytes_remaining)
         if candidates:
             candidates_by_asset[asset_dir.name] = candidates
 
@@ -96,24 +116,47 @@ def load_candidates(
     return candidates_by_asset
 
 
-def _load_candidates_from_dir(path: Path) -> list[Candidate]:
-    candidates: list[Candidate] = []
-    for candidate_path in sorted(path.glob("candidate_*.json")):
-        try:
-            raw = json.loads(read_regular_utf8(candidate_path, max_bytes=8 * 1024 * 1024))
-        except (OSError, ValueError, RecursionError):
-            raise ValueError(
-                f"Invalid candidate file at {candidate_path}: expected regular UTF-8 JSON within 8 MiB"
-            ) from None
-        try:
-            candidate = Candidate.model_validate(raw)
-        except ValidationError as exc:
-            raise ValueError(f"Invalid candidate schema at {candidate_path}: {exc}") from exc
-        if candidate.asset_id != path.name:
-            raise ValueError(f"candidate asset_id mismatch: {candidate_path}")
-        candidates.append(candidate)
+def _scan_catalog(directory: Path, entries_remaining: int) -> list[Path]:
+    with os.scandir(directory) as entries:
+        paths = [directory / entry.name for entry in islice(entries, entries_remaining + 1)]
+    if len(paths) > entries_remaining:
+        raise CandidateCatalogTooLarge(f"Picker catalog exceeds {MAX_CATALOG_ENTRIES} directory entries.")
+    return sorted(paths)
+
+
+def _load_candidates_from_dir(paths: list[Path], bytes_remaining: int) -> tuple[list[Candidate], int]:
+    candidates = []
+    for path in paths:
+        if fnmatchcase(path.name, "candidate_*.json"):
+            candidate, size = _load_candidate(path, bytes_remaining)
+            bytes_remaining -= size
+            candidates.append(candidate)
     candidates.sort(key=lambda item: (item.created_at, str(item.candidate_id)))
-    return candidates
+    return candidates, bytes_remaining
+
+
+def _load_candidate(path: Path, bytes_remaining: int) -> tuple[Candidate, int]:
+    def invalid_file() -> ValueError:
+        return ValueError(f"Invalid candidate file at {path}: expected regular UTF-8 JSON within 8 MiB")
+
+    try:
+        data = read_regular_bytes(path, max_bytes=min(_MAX_CANDIDATE_BYTES, bytes_remaining))
+        raw = json.loads(data.decode("utf-8"))
+    except FileByteLimitExceeded:
+        if bytes_remaining < _MAX_CANDIDATE_BYTES:
+            raise CandidateCatalogTooLarge(
+                f"Picker catalog exceeds {MAX_CATALOG_BYTES} candidate JSON bytes."
+            ) from None
+        raise invalid_file() from None
+    except (OSError, ValueError, RecursionError):
+        raise invalid_file() from None
+    try:
+        candidate = Candidate.model_validate(raw)
+    except ValidationError as exc:
+        raise ValueError(f"Invalid candidate schema at {path}: {exc}") from exc
+    if candidate.asset_id != path.parent.name:
+        raise ValueError(f"candidate asset_id mismatch: {path}")
+    return candidate, len(data)
 
 
 def load_workspace(store: EpisodeWorkspaceStore) -> EpisodeWorkspace:
@@ -316,8 +359,17 @@ def read_current_selection(layout: EpisodeWorkspaceLayout, asset_id: str) -> tup
     """Return the format and text of the published selection for ``asset_id``, if any."""
     for fmt in (TextFormat.markdown, TextFormat.plain, TextFormat.html):
         path = layout.selected_text_path(asset_id, fmt)
-        if path.exists():
-            return fmt, path.read_text(encoding="utf-8")
+        try:
+            text = read_workspace_utf8(
+                layout.root, path.relative_to(layout.root), max_bytes=_MAX_SELECTED_ARTIFACT_BYTES
+            )
+        except FileNotFoundError:
+            continue
+        except (OSError, ValueError):
+            raise SelectedTextUnreadable(
+                f"Selected artifact {path.name} is unreadable or invalid: expected a regular UTF-8 file within 8 MiB."
+            ) from None
+        return fmt, text.replace("\r\n", "\n").replace("\r", "\n")
     return None
 
 

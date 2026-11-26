@@ -8,6 +8,7 @@ from typing import Any
 
 import pytest
 
+from podcast_pipeline import asset_refine_llm
 from podcast_pipeline.asset_candidates_llm import generate_single_asset_candidates_llm
 from podcast_pipeline.asset_refine_llm import (
     REFINE_PROVENANCE_KIND,
@@ -411,14 +412,44 @@ def test_refine_rejects_complete_oversized_prompt_without_writes(tmp_path: Path,
     assert {path: path.read_bytes() for path in preserved} == preserved
 
 
+@pytest.mark.parametrize("oversized_part", ["source", "notes", "summary", "combined"])
+def test_refine_rejects_oversized_input_before_template(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, oversized_part: str
+) -> None:
+    class UnreachableTemplate:
+        def format(self, **kwargs: str) -> str:
+            pytest.fail("Oversized input reached template assembly")
+
+    monkeypatch.setattr(asset_refine_llm, "_REFINE_TEMPLATE", UnreachableTemplate())
+    parts = {"source": "Alt", "notes": "Notiz", "summary": "Zusammenfassung"}
+    if oversized_part == "combined":
+        parts = dict.fromkeys(parts, "x" * (90 * 1024))
+    else:
+        parts[oversized_part] = "x" * (256 * 1024 + 1)
+    _write_optional_summary(tmp_path, json.dumps({"summary_markdown": parts["summary"]}).encode())
+    drafter = _FakeDrafter({"content": "Neu"})
+
+    with pytest.raises(
+        asset_refine_llm.RefinePromptTooLargeError, match="Refinement prompt exceeds 262144 UTF-8 bytes"
+    ):
+        refine_asset_text(
+            workspace=tmp_path,
+            request=RefineRequest(
+                asset_id="description", instruction="kurz", source_text=parts["source"], editorial_notes=parts["notes"]
+            ),
+            runner=drafter,
+        )
+    assert drafter.prompts == []
+
+
 def test_refine_prompt_utf8_exact_boundary(tmp_path: Path) -> None:
     limit = 256 * 1024
     base = build_refine_prompt(asset_id="description", source_text="ü", instruction="kurz")
-    source = "ü" + "x" * (limit - len(base.encode("utf-8")))
+    source = "  ü" + "x" * (limit - len(base.encode("utf-8")))
     drafter = _FakeDrafter({"content": "Neu"})
     refine_asset_text(
         workspace=tmp_path,
-        request=RefineRequest(asset_id="description", instruction="kurz", source_text=source),
+        request=RefineRequest(asset_id="description", instruction="kurz", source_text=source + "  "),
         runner=drafter,
     )
     assert len(drafter.prompts[0].encode("utf-8")) == limit

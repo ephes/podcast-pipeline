@@ -32,6 +32,7 @@ from podcast_pipeline.cms_draft import (
 )
 from podcast_pipeline.control_json import load_control_json
 from podcast_pipeline.file_inputs import read_regular_utf8
+from podcast_pipeline.pick_core import SelectedTextUnreadable
 from podcast_pipeline.workspace_store import EpisodeWorkspaceStore, WorkspaceStoreError, atomic_write_text
 
 _EPISODE_TYPE = "cast.Episode"
@@ -130,7 +131,7 @@ def run_cms_publish(*, workspace: Path, yes: bool) -> None:
     try:
         config = load_cms_config(episode_yaml)
         slug = selected_slug(workspace)
-    except CmsConfigError as exc:
+    except (CmsConfigError, SelectedTextUnreadable) as exc:
         raise typer.BadParameter(str(exc)) from exc
     try:
         token = load_cms_token(config.token_env)
@@ -151,7 +152,7 @@ def _load_plan(store: EpisodeWorkspaceStore, workspace: Path) -> tuple[CmsConfig
     try:
         config = load_cms_config(episode_yaml)
         plan = build_cms_draft_plan(episode_yaml=episode_yaml, workspace=workspace, config=config)
-    except CmsConfigError as exc:
+    except (CmsConfigError, SelectedTextUnreadable) as exc:
         raise typer.BadParameter(str(exc)) from exc
     return config, plan
 

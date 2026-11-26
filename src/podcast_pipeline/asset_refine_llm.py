@@ -27,7 +27,7 @@ MAX_REFINE_PROMPT_BYTES = 256 * 1024
 
 
 class RefinePromptTooLargeError(ValueError):
-    """The assembled refinement prompt exceeds the drafter input limit."""
+    """The refinement prompt exceeds the drafter input limit."""
 
 
 _RESPONSE_SCHEMA = {
@@ -71,6 +71,14 @@ class RefineRequest:
     editorial_notes: str | None = None
 
 
+def _check_refine_prompt_size(size: int) -> None:
+    if size > MAX_REFINE_PROMPT_BYTES:
+        raise RefinePromptTooLargeError(
+            f"Refinement prompt exceeds {MAX_REFINE_PROMPT_BYTES} UTF-8 bytes; "
+            "shorten the source text, editorial notes or episode summary and retry."
+        )
+
+
 def build_refine_prompt(
     *,
     asset_id: str,
@@ -81,6 +89,14 @@ def build_refine_prompt(
 ) -> str:
     from podcast_pipeline.asset_candidates_llm import _ASSET_GUIDANCE
 
+    source = source_text.strip()
+    instruction = instruction.strip()
+    notes_text = (editorial_notes or "").strip()
+    summary = (episode_summary_markdown or "").strip()
+    # Each character takes at least one UTF-8 byte. Reject oversized input before
+    # copying it into context blocks or the complete prompt.
+    _check_refine_prompt_size(len(source) + len(instruction) + len(notes_text) + len(summary))
+
     fmt = custom_selection_format(asset_id)
     if fmt == TextFormat.plain:
         format_rule = "Return plain text only: no Markdown, no heading, no surrounding quotes.\n"
@@ -88,25 +104,21 @@ def build_refine_prompt(
         format_rule = "Return Markdown.\n"
     if asset_id == AssetKind.slug.value:
         format_rule += "A slug uses only lowercase letters a-z, digits and single hyphens between words.\n"
-    notes = f"\nStanding editorial notes for this asset:\n{editorial_notes.strip()}\n" if editorial_notes else ""
+    notes = f"\nStanding editorial notes for this asset:\n{notes_text}\n" if editorial_notes else ""
     context = ""
     if episode_summary_markdown:
-        context = f"\nEpisode summary (context only):\n{episode_summary_markdown.strip()}\n"
+        context = f"\nEpisode summary (context only):\n{summary}\n"
     prompt = _REFINE_TEMPLATE.format(
         asset_id=asset_id,
         asset_guidance=_ASSET_GUIDANCE.get(asset_id, f"Text for {asset_id}."),
         format_rule=format_rule,
         editorial_notes=notes,
-        instruction=instruction.strip(),
-        source_text=source_text.strip(),
+        instruction=instruction,
+        source_text=source,
         episode_context=context,
         response_schema=json.dumps(_RESPONSE_SCHEMA, indent=2),
     )
-    if len(prompt.encode("utf-8")) > MAX_REFINE_PROMPT_BYTES:
-        raise RefinePromptTooLargeError(
-            f"Refinement prompt exceeds {MAX_REFINE_PROMPT_BYTES} UTF-8 bytes; "
-            "shorten the source text, editorial notes or episode summary and retry."
-        )
+    _check_refine_prompt_size(len(prompt.encode("utf-8")))
     return prompt
 
 

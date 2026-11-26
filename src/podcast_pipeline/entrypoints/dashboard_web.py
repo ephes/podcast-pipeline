@@ -42,6 +42,7 @@ from podcast_pipeline.local_web_guard import (
     session_bootstrap_cookie,
     session_url,
 )
+from podcast_pipeline.pick_core import CandidateCatalogTooLarge
 from podcast_pipeline.workspace_store import WorkspaceStoreError
 
 _SHUTDOWN_TIMEOUT_SECONDS = 60 * 60  # 1 hour
@@ -265,7 +266,7 @@ class _DashboardApi:
     def serve_status(self, _request: Request) -> Response:
         try:
             return JSONResponse(self.ctx.get_status_json())
-        except SelectedArtifactError:
+        except (SelectedArtifactError, CandidateCatalogTooLarge):
             raise
         except Exception as exc:
             return JSONResponse({"error": str(exc)}, status_code=500)
@@ -681,6 +682,10 @@ def _selected_artifact_error(_request: Request, exc: Exception) -> Response:
     return JSONResponse({"error": str(exc)}, status_code=422)
 
 
+def _candidate_catalog_error(_request: Request, exc: Exception) -> Response:
+    return JSONResponse({"error": str(exc)}, status_code=409)
+
+
 def create_dashboard_app(
     *,
     ctx: DashboardContext,
@@ -736,6 +741,7 @@ def create_dashboard_app(
         routes=routes,
         exception_handlers={
             SelectedArtifactError: _selected_artifact_error,
+            CandidateCatalogTooLarge: _candidate_catalog_error,
             EpisodeMetadataError: _episode_metadata_error,
         },
         middleware=[Middleware(_LocalRequestGuardMiddleware, expected_port=port, session_token=session_token)],

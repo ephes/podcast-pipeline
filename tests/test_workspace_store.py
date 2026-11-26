@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 from uuid import UUID
 
 import pytest
@@ -83,6 +84,32 @@ def test_store_reads_writes_episode_yaml(tmp_path: Path) -> None:
     loaded = store.read_episode_yaml()
     assert loaded["episode_id"] == "ep_001"
     assert loaded["sources"]["reaper_media_dir"] == "/tmp"
+
+
+def test_short_episode_yaml_stage_preserves_canonical_document(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = EpisodeWorkspaceStore(tmp_path)
+    original = {"schema_version": 1, "episode_id": "synthetic", "hosts": ["Synthetic host"]}
+    store.write_episode_yaml(original)
+    canonical = store.layout.episode_yaml
+    before = canonical.read_bytes()
+    named_tempfile = workspace_store.tempfile.NamedTemporaryFile
+
+    def short_stage(**kwargs: Any) -> Any:
+        stage = named_tempfile(**kwargs)
+        write = stage.write
+        monkeypatch.setattr(stage, "write", lambda data: write(data[: len(data) // 2]))
+        return stage
+
+    monkeypatch.setattr(workspace_store.tempfile, "NamedTemporaryFile", short_stage)
+    with pytest.raises(OSError, match="Short write"):
+        with store.update_episode_yaml() as episode:
+            episode["hosts"] = ["Updated host"]
+
+    assert canonical.read_bytes() == before
+    assert store.read_episode_yaml() == original
+    assert not list(tmp_path.glob(".write-*.tmp"))
 
 
 def test_episode_yaml_duplicate_track_setting_refuses_update(tmp_path: Path) -> None:

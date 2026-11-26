@@ -228,8 +228,9 @@ editor, choose the text to refine (the editor's text or one of the candidates), 
 - The drafter (the same agent CLI and timeout as `podcast draft`) rewrites only what the instruction asks for. Its
   prompt contains the asset's guidance, the text, the instruction, the asset's editorial notes (dashboard "Editorial
   Notes") and any episode summary that passes draft input validation as context.
-- The complete prompt, including guidance and schema, is limited to 256 KiB of UTF-8 bytes. Oversized requests
-  fail before the agent runs, and both the dashboard and the pick UI show the limit message; shorten the source,
+- The complete prompt, including guidance and schema, is limited to 256 KiB of UTF-8 bytes. The pipeline
+  checks the trimmed inputs before assembling the prompt and checks the exact UTF-8 size afterwards. Oversized
+  requests fail before the agent runs, and both the dashboard and the pick UI show the limit message; shorten the source,
   notes or summary and retry. No factual context is truncated,
   and existing candidates and selections survive the refusal.
 - Drafting and refinement apply the same checks to the summary JSON. It must be a coherent regular UTF-8

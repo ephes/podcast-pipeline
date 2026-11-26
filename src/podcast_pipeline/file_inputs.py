@@ -11,6 +11,10 @@ from contextlib import ExitStack
 from pathlib import Path
 
 
+class FileByteLimitExceeded(ValueError):
+    """A regular file exceeds its read budget."""
+
+
 def _generation(value: os.stat_result) -> tuple[int, int, int, int, int]:
     return value.st_dev, value.st_ino, value.st_size, value.st_mtime_ns, value.st_ctime_ns
 
@@ -22,15 +26,17 @@ def _consume_regular_bytes(
     fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW, dir_fd=dir_fd)
     try:
         before = os.fstat(fd)
-        if not stat.S_ISREG(before.st_mode) or before.st_size > max_bytes:
+        if not stat.S_ISREG(before.st_mode):
             raise ValueError("Source must be a regular file within the byte limit")
+        if before.st_size > max_bytes:
+            raise FileByteLimitExceeded("Source must be a regular file within the byte limit")
         if _generation(named) != _generation(before):
             raise ValueError("Source changed before open")
         size = 0
         while part := os.read(fd, min(64 * 1024, max_bytes + 1 - size)):
             size += len(part)
             if size > max_bytes:
-                raise ValueError("Source byte limit exceeded")
+                raise FileByteLimitExceeded("Source byte limit exceeded")
             consume(part)
         after = os.fstat(fd)
         current = os.stat(path, dir_fd=dir_fd, follow_symlinks=False)

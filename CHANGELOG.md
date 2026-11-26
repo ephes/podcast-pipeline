@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- Derive standalone picker tags and selected text from the same bounded selection read.
+
+- Bound directory scans and total candidate JSON bytes before offering picker choices. The dashboard reports
+  an over-budget catalog with 409 instead of showing an empty Pick tab; a job whose published candidates push
+  the catalog over budget still completes.
+
+- Refuse unreadable selected artifacts in `cms-draft` and `cms-publish` with the file name instead of a traceback.
+
+- Preserve the canonical workspace artifact when its temporary stage accepts fewer bytes than requested.
+
+- Refuse oversized refinement inputs before assembling the prompt when their trimmed lengths already exceed the limit.
+
 - Continue refinement when stderr cannot report progress or the omission of an invalid optional episode summary.
 
 - Reject refinement replies with multiple candidates or competing result fields.

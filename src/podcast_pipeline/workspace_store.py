@@ -91,7 +91,9 @@ def _atomic_write_bytes(path: Path, data: bytes) -> None:
             tmp_path = Path(tmp.name)
             if output_mode is not None:
                 os.fchmod(tmp.fileno(), output_mode)
-            tmp.write(data)
+            written = tmp.write(data)
+            if written != len(data):
+                raise OSError(f"Short write staging {path}: accepted {written} of {len(data)} bytes")
             tmp.flush()
             os.fsync(tmp.fileno())
 

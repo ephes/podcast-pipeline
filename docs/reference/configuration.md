@@ -458,7 +458,18 @@ JSON must be a UTF-8 object with unique members, at most 64 container levels, in
 finite constants and encodable strings. Invalid objects receive a payload-free 400; oversized bodies receive 413.
 
 Each assets response reads current state, candidate membership and selection artifacts under the workspace
-publication lock. `--asset` continues to restrict the picker to that asset. Browser drafts remain local.
+publication lock. The CLI picker and dashboard use the same catalog limits as the standalone web picker.
+Each load inspects at most 4,096 directory entries, including unrelated files, and admits at most 32 MiB of
+candidate JSON in total, with an 8 MiB limit per file. With `--asset-id`, only the chosen asset directory is
+scanned. Over-budget catalogs are refused before any choices are offered. If a standalone web refresh exceeds
+a limit, it returns 409 and pauses edits until the next successful catalog load. The dashboard answers status,
+assets and Pick actions with 409 and the limit message instead of an empty Pick tab. A draft, refine or review
+job whose new candidates exceed the budget still completes; the next request reports the limit. Move unused artifacts out of
+the candidate directories and reload. The picker, `cms-draft` and `cms-publish` read selected text as regular
+workspace UTF-8 files up to 8 MiB per file, preferring Markdown, plain text, then HTML, and normalize line
+endings to `\n`. A missing file permits fallback to the next format; a symlink, directory, oversized or
+non-UTF-8 selection is refused with its file name (the CMS commands stop before any API call).
+The assets response derives selected text and tags from the same file read. Browser drafts remain local.
 The picker refuses Done with 409 while a refinement is pending and rejects mutations after accepting Done.
 The thirty-minute server timeout stops admission, then drains accepted handlers and their agent publication;
 agent execution retains its configured finite timeout (default fifteen minutes). It does not cancel paid work
