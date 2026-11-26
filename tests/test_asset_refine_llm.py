@@ -70,9 +70,19 @@ def test_parse_refined_candidate_uses_natural_format_and_records_instruction() -
     assert ref.metadata["based_on_candidate_id"] == str(based_on.candidate_id)
 
 
-def test_parse_refined_candidate_accepts_candidates_shape() -> None:
-    candidate = parse_refined_candidate(
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"content": "# Neu\n\nText"},
+        {"candidate": {"content": "# Neu\n\nText"}},
+        {"candidate": [{"content": "# Neu\n\nText"}]},
+        {"candidates": {"content": "# Neu\n\nText"}},
         {"candidates": [{"content": "# Neu\n\nText"}]},
+    ],
+)
+def test_parse_refined_candidate_accepts_single_result(payload: dict[str, object]) -> None:
+    candidate = parse_refined_candidate(
+        payload,
         asset_id="description",
         instruction="ohne Emojis",
         based_on_candidate_id=None,
@@ -80,6 +90,21 @@ def test_parse_refined_candidate_accepts_candidates_shape() -> None:
     assert candidate.format == TextFormat.markdown
     assert candidate.content == "# Neu\n\nText"
     assert candidate.provenance[0].metadata["based_on_candidate_id"] is None
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"candidates": [{"content": "Erster"}, {"content": "Zweiter"}]},
+        {"candidate": [{"content": "Erster"}, {"content": "Zweiter"}]},
+        {"content": "Erster", "candidates": [{"content": "Zweiter"}]},
+        {"content": "Erster", "candidate": {"content": "Zweiter"}},
+        {"candidate": {"content": "Erster"}, "candidates": [{"content": "Zweiter"}]},
+    ],
+)
+def test_parse_refined_candidate_rejects_ambiguous_envelopes(payload: dict[str, object]) -> None:
+    with pytest.raises(RuntimeError, match="exactly one refinement result"):
+        parse_refined_candidate(payload, asset_id="description", instruction="kurz", based_on_candidate_id=None)
 
 
 @pytest.mark.parametrize(

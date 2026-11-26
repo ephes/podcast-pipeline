@@ -127,12 +127,18 @@ def parse_refined_candidate(
     based_on_candidate_id: UUID | None,
 ) -> Candidate:
     """Turn the drafter's JSON answer into a candidate in the asset's natural format."""
+    response_fields = {"content", "candidate", "candidates"}.intersection(payload)
+    if len(response_fields) > 1:
+        raise RuntimeError(f"Drafter response for {asset_id} must contain exactly one refinement result")
     content = payload.get("content")
-    if not isinstance(content, str):
-        # Tolerate the regular candidates shape: {"candidates": [{"content": ...}]}.
-        candidates = payload.get("candidate") or payload.get("candidates")
-        first = candidates[0] if isinstance(candidates, list) and candidates else candidates
-        content = first.get("content") if isinstance(first, dict) else None
+    if "content" not in response_fields:
+        # Accept legacy wrappers containing a single candidate object.
+        wrapped = payload.get("candidate", payload.get("candidates"))
+        if isinstance(wrapped, list):
+            if len(wrapped) > 1:
+                raise RuntimeError(f"Drafter response for {asset_id} must contain exactly one refinement result")
+            wrapped = wrapped[0] if wrapped else None
+        content = wrapped.get("content") if isinstance(wrapped, dict) else None
     if not isinstance(content, str):
         raise RuntimeError(f"Drafter response for refining {asset_id} has no 'content' string")
     try:
