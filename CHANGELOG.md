@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Refuse CMS `host_links` or `contributors` keys that name the same host once whitespace is stripped, instead of letting the later key silently replace the earlier URL or contributor.
+
+- Refuse CMS chapters whose `start` and `start_sec` disagree at microsecond precision, instead of silently using `start`. An invalid `start_sec` is reported under its own name.
+
+- Credit host aliases that map to the same contributor slug and role once in the CMS draft, so django-cast no longer rejects the contributors `PATCH` as a duplicate.
+
 - Link hosts in CMS draft overviews when their names contain HTML character references, preserving the original HTML. HTML containing raw-text elements such as `xmp` or `noscript`, or attribute character references too long to decode, is left unchanged instead of failing.
 
 - Stop CMS draft planning before HTTP when saved chapter state is unreadable or invalid. An absent `state.json` still gives empty chapter marks.
