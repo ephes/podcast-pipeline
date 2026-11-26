@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Preserve the canonical workspace artifact when its temporary stage accepts fewer bytes than requested.
+
 - Refuse oversized refinement inputs before assembling the prompt when their trimmed lengths already exceed the limit.
 
 - Continue refinement when stderr cannot report progress or the omission of an invalid optional episode summary.
