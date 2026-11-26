@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
@@ -30,11 +31,6 @@ class DraftCandidatesConfig:
 def validate_candidate_count(count: object) -> None:
     if type(count) is not int or not 1 <= count <= MAX_CANDIDATES_PER_ASSET:
         raise ValueError(f"candidates_per_asset must be an integer from 1 to {MAX_CANDIDATES_PER_ASSET}")
-
-
-def _deterministic_uuid(*, prefix: str, parts: Sequence[str]) -> UUID:
-    name = ":".join([prefix, *parts])
-    return uuid5(_FAKE_UUID_NAMESPACE, name)
 
 
 def _rotated(items: Sequence[str], *, shift: int) -> list[str]:
@@ -357,15 +353,15 @@ def generate_draft_candidates(
         candidates: list[Candidate] = []
         asset_id = kind.value
         for variant in range(1, config.candidates_per_asset + 1):
-            candidate_id = _deterministic_uuid(
-                prefix="draft_candidate",
-                parts=[config.version, asset_id, str(variant)],
-            )
             content = _render_asset_content(
                 kind=kind,
                 variant=variant,
                 episode_summary=episode_summary,
                 chapters=chapters,
+            )
+            candidate_id = uuid5(
+                _FAKE_UUID_NAMESPACE,
+                json.dumps(["draft_candidate", config.version, asset_id, variant, content]),
             )
             candidates.append(
                 Candidate(

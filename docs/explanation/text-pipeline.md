@@ -171,12 +171,13 @@ Both modes write candidates to the same workspace paths. Every stub asset is Mar
 slug and tag lists. Descriptions and social copy use key points; titles and slugs use topics. Shownotes use chapter
 headings and key points. The stub does not incorporate `summary_markdown` or call an agent.
 
-Stub UUIDs identify workspace-local slots: generator version, asset id and one-based variant. They are stable across
-processes and hash seeds, independent of source text, chapters, workspace path, candidate count and creation time.
-Changing the generator version changes the IDs and their `stub_asset_generator` provenance references
-(`version:NN`). These are not global content IDs: separate episodes can have identical slot IDs, and changed input
-can replace the content in an existing slot. The default creation time is fixed at `2000-01-01T00:00:00Z`; callers
-of `DraftCandidatesConfig` can supply an explicit timestamp, which is preserved.
+Stub UUIDs identify rendered variants by generator version, asset ID, one-based variant and Markdown content.
+They are stable across processes and hash seeds and independent of workspace path, candidate count and creation
+time. Changing the generator version changes both the IDs and their `stub_asset_generator` provenance references
+(`version:NN`). Separate workspaces can yield the same IDs for identical variants. The CLI publishes candidates
+immutably, so new copy gets its own ID and earlier candidates remain readable under their original IDs.
+The default creation time is fixed at `2000-01-01T00:00:00Z`. Callers of `DraftCandidatesConfig` can supply an
+explicit timestamp, which is preserved.
 
 `tests/test_asset_candidates_stub.py` covers every asset's semantic markers and format, downstream tag/slug parsing,
 slot uniqueness, version changes and reproducibility in separate interpreters with different hash seeds.

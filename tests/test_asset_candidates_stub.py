@@ -185,9 +185,8 @@ def test_identity_dimensions_and_clock(summary: EpisodeSummary) -> None:
     ids = [c.candidate_id for c in original]
     assert len(set(ids)) == len(AssetKind) * 5
     assert {c.created_at for c in original} == {datetime(2000, 1, 1, tzinfo=UTC)}
-    # A slot is independent of source content, clock and requested set size.
     changed_source = EpisodeSummary(summary_markdown="Changed", topics=["different"], key_points=["New point"])
-    assert [c.candidate_id for c in generate(DraftCandidatesConfig(candidates_per_asset=5), changed_source)] == ids
+    with_changed_summary = generate(DraftCandidatesConfig(candidates_per_asset=5), changed_source)
     smaller = generate(DraftCandidatesConfig(candidates_per_asset=1))
     assert [c.candidate_id for c in smaller] == ids[::5]
     with_chapters = generate_draft_candidates(
@@ -195,7 +194,10 @@ def test_identity_dimensions_and_clock(summary: EpisodeSummary) -> None:
         chapters=["00:00 Different chapters"],
         config=DraftCandidatesConfig(candidates_per_asset=5),
     )
-    assert [c.candidate_id for values in with_chapters.values() for c in values] == ids
+    for regenerated in (with_changed_summary, [c for values in with_chapters.values() for c in values]):
+        assert any(old.content != new.content for old, new in zip(original, regenerated, strict=True))
+        for old, new in zip(original, regenerated, strict=True):
+            assert (old.candidate_id == new.candidate_id) == (old.content == new.content)
 
     explicit_time = datetime(2024, 6, 7, 8, 9, 10, tzinfo=timezone(timedelta(hours=2)))
     timed = generate(DraftCandidatesConfig(candidates_per_asset=5, created_at=explicit_time))

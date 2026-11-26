@@ -78,7 +78,7 @@ def run_draft_candidates(
     written = 0
     for _asset_id, candidates in sorted(assets.items()):
         for candidate in candidates:
-            store.write_candidate(candidate)
+            store.write_candidate(candidate, immutable=True)
             written += 1
 
     typer.echo(f"Workspace: {workspace}")

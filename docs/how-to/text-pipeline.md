@@ -59,6 +59,11 @@ Then generate stub candidates:
 podcast draft-candidates --workspace ./workspaces/ep_001 --candidates 3
 ```
 
+With the current ID scheme, repeating a run with unchanged rendered copy reuses candidate IDs.
+When a summary or chapter edit changes the copy, the changed variants get new IDs. Earlier candidates,
+including those created before this ID scheme, stay available under their original IDs and existing
+selections continue to resolve.
+
 ## 4. (Optional) Add chapters
 
 Chapters are used when generating assets. Supply them using any of these sources (first match wins):

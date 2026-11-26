@@ -695,7 +695,7 @@ class EpisodeWorkspaceStore:
         with self._state_lock():
             if immutable and path.exists():
                 if self.read_candidate(candidate.asset_id, candidate.candidate_id) != candidate:
-                    raise ValueError("Review candidate identity cannot change; use a fresh candidate UUID.")
+                    raise ValueError("Candidate identity cannot change; use a fresh candidate UUID.")
                 missing: dict[Path, str] = {}
                 for artifact_path, text in artifacts.items():
                     try:
