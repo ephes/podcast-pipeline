@@ -247,7 +247,8 @@ editor, choose the text to refine (the editor's text or one of the candidates), 
   text and only applies the instruction.
 - Endpoints: `POST /api/refine` (`{"asset_id", "instruction", "candidate_id"? | "text"?}`) for `--web`, answering
   with the new candidate, and `POST /api/assets/<asset_id>/refine` (`{"instruction", "candidate_id"? | "text"?}`) for
-  the dashboard, answering with a `job_id`. Without `candidate_id` and `text`, the current selection is refined.
+  the dashboard, answering with a `job_id`. A supplied `candidate_id` must belong to the requested asset.
+  Without `candidate_id` and `text`, the current selection is refined.
 
 ## 6. Produce with Auphonic (produce)
 

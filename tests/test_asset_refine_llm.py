@@ -95,13 +95,14 @@ def test_parse_refined_candidate_rejects_unusable_answers(payload: dict[str, Any
         parse_refined_candidate(payload, asset_id="slug", instruction="x", based_on_candidate_id=None)
 
 
-def test_build_refine_request_sources() -> None:
+def test_build_refine_request_sources(tmp_path: Path) -> None:
     candidate = Candidate(asset_id="description", content="Kandidat")
+    other = Candidate(asset_id="shownotes", content="Andere Vorlage")
 
     from_candidate = build_refine_request(
         asset_id="description",
         instruction=" kürzer ",
-        candidates=[candidate],
+        candidates=[other, candidate],
         candidate_id=str(candidate.candidate_id),
         text=None,
         current_selection_text="Auswahl",
@@ -113,6 +114,15 @@ def test_build_refine_request_sources() -> None:
         source_text="Kandidat",
         based_on_candidate_id=candidate.candidate_id,
     )
+
+    drafter = _FakeDrafter({"content": "Neu"})
+    refined = refine_asset_text(workspace=tmp_path, request=from_candidate, runner=drafter)
+    assert refined.asset_id == candidate.asset_id
+    (ref,) = refined.provenance
+    assert ref.metadata["based_on_candidate_id"] == str(candidate.candidate_id)
+    (prompt,) = drafter.prompts
+    assert "Kandidat" in prompt
+    assert other.content not in prompt
 
     from_text = build_refine_request(
         asset_id="description",
@@ -133,6 +143,25 @@ def test_build_refine_request_sources() -> None:
         current_selection_text="Auswahl",
     )
     assert from_selection.source_text == "Auswahl"
+
+
+def test_build_refine_request_rejects_candidate_from_another_asset(tmp_path: Path) -> None:
+    requested = Candidate(asset_id="description", content="Beschreibung")
+    other = Candidate(asset_id="shownotes", content="Andere Vorlage")
+    drafter = _FakeDrafter({"content": "Neu"})
+
+    with pytest.raises(ValueError, match="not found for asset description"):
+        request = build_refine_request(
+            asset_id=requested.asset_id,
+            instruction="kürzer",
+            candidates=[requested, other],
+            candidate_id=str(other.candidate_id),
+            text=None,
+            current_selection_text=requested.content,
+        )
+        refine_asset_text(workspace=tmp_path, request=request, runner=drafter)
+
+    assert drafter.prompts == []
 
 
 @pytest.mark.parametrize(

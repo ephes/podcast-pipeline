@@ -219,10 +219,11 @@ def build_refine_request(
 ) -> RefineRequest:
     """Validate a refine request from a UI; raise ValueError for bad input.
 
-    The text to refine is the given candidate, else the given (editor) text, else the current selection.
+    Use the named candidate within the requested asset. Without an ID, use editor text or the current selection.
     """
     instruction = validate_instruction(instruction)
     source_text, based_on = _resolve_refine_source(
+        asset_id=asset_id,
         candidates=candidates,
         candidate_id=candidate_id,
         text=text,
@@ -239,6 +240,7 @@ def build_refine_request(
 
 def _resolve_refine_source(
     *,
+    asset_id: str,
     candidates: list[Candidate],
     candidate_id: str | None,
     text: str | None,
@@ -252,9 +254,9 @@ def _resolve_refine_source(
         except ValueError as exc:
             raise ValueError(f"Invalid candidate_id: {candidate_id}") from exc
         for candidate in candidates:
-            if candidate.candidate_id == candidate_uuid:
+            if candidate.candidate_id == candidate_uuid and candidate.asset_id == asset_id:
                 return candidate.content, candidate_uuid
-        raise ValueError(f"candidate_id {candidate_id} not found")
+        raise ValueError(f"candidate_id {candidate_id} not found for asset {asset_id}")
     source = text if text is not None else current_selection_text
     if source is None or not source.strip():
         raise ValueError("There is no text to refine: choose a candidate or enter text first")
