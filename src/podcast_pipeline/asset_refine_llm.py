@@ -9,8 +9,6 @@ candidate that records the instruction in its provenance.
 from __future__ import annotations
 
 import json
-import os
-import stat
 from dataclasses import dataclass
 from pathlib import Path
 from uuid import UUID
@@ -20,7 +18,7 @@ import typer
 from podcast_pipeline.domain.models import AssetKind, Candidate, ProvenanceRef, TextFormat
 from podcast_pipeline.drafter_runner import DrafterRunner
 from podcast_pipeline.pick_core import custom_selection_format, normalize_custom_selection_text
-from podcast_pipeline.summary_inputs import MAX_SUMMARY_BYTES
+from podcast_pipeline.summary_inputs import EpisodeSummaryInputError, load_workspace_episode_summary
 
 REFINE_PROVENANCE_KIND = "llm_refine"
 MAX_INSTRUCTION_CHARS = 2000
@@ -198,48 +196,15 @@ def refine_asset_text(
 
 def _episode_summary_markdown(workspace: Path) -> str | None:
     """Episode summary as optional context: refinement works without a summary."""
-    from podcast_pipeline.domain.intermediate_formats import EpisodeSummary
     from podcast_pipeline.workspace_store import EpisodeWorkspaceLayout
 
-    path = EpisodeWorkspaceLayout(root=workspace).episode_summary_json_path()
     try:
-        raw = _read_summary_snapshot(path)
-        return EpisodeSummary.model_validate(json.loads(raw)).summary_markdown
+        return load_workspace_episode_summary(EpisodeWorkspaceLayout(root=workspace)).summary_markdown
     except FileNotFoundError:
         return None
-    except (OSError, ValueError, RecursionError):
-        typer.echo(
-            "Refinement: optional episode summary omitted (unusable or changed file; rebuild summary).", err=True
-        )
+    except EpisodeSummaryInputError as exc:
+        typer.echo(f"  Refinement omitted the optional episode summary. {exc}. Rebuild the summary.", err=True)
         return None
-
-
-def _read_summary_snapshot(path: Path) -> str:
-    """Read one bounded regular-file generation; refuse observed descriptor changes."""
-    fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
-    try:
-        before = os.fstat(fd)
-        if not stat.S_ISREG(before.st_mode) or before.st_size > MAX_SUMMARY_BYTES:
-            raise ValueError("Summary must be a regular file within the byte limit")
-        chunks: list[bytes] = []
-        size = 0
-        while chunk := os.read(fd, min(64 * 1024, MAX_SUMMARY_BYTES + 1 - size)):
-            size += len(chunk)
-            if size > MAX_SUMMARY_BYTES:
-                raise ValueError("Summary exceeds byte limit")
-            chunks.append(chunk)
-        after = os.fstat(fd)
-        if (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns, before.st_ctime_ns) != (
-            after.st_dev,
-            after.st_ino,
-            after.st_size,
-            after.st_mtime_ns,
-            after.st_ctime_ns,
-        ) or size != before.st_size:
-            raise ValueError("Summary changed during read")
-        return b"".join(chunks).decode("utf-8")
-    finally:
-        os.close(fd)
 
 
 def build_refine_request(
@@ -254,10 +219,11 @@ def build_refine_request(
 ) -> RefineRequest:
     """Validate a refine request from a UI; raise ValueError for bad input.
 
-    The text to refine is the given candidate, else the given (editor) text, else the current selection.
+    Use the named candidate within the requested asset. Without an ID, use editor text or the current selection.
     """
     instruction = validate_instruction(instruction)
     source_text, based_on = _resolve_refine_source(
+        asset_id=asset_id,
         candidates=candidates,
         candidate_id=candidate_id,
         text=text,
@@ -274,6 +240,7 @@ def build_refine_request(
 
 def _resolve_refine_source(
     *,
+    asset_id: str,
     candidates: list[Candidate],
     candidate_id: str | None,
     text: str | None,
@@ -287,9 +254,9 @@ def _resolve_refine_source(
         except ValueError as exc:
             raise ValueError(f"Invalid candidate_id: {candidate_id}") from exc
         for candidate in candidates:
-            if candidate.candidate_id == candidate_uuid:
+            if candidate.candidate_id == candidate_uuid and candidate.asset_id == asset_id:
                 return candidate.content, candidate_uuid
-        raise ValueError(f"candidate_id {candidate_id} not found")
+        raise ValueError(f"candidate_id {candidate_id} not found for asset {asset_id}")
     source = text if text is not None else current_selection_text
     if source is None or not source.strip():
         raise ValueError("There is no text to refine: choose a candidate or enter text first")
