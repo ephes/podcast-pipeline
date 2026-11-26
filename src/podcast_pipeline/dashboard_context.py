@@ -25,6 +25,7 @@ from podcast_pipeline.file_inputs import read_workspace_utf8
 from podcast_pipeline.markdown_html import markdown_to_deterministic_html
 from podcast_pipeline.pick_core import (
     MANUAL_SELECTION_PROVENANCE_KIND,
+    CandidateCatalogTooLarge,
     custom_selection_format,
     find_candidate_by_id,
     load_candidates,
@@ -137,6 +138,9 @@ class DashboardContext:
                     layout=self.layout,
                     asset_id=None,
                 )
+            except CandidateCatalogTooLarge:
+                # Over-budget catalogs are reported, never shown as an empty Pick tab.
+                raise
             except ValueError:
                 self._candidates_by_asset = {}
         return self._candidates_by_asset

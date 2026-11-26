@@ -4,7 +4,10 @@
 
 - Derive standalone picker tags and selected text from the same bounded selection read.
 
-- Bound directory scans and total candidate JSON bytes before offering picker choices.
+- Bound directory scans and total candidate JSON bytes before offering picker choices. The dashboard reports
+  an over-budget catalog with 409 instead of showing an empty Pick tab.
+
+- Refuse unreadable selected artifacts in `cms-draft` and `cms-publish` with the file name instead of a traceback.
 
 - Preserve the canonical workspace artifact when its temporary stage accepts fewer bytes than requested.
 

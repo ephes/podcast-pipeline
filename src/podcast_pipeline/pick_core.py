@@ -69,6 +69,10 @@ class CandidateCatalogTooLarge(ValueError):
     """A complete candidate catalog would exceed the picker's load budget."""
 
 
+class SelectedTextUnreadable(ValueError):
+    """A published selection artifact exists but is not a bounded regular UTF-8 file."""
+
+
 def load_candidates(
     *,
     layout: EpisodeWorkspaceLayout,
@@ -361,6 +365,10 @@ def read_current_selection(layout: EpisodeWorkspaceLayout, asset_id: str) -> tup
             )
         except FileNotFoundError:
             continue
+        except (OSError, ValueError):
+            raise SelectedTextUnreadable(
+                f"Selected artifact {path.name} is unreadable or invalid: expected a regular UTF-8 file within 8 MiB."
+            ) from None
         return fmt, text.replace("\r\n", "\n").replace("\r", "\n")
     return None
 

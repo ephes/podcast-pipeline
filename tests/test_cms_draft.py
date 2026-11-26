@@ -564,6 +564,43 @@ def test_dry_run_rejects_unadmitted_cms_config(
     assert not (workspace / "cms").exists()
 
 
+@pytest.mark.parametrize("damage", ["symlink", "oversized", "not-utf8", "directory"])
+@pytest.mark.parametrize("command", ["draft", "publish"])
+def test_cms_commands_report_unreadable_selected_artifact(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, damage: str, command: str
+) -> None:
+    from podcast_pipeline import pick_core
+
+    workspace = _workspace(tmp_path)
+    _config(tmp_path, monkeypatch)
+    slug = workspace / "copy" / "selected" / "slug.txt"
+    if damage == "symlink":
+        target = tmp_path / "outside-slug.txt"
+        target.write_text("python-315\n", encoding="utf-8")
+        slug.unlink()
+        slug.symlink_to(target)
+    elif damage == "oversized":
+        monkeypatch.setattr(pick_core, "_MAX_SELECTED_ARTIFACT_BYTES", 4)
+    elif damage == "not-utf8":
+        slug.write_bytes(b"python-\xff\n")
+    else:
+        slug.unlink()
+        slug.mkdir()
+
+    def no_client(*args: object, **kwargs: object) -> None:
+        pytest.fail("Unreadable selections must be refused before creating an API client")
+
+    monkeypatch.setattr(cms_entry, "DjangoCastClient", no_client)
+    name = r"[a-z_]+\.(txt|md)" if damage == "oversized" else r"slug\.txt"
+    message = rf"^Selected artifact {name} is unreadable or invalid: expected a regular UTF-8 file within 8 MiB\.$"
+    with pytest.raises(typer.BadParameter, match=message):
+        if command == "draft":
+            cms_entry.run_cms_draft(workspace=workspace, dry_run=True)
+        else:
+            cms_entry.run_cms_publish(workspace=workspace, yes=True)
+    assert not (workspace / "cms").exists()
+
+
 def test_load_cms_config_follows_symlinked_global_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     target = _config(tmp_path, monkeypatch)
     link = tmp_path / "dotfiles-link.yaml"
