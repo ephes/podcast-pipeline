@@ -170,8 +170,12 @@ class DashboardContext:
         return self._workspace_state
 
     def reload_candidates(self) -> None:
+        """Forget cached candidates; the next request reloads them and reports catalog limits.
+
+        Jobs call this after publishing, so a catalog that just went over budget must not
+        turn a completed job into a failure.
+        """
         self._candidates_by_asset = None
-        self._ensure_candidates()
 
     def get_status_json(self) -> dict[str, Any]:
         # A publisher can report progress through the dashboard while holding the workspace lock.

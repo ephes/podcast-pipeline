@@ -463,7 +463,8 @@ Each load inspects at most 4,096 directory entries, including unrelated files, a
 candidate JSON in total, with an 8 MiB limit per file. With `--asset-id`, only the chosen asset directory is
 scanned. Over-budget catalogs are refused before any choices are offered. If a standalone web refresh exceeds
 a limit, it returns 409 and pauses edits until the next successful catalog load. The dashboard answers status,
-assets and Pick actions with 409 and the limit message instead of an empty Pick tab. Move unused artifacts out of
+assets and Pick actions with 409 and the limit message instead of an empty Pick tab. A draft, refine or review
+job whose new candidates exceed the budget still completes; the next request reports the limit. Move unused artifacts out of
 the candidate directories and reload. The picker, `cms-draft` and `cms-publish` read selected text as regular
 workspace UTF-8 files up to 8 MiB per file, preferring Markdown, plain text, then HTML, and normalize line
 endings to `\n`. A missing file permits fallback to the next format; a symlink, directory, oversized or
