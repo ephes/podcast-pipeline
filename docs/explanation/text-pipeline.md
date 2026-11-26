@@ -210,7 +210,9 @@ inline code and punctuation. These rules are exercised from the generator throug
 
 `transcript/chunks/complete.json` version 1 records `source_sha256`, `config`, ordered `chunk_ids`
 and a `files` map of text/metadata basenames to SHA-256 digests. Chunks are written in a sibling staging
-directory, then the previous directory is moved aside and the completed directory renamed into place.
+directory. A short write of any chunk text, metadata or the completion manifest stops publication,
+leaving the previous generation in place. Once all writes complete, the previous directory is moved
+aside and the completed directory renamed into place.
 A handled publication error triggers an attempt to restore the previous directory. Discovery rejects legacy prefixes,
 missing or changed members and sets whose source no longer matches `transcript/transcript.txt`.
 Discovery and backup recovery also validate each metadata file against the chunk schema. Its
@@ -232,11 +234,13 @@ later agent calls; this does not serialize entire draft jobs or exclude manual f
 
 `summaries/episode/complete.json` version 1 records `chunks_sha256` (the chunk manifest digest)
 and `files` digests for JSON, Markdown and HTML. All outputs are rendered before publication;
-individual files use atomic replacement and the completion marker is written last. Handled write
-failures restore the previous files and their permissions. If recovery itself fails, remaining files
-are still restored where possible. File restores use a staged copy and sync the containing directory
-before retiring the sibling backup. If recovery cannot confirm the restore, the error identifies
-retained backups for manual repair. A summary JSON alone is never a reusable completed generation.
+individual files use atomic replacement and the completion marker is written last. A short backup
+write aborts preparation before any files are replaced. Handled write failures restore the previous
+files and their permissions. File restores use a staged copy and sync the containing directory
+before retiring the sibling backup. A short restore write leaves the current file in place and
+retains the complete backup. If recovery fails, the remaining files are still restored where possible
+and the error identifies retained backups for manual repair. A summary JSON alone is never a reusable
+completed generation.
 Draft resume requires each file to be regular and stable during its read. The summary
 marker is limited to 4 KiB and parsed as strict JSON. Verification streams the SHA-256 digests within
 2 MiB for the chunk manifest, 32 MiB for summary Markdown and 64 MiB for HTML. It takes a bounded

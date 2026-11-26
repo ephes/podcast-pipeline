@@ -6,7 +6,6 @@ import hashlib
 import json
 import os
 import re
-import shutil
 import stat
 import tempfile
 from collections.abc import Callable, Iterator, Mapping
@@ -120,7 +119,10 @@ def _stage_file_copy(source: BinaryIO, *, directory: Path, prefix: str) -> Path:
     try:
         with tempfile.NamedTemporaryFile(dir=directory, prefix=prefix, delete=False) as target:
             staged = Path(target.name)
-            shutil.copyfileobj(source, target)
+            while block := source.read(64 * 1024):
+                written = target.write(block)
+                if written != len(block):
+                    raise OSError(f"Short write staging {staged}: accepted {written} of {len(block)} bytes")
             target.flush()
             os.fchmod(target.fileno(), stat.S_IMODE(os.fstat(source.fileno()).st_mode))
             os.fsync(target.fileno())

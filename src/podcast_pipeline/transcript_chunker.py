@@ -240,6 +240,12 @@ def chunk_transcript_text(
     return chunks
 
 
+def _write_staged_text(path: Path, text: str) -> None:
+    written = path.write_text(text, encoding="utf-8")
+    if written != len(text):
+        raise OSError(f"Short write staging {path}: accepted {written} of {len(text)} characters")
+
+
 def write_transcript_chunks(
     *,
     layout: EpisodeWorkspaceLayout,
@@ -271,7 +277,7 @@ def write_transcript_chunks(
                 (text_path, chunk.text),
                 (meta_path, json.dumps(meta.model_dump(mode="json"), indent=2, sort_keys=True) + "\n"),
             ):
-                (staged / path.name).write_text(text, encoding="utf-8")
+                _write_staged_text(staged / path.name, text)
                 files[path.name] = hashlib.sha256(text.encode("utf-8")).hexdigest()
             metas.append(meta)
         manifest = {
@@ -281,7 +287,7 @@ def write_transcript_chunks(
             "chunk_ids": [meta.chunk_id for meta in metas],
             "files": files,
         }
-        (staged / "complete.json").write_text(json.dumps(manifest, sort_keys=True) + "\n", encoding="utf-8")
+        _write_staged_text(staged / "complete.json", json.dumps(manifest, sort_keys=True) + "\n")
         with EpisodeWorkspaceStore(layout.root).publication_lock():
             _recover_chunks(layout, limits)
             try:
