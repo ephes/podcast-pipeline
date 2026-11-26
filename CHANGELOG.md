@@ -4,6 +4,8 @@
 
 - Preserve the previous transcript chunk generation when staging its replacement encounters a short write.
 
+- Refuse short workspace backup and restore writes, retaining the complete sibling backup when a restore fails.
+
 - Derive standalone picker tags and selected text from the same bounded selection read.
 
 - Bound directory scans and total candidate JSON bytes before offering picker choices. The dashboard reports

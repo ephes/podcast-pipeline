@@ -446,6 +446,51 @@ def test_read_artifacts_accept_matching_legacy_optional_metadata(tmp_path: Path)
     assert store.read_review("description", 1).reviewer is None
 
 
+def _shorten_preservation_stage(monkeypatch: pytest.MonkeyPatch, prefix: str) -> None:
+    named_tempfile = workspace_store.tempfile.NamedTemporaryFile
+
+    def short_stage(**kwargs: Any) -> Any:
+        stage = named_tempfile(**kwargs)
+        if kwargs.get("prefix") == prefix:
+            write = stage.write
+            monkeypatch.setattr(stage, "write", lambda data: write(data[: len(data) // 2]))
+        return stage
+
+    monkeypatch.setattr(workspace_store.tempfile, "NamedTemporaryFile", short_stage)
+
+
+def test_short_backup_stage_prevents_publication(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    path = tmp_path / "artifact.txt"
+    path.write_bytes(b"previous artifact")
+    _shorten_preservation_stage(monkeypatch, ".backup-")
+
+    with pytest.raises(OSError, match=r"Short write staging .*\.backup-"):
+        with workspace_store.preserve_files([path]):
+            path.write_bytes(b"replacement artifact")
+
+    assert path.read_bytes() == b"previous artifact"
+    assert list(tmp_path.iterdir()) == [path]
+
+
+def test_short_restore_stage_keeps_backup(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    path = tmp_path / "artifact.txt"
+    path.write_bytes(b"previous artifact")
+    _shorten_preservation_stage(monkeypatch, ".restore-")
+    original_error = ValueError("synthetic publication failure")
+
+    with pytest.raises(WorkspaceStoreError, match=r"Short write staging .*\.restore-") as failure:
+        with workspace_store.preserve_files([path]):
+            path.write_bytes(b"replacement artifact")
+            raise original_error
+
+    assert failure.value.__cause__ is original_error
+    assert path.read_bytes() == b"replacement artifact"
+    (backup,) = tmp_path.glob(".backup-*")
+    assert backup.read_bytes() == b"previous artifact"
+    assert f"retained backup: {backup}" in str(failure.value)
+    assert not list(tmp_path.glob(".restore-*"))
+
+
 def test_workspace_replacement_and_rollback_support_maximum_basename(tmp_path: Path) -> None:
     path = tmp_path / ("x" * workspace_store.os.pathconf(tmp_path, "PC_NAME_MAX"))
     path.write_text("original")
