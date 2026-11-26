@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import io
 import json
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -315,6 +317,47 @@ def test_refine_omits_unusable_summary_with_safe_diagnostic(
     )
     assert "Episode summary (context only)" not in drafter.prompts[0]
     assert "omitted the optional episode summary" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("stream_error", [BrokenPipeError, ValueError])
+def test_refine_continues_when_diagnostic_stream_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stream_error: type[Exception]
+) -> None:
+    _write_optional_summary(tmp_path, b'{"summary_markdown":42}')
+    failed_writes: list[str] = []
+
+    class FailingStderr(io.StringIO):
+        def write(self, text: str) -> int:
+            if not text:
+                return super().write(text)
+            failed_writes.append(text.strip())
+            raise stream_error("Diagnostic stream unavailable")
+
+    monkeypatch.setattr(sys, "stderr", FailingStderr())
+    base = Candidate(asset_id="description", content="Alter Text")
+    drafter = _FakeDrafter({"content": "Neu"})
+    refined = refine_asset_text(
+        workspace=tmp_path,
+        request=RefineRequest(
+            asset_id=base.asset_id,
+            instruction="kurz",
+            source_text=base.content,
+            based_on_candidate_id=base.candidate_id,
+        ),
+        runner=drafter,
+    )
+
+    (prompt,) = drafter.prompts
+    assert "Episode summary (context only)" not in prompt
+    assert len(failed_writes) == 2
+    assert "omitted the optional episode summary" in failed_writes[0]
+    assert failed_writes[1] == "Refining description: kurz"
+    assert refined.asset_id == base.asset_id
+    assert refined.content == "Neu"
+    (ref,) = refined.provenance
+    assert ref.kind == REFINE_PROVENANCE_KIND
+    assert ref.ref == f"refine_v1:{base.candidate_id}"
+    assert ref.metadata == {"instruction": "kurz", "based_on_candidate_id": str(base.candidate_id)}
 
 
 def test_refine_omits_summary_changed_during_read(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
