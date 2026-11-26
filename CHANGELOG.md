@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Report confirmed standalone draft candidate IDs when publication fails partway through a run.
+
+- Keep existing standalone draft candidates and selections when regenerated copy changes by assigning the new copy its own IDs.
+
 - Read each manual selection without candidates once per dashboard status refresh.
 
 - Show repair guidance for invalid episode YAML in dashboard status, metadata and production preview.
