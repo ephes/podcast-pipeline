@@ -1272,6 +1272,35 @@ def test_cms_chapter_input_forms_share_seconds(tmp_path: Path, monkeypatch: pyte
     assert _plan(tmp_path, monkeypatch, workspace).audio.chaptermarks == "00:01:30 Chapter"
 
 
+@pytest.mark.parametrize("state_kind", ["dangling", "invalid UTF-8", "invalid JSON", "oversized"])
+def test_unreadable_saved_chapter_state_stops_before_http(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake: FakeCast, state_kind: str
+) -> None:
+    workspace = _workspace(tmp_path)
+    _config(tmp_path, monkeypatch)
+    _set_episode_yaml(workspace, auphonic=None)
+    state_path = workspace / "state.json"
+    if state_kind == "dangling":
+        state_path.symlink_to("missing.json")
+    elif state_kind == "invalid UTF-8":
+        state_path.write_bytes(b"\xff")
+    elif state_kind == "invalid JSON":
+        state_path.write_text("{", encoding="utf-8")
+    else:
+        with state_path.open("wb") as state_file:
+            state_file.truncate(8 * 1024 * 1024 + 1)
+
+    with pytest.raises(typer.BadParameter, match=r"state\.json"):
+        _run(workspace)
+    assert fake.requests == []
+
+
+def test_missing_saved_chapter_state_keeps_chaptermarks_empty(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    workspace = _workspace(tmp_path)
+    _set_episode_yaml(workspace, auphonic=None)
+    assert _plan(tmp_path, monkeypatch, workspace).audio.chaptermarks == ""
+
+
 def test_cms_plan_requires_nonblank_saved_chapter_titles(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     workspace = _workspace(tmp_path)
     _set_episode_yaml(workspace, auphonic=None)

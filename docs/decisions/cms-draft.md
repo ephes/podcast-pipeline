@@ -141,14 +141,23 @@ Titles from `auphonic.chapters` and saved `state.json` chapters must contain tex
 The formatter joins words with single spaces. A blank title stops plan construction
 before HTTP, and the configuration error reports the chapter's 1-based position.
 
+With no `auphonic.chapters` override, the planner reads chapters from `state.json`.
+An absent state file gives an empty chapter list. A present file must be a regular
+UTF-8 workspace file of at most 8 MiB and contain valid workspace state. Symlinks,
+read failures and invalid state stop planning before any CMS request.
+
 ## Host text boundaries
 
-Host linking uses Python's HTML tokenizer and source positions. It inserts a link
-only in the first eligible text mention, preserving attribute quoting, entities and
-all other source markup. Existing anchors, comments, script/style, template, head,
+Host linking uses Python's HTML tokenizer and source positions. It matches the
+first eligible mention using the decoded text, so named and numeric character
+references count toward the name and its word boundaries. The link wraps the
+original spelling, preserving character references and all other source markup.
+A mention must start and end at whole character-reference boundaries.
+Existing anchors, comments, script/style, template, head,
 title and textarea contents are excluded; an existing anchor to the host URL
-suppresses another link regardless of attribute case or quoting. Incomplete tokens
-or malformed declarations leave the input unchanged. Self-closing syntax on an
+suppresses another link regardless of attribute case or quoting. Incomplete tokens,
+malformed declarations, attribute character references Python cannot decode, or a raw-text element (xmp, iframe, noembed, noframes,
+noscript, plaintext), whose content browsers show literally, leave the input unchanged. Self-closing syntax on an
 anchor or excluded nonvoid element (for example `<script/>`) also leaves the input
 unchanged because the tokenizer and browser disagree about its text boundaries.
 Each host pass feeds the HTML
