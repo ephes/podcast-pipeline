@@ -2,10 +2,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 from typer.testing import CliRunner
 
 from podcast_pipeline.domain.intermediate_formats import EpisodeSummary
-from podcast_pipeline.domain.models import AssetKind, EpisodeWorkspace
+from podcast_pipeline.domain.models import AssetKind, Candidate, EpisodeWorkspace
 from podcast_pipeline.entrypoints.cli import app
 from podcast_pipeline.pick_core import candidate_generation, load_candidates, save_candidate_selection
 from podcast_pipeline.summarization_stub import write_episode_summary_artifacts
@@ -124,3 +125,49 @@ def test_changed_standalone_draft_preserves_selected_candidate(tmp_path: Path) -
     assert candidate_generation(layout=store.layout, candidate=original) == generation
     assert store.read_state().assets[0].selected_candidate_id == original.candidate_id
     assert selected_path.read_bytes() == selected_before
+
+
+def test_standalone_draft_reports_confirmed_candidates_on_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = EpisodeWorkspaceStore(tmp_path)
+    store.write_episode_yaml({"episode_id": "synthetic"})
+    write_episode_summary_artifacts(
+        layout=store.layout, episode_summary=EpisodeSummary(summary_markdown="Synthetic episode")
+    )
+    runner = CliRunner()
+    args = ["draft-candidates", "--workspace", str(tmp_path), "-n", "1"]
+    failure = OSError("synthetic publication failure")
+    published: list[Candidate] = []
+    write_candidate = EpisodeWorkspaceStore.write_candidate
+
+    def fail_third(self: EpisodeWorkspaceStore, candidate: Candidate, *, immutable: bool = False) -> Path:
+        if len(published) == 2:
+            raise failure
+        path = write_candidate(self, candidate, immutable=immutable)
+        published.append(candidate)
+        return path
+
+    with monkeypatch.context() as patch:
+        patch.setattr(EpisodeWorkspaceStore, "write_candidate", fail_third)
+        result = runner.invoke(app, args)
+
+    assert result.exit_code == 1
+    assert result.exception is failure
+    assert len(published) == 2
+    assert result.stderr.splitlines() == ["Confirmed candidates: 2", *(str(c.candidate_id) for c in published)]
+    before = {c.candidate_id: candidate_generation(layout=store.layout, candidate=c) for c in published}
+    assert {
+        c.candidate_id
+        for candidates in load_candidates(layout=store.layout, asset_id=None).values()
+        for c in candidates
+    } == before.keys()
+
+    result = runner.invoke(app, args)
+    assert result.exit_code == 0, result.output
+    assert result.stdout.splitlines() == [f"Workspace: {tmp_path}", f"Wrote candidates: {len(AssetKind)}"]
+    assert not result.stderr
+    inventory = load_candidates(layout=store.layout, asset_id=None)
+    assert set(inventory) == {kind.value for kind in AssetKind}
+    assert all(len(candidates) == 1 for candidates in inventory.values())
+    assert {c.candidate_id: candidate_generation(layout=store.layout, candidate=c) for c in published} == before

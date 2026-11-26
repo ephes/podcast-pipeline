@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import suppress
 from pathlib import Path
 
 import typer
@@ -75,11 +76,17 @@ def run_draft_candidates(
         config=DraftCandidatesConfig(candidates_per_asset=candidates_per_asset),
     )
 
-    written = 0
-    for _asset_id, candidates in sorted(assets.items()):
-        for candidate in candidates:
-            store.write_candidate(candidate, immutable=True)
-            written += 1
+    confirmed: list[str] = []
+    try:
+        for _asset_id, candidates in sorted(assets.items()):
+            for candidate in candidates:
+                store.write_candidate(candidate, immutable=True)
+                confirmed.append(str(candidate.candidate_id))
+    except Exception:
+        # A failure to report progress must preserve the publication error.
+        with suppress(Exception):
+            typer.echo("\n".join([f"Confirmed candidates: {len(confirmed)}", *confirmed]), err=True)
+        raise
 
     typer.echo(f"Workspace: {workspace}")
-    typer.echo(f"Wrote candidates: {written}")
+    typer.echo(f"Wrote candidates: {len(confirmed)}")
