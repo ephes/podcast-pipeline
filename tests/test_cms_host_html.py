@@ -1,5 +1,7 @@
 """Host links preserve source markup and use only eligible HTML text."""
 
+import sys
+
 import pytest
 
 from podcast_pipeline.cms_draft import link_hosts
@@ -77,7 +79,31 @@ def test_long_numeric_references_keep_their_source_spelling() -> None:
     )
 
 
+@pytest.mark.parametrize(
+    "source",
+    [
+        *(f"<{tag}>&#65;lice</{tag}><p>Alice</p>" for tag in ["xmp", "iframe", "noembed", "noframes", "noscript"]),
+        "<plaintext>sample </plaintext><p>Alice</p>",
+        "<noscript><noscript></noscript><p>Alice</p>",
+        "<p>Alice</p><xmp/>",
+    ],
+)
+def test_raw_text_elements_leave_html_unchanged(source: str) -> None:
+    assert link_hosts(source, hosts=None, host_links={"Alice": URL}) == source
+
+
 @pytest.mark.parametrize("tag", ["script", "style", "a", "template"])
 def test_self_closing_nonvoid_tags_are_left_unchanged(tag: str) -> None:
     source = f"<p>Alice</p><{tag}/>Alice</{tag}><p>Alice</p>"
     assert link_hosts(source, hosts=None, host_links={"Alice": URL}) == source
+
+
+@pytest.mark.parametrize("wrapper", ["{}", "<noscript>{}</noscript>"])
+def test_overlong_attribute_reference_leaves_html_unchanged(wrapper: str) -> None:
+    source = "<p>Alice</p>" + wrapper.format('<img alt="&#' + "0" * 5000 + '65;">')
+    previous = sys.get_int_max_str_digits()
+    sys.set_int_max_str_digits(4300)  # Python's default; PYTHONINTMAXSTRDIGITS may change it.
+    try:
+        assert link_hosts(source, hosts=None, host_links={"Alice": URL}) == source
+    finally:
+        sys.set_int_max_str_digits(previous)

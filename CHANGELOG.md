@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- Link hosts in CMS draft overviews when their names contain HTML character references, preserving the original HTML.
+- Link hosts in CMS draft overviews when their names contain HTML character references, preserving the original HTML. HTML containing raw-text elements such as `xmp` or `noscript`, or attribute character references too long to decode, is left unchanged instead of failing.
 
 - Stop CMS draft planning before HTTP when saved chapter state is unreadable or invalid. An absent `state.json` still gives empty chapter marks.
 

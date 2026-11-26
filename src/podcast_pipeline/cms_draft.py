@@ -494,6 +494,9 @@ class _HostTextParser(HTMLParser):
     """Record eligible source spans without reserializing or decoding markup."""
 
     _HIDDEN = frozenset({"script", "style", "template", "head", "title", "textarea"})
+    # Browsers show these elements' content literally (plaintext through EOF), while
+    # HTMLParser tokenizes it as markup. Leave such input unchanged.
+    _RAW_TEXT = frozenset({"xmp", "iframe", "noembed", "noframes", "noscript", "plaintext"})
 
     def __init__(self, source: str) -> None:
         super().__init__(convert_charrefs=False)
@@ -502,6 +505,7 @@ class _HostTextParser(HTMLParser):
         self.spans: list[tuple[int, int]] = []
         self.hrefs: set[str] = set()
         self.ambiguous_self_closing = False
+        self.raw_text = False
         self.depths = dict.fromkeys(self._HIDDEN | {"a"}, 0)
 
     def source_offset(self) -> int:
@@ -509,6 +513,7 @@ class _HostTextParser(HTMLParser):
         return self.line_offsets[line - 1] + column
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        self.raw_text |= tag in self._RAW_TEXT
         self._record_href(tag, attrs)
         if tag in self.depths:
             self.depths[tag] += 1
@@ -516,6 +521,7 @@ class _HostTextParser(HTMLParser):
     def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         # HTML browsers ignore the slash on these nonvoid tags; HTMLParser does
         # not. Keep ambiguous source unchanged instead of trusting text spans.
+        self.raw_text |= tag in self._RAW_TEXT
         if tag in self.depths:
             self.ambiguous_self_closing = True
         self._record_href(tag, attrs)
@@ -567,10 +573,17 @@ def _link_first_mention(html_text: str, *, name: str, url: str) -> str:
     parser = _HostTextParser(html_text)
     try:
         parser.feed(html_text)
-    except AssertionError:  # malformed declarations on supported Python versions
+    # AssertionError: malformed declarations. ValueError: attribute character references
+    # beyond Python's integer digit limit, which HTMLParser decodes while tokenizing.
+    except (AssertionError, ValueError):
         return html_text
     # Do not close(): HTMLParser would reinterpret an unfinished token as text.
-    if parser.ambiguous_self_closing or parser.source_offset() != len(html_text) or url in parser.hrefs:
+    if (
+        parser.ambiguous_self_closing
+        or parser.raw_text
+        or parser.source_offset() != len(html_text)
+        or url in parser.hrefs
+    ):
         return html_text
     pattern = re.compile(rf"(?<!\w){re.escape(name)}(?!\w)")
     for start, end in parser.spans:

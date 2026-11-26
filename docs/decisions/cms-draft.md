@@ -155,8 +155,9 @@ original spelling, preserving character references and all other source markup.
 A mention must start and end at whole character-reference boundaries.
 Existing anchors, comments, script/style, template, head,
 title and textarea contents are excluded; an existing anchor to the host URL
-suppresses another link regardless of attribute case or quoting. Incomplete tokens
-or malformed declarations leave the input unchanged. Self-closing syntax on an
+suppresses another link regardless of attribute case or quoting. Incomplete tokens,
+malformed declarations, attribute character references Python cannot decode, or a raw-text element (xmp, iframe, noembed, noframes,
+noscript, plaintext), whose content browsers show literally, leave the input unchanged. Self-closing syntax on an
 anchor or excluded nonvoid element (for example `<script/>`) also leaves the input
 unchanged because the tokenizer and browser disagree about its text boundaries.
 Each host pass feeds the HTML
