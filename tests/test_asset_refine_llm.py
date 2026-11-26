@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import io
 import json
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -70,9 +72,19 @@ def test_parse_refined_candidate_uses_natural_format_and_records_instruction() -
     assert ref.metadata["based_on_candidate_id"] == str(based_on.candidate_id)
 
 
-def test_parse_refined_candidate_accepts_candidates_shape() -> None:
-    candidate = parse_refined_candidate(
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"content": "# Neu\n\nText"},
+        {"candidate": {"content": "# Neu\n\nText"}},
+        {"candidate": [{"content": "# Neu\n\nText"}]},
+        {"candidates": {"content": "# Neu\n\nText"}},
         {"candidates": [{"content": "# Neu\n\nText"}]},
+    ],
+)
+def test_parse_refined_candidate_accepts_single_result(payload: dict[str, object]) -> None:
+    candidate = parse_refined_candidate(
+        payload,
         asset_id="description",
         instruction="ohne Emojis",
         based_on_candidate_id=None,
@@ -80,6 +92,21 @@ def test_parse_refined_candidate_accepts_candidates_shape() -> None:
     assert candidate.format == TextFormat.markdown
     assert candidate.content == "# Neu\n\nText"
     assert candidate.provenance[0].metadata["based_on_candidate_id"] is None
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"candidates": [{"content": "Erster"}, {"content": "Zweiter"}]},
+        {"candidate": [{"content": "Erster"}, {"content": "Zweiter"}]},
+        {"content": "Erster", "candidates": [{"content": "Zweiter"}]},
+        {"content": "Erster", "candidate": {"content": "Zweiter"}},
+        {"candidate": {"content": "Erster"}, "candidates": [{"content": "Zweiter"}]},
+    ],
+)
+def test_parse_refined_candidate_rejects_ambiguous_envelopes(payload: dict[str, object]) -> None:
+    with pytest.raises(RuntimeError, match="exactly one refinement result"):
+        parse_refined_candidate(payload, asset_id="description", instruction="kurz", based_on_candidate_id=None)
 
 
 @pytest.mark.parametrize(
@@ -290,6 +317,47 @@ def test_refine_omits_unusable_summary_with_safe_diagnostic(
     )
     assert "Episode summary (context only)" not in drafter.prompts[0]
     assert "omitted the optional episode summary" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("stream_error", [BrokenPipeError, ValueError])
+def test_refine_continues_when_diagnostic_stream_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stream_error: type[Exception]
+) -> None:
+    _write_optional_summary(tmp_path, b'{"summary_markdown":42}')
+    failed_writes: list[str] = []
+
+    class FailingStderr(io.StringIO):
+        def write(self, text: str) -> int:
+            if not text:
+                return super().write(text)
+            failed_writes.append(text.strip())
+            raise stream_error("Diagnostic stream unavailable")
+
+    monkeypatch.setattr(sys, "stderr", FailingStderr())
+    base = Candidate(asset_id="description", content="Alter Text")
+    drafter = _FakeDrafter({"content": "Neu"})
+    refined = refine_asset_text(
+        workspace=tmp_path,
+        request=RefineRequest(
+            asset_id=base.asset_id,
+            instruction="kurz",
+            source_text=base.content,
+            based_on_candidate_id=base.candidate_id,
+        ),
+        runner=drafter,
+    )
+
+    (prompt,) = drafter.prompts
+    assert "Episode summary (context only)" not in prompt
+    assert len(failed_writes) == 2
+    assert "omitted the optional episode summary" in failed_writes[0]
+    assert failed_writes[1] == "Refining description: kurz"
+    assert refined.asset_id == base.asset_id
+    assert refined.content == "Neu"
+    (ref,) = refined.provenance
+    assert ref.kind == REFINE_PROVENANCE_KIND
+    assert ref.ref == f"refine_v1:{base.candidate_id}"
+    assert ref.metadata == {"instruction": "kurz", "based_on_candidate_id": str(base.candidate_id)}
 
 
 def test_refine_omits_summary_changed_during_read(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

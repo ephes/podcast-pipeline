@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Continue refinement when stderr cannot report progress or the omission of an invalid optional episode summary.
+
+- Reject refinement replies with multiple candidates or competing result fields.
+
 - Reject refinement requests whose candidate ID belongs to a different asset.
 
 - Share episode summary validation with drafting, so refinement omits rejected context such as duplicate JSON members and reports why.

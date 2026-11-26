@@ -9,6 +9,7 @@ candidate that records the instruction in its provenance.
 from __future__ import annotations
 
 import json
+from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 from uuid import UUID
@@ -127,12 +128,18 @@ def parse_refined_candidate(
     based_on_candidate_id: UUID | None,
 ) -> Candidate:
     """Turn the drafter's JSON answer into a candidate in the asset's natural format."""
+    response_fields = {"content", "candidate", "candidates"}.intersection(payload)
+    if len(response_fields) > 1:
+        raise RuntimeError(f"Drafter response for {asset_id} must contain exactly one refinement result")
     content = payload.get("content")
-    if not isinstance(content, str):
-        # Tolerate the regular candidates shape: {"candidates": [{"content": ...}]}.
-        candidates = payload.get("candidate") or payload.get("candidates")
-        first = candidates[0] if isinstance(candidates, list) and candidates else candidates
-        content = first.get("content") if isinstance(first, dict) else None
+    if "content" not in response_fields:
+        # Accept legacy wrappers containing a single candidate object.
+        wrapped = payload.get("candidate", payload.get("candidates"))
+        if isinstance(wrapped, list):
+            if len(wrapped) > 1:
+                raise RuntimeError(f"Drafter response for {asset_id} must contain exactly one refinement result")
+            wrapped = wrapped[0] if wrapped else None
+        content = wrapped.get("content") if isinstance(wrapped, dict) else None
     if not isinstance(content, str):
         raise RuntimeError(f"Drafter response for refining {asset_id} has no 'content' string")
     try:
@@ -184,7 +191,7 @@ def refine_asset_text(
         bundle = load_agent_cli_bundle(workspace=workspace)
         runner = DrafterCliRunner(config=bundle.drafter, timeout_seconds=timeout_seconds, cwd=str(workspace))
 
-    typer.echo(f"  Refining {asset_id}: {instruction}", err=True)
+    _echo_progress(f"  Refining {asset_id}: {instruction}")
     payload = runner.run(prompt)
     return parse_refined_candidate(
         payload,
@@ -192,6 +199,11 @@ def refine_asset_text(
         instruction=instruction,
         based_on_candidate_id=request.based_on_candidate_id,
     )
+
+
+def _echo_progress(message: str) -> None:
+    with suppress(OSError, ValueError):
+        typer.echo(message, err=True)
 
 
 def _episode_summary_markdown(workspace: Path) -> str | None:
@@ -203,7 +215,7 @@ def _episode_summary_markdown(workspace: Path) -> str | None:
     except FileNotFoundError:
         return None
     except EpisodeSummaryInputError as exc:
-        typer.echo(f"  Refinement omitted the optional episode summary. {exc}. Rebuild the summary.", err=True)
+        _echo_progress(f"  Refinement omitted the optional episode summary. {exc}. Rebuild the summary.")
         return None
 
 

@@ -235,12 +235,15 @@ editor, choose the text to refine (the editor's text or one of the candidates), 
 - Drafting and refinement apply the same checks to the summary JSON. It must be a coherent regular UTF-8
   workspace file of at most 1 MiB, with no symlink components or duplicate JSON members. Refinement continues
   silently if the summary is missing and emits a diagnostic if validation rejects it. Rebuild the summary
-  to restore context.
+  to restore context. The diagnostic and the refinement progress message are best effort. Refinement can
+  still run when stderr is closed or unwritable.
 - The result is a new candidate, labelled `refined: <instruction>`, stored in the asset's natural format under
   `copy/candidates/<asset_id>/`. Its provenance (`kind: llm_refine`) records the instruction and the candidate it was
   based on. Select it, press "Edit" to tweak it by hand, or refine it again.
 - Nothing is selected automatically. Answers that are empty, or an invalid slug for `slug`, fail with an error instead
-  of creating a candidate.
+  of creating a candidate. The drafter must return a single result. A direct `content` field and a single
+  candidate object under `candidate` or `candidates` (optionally in a one-item list) are supported. Responses
+  with multiple entries or more than one result field fail before a candidate is created.
 - In `--web` the request runs while the page stays usable; in the dashboard it runs as a `refine:<asset_id>` job whose
   log appears below the candidates. One refinement per asset runs at a time (`409` otherwise).
 - Unlike "Generate More" (dashboard), which drafts new candidates from the episode summary, refining keeps the chosen
