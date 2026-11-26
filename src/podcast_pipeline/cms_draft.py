@@ -11,21 +11,23 @@ import html
 import math
 import re
 import stat
+from bisect import bisect_right
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from html.entities import html5
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
 from podcast_pipeline.agent_cli_config import global_config_path
-from podcast_pipeline.domain.models import TextFormat
+from podcast_pipeline.domain.models import EpisodeWorkspace, TextFormat
+from podcast_pipeline.file_inputs import read_workspace_utf8
 from podcast_pipeline.markdown_html import markdown_to_deterministic_html
 from podcast_pipeline.pick_core import read_current_selection, validate_slug
 from podcast_pipeline.tag_parsing import itunes_keyword_delimiter_error, parse_tag_list
 from podcast_pipeline.workspace_store import (
     EpisodeWorkspaceLayout,
-    EpisodeWorkspaceStore,
     WorkspaceStoreError,
     read_optional_yaml_mapping,
 )
@@ -40,6 +42,7 @@ DEFAULT_DETAIL_INTRO_HTML = "<h2>Shownotes</h2>"
 # django-cast ``Episode.EXPLICIT_CHOICES``: 1 = yes, 2 = no, 3 = clean.
 DEFAULT_EXPLICIT = 2
 _EXPLICIT_CHOICES = frozenset({1, 2, 3})
+_MAX_CHAPTER_STATE_BYTES = 8 * 1024 * 1024
 # django-cast ``Audio.TranscriptDiarizationMode``. Speaker labels need "enabled": "inherit" follows the site's
 # Voxhelm settings, which may switch diarization off.
 DEFAULT_TRANSCRIPT_DIARIZATION = "enabled"
@@ -423,9 +426,22 @@ def _episode_chapters(episode_yaml: Mapping[str, Any], layout: EpisodeWorkspaceL
 
 
 def _state_chapters(layout: EpisodeWorkspaceLayout) -> list[tuple[float, str]]:
-    if not layout.state_json.exists():
-        return []
-    workspace = EpisodeWorkspaceStore(layout.root).read_state()
+    path = layout.state_json
+    try:
+        try:
+            # A dangling link is present. Once observed, disappearance during the read is an error too.
+            path.lstat()
+        except FileNotFoundError:
+            return []
+        raw = read_workspace_utf8(layout.root, path.relative_to(layout.root), max_bytes=_MAX_CHAPTER_STATE_BYTES)
+    except (OSError, ValueError) as exc:
+        raise CmsConfigError(
+            f"Cannot read CMS chapters from {path}: expected a regular UTF-8 file within 8 MiB."
+        ) from exc
+    try:
+        workspace = EpisodeWorkspace.from_json(raw)
+    except ValueError as exc:
+        raise CmsConfigError(f"Cannot read CMS chapters from {path}: invalid workspace state.") from exc
     return [(chapter.start_sec, chapter.title) for chapter in workspace.chapters]
 
 
@@ -556,7 +572,7 @@ def _link_first_mention(html_text: str, *, name: str, url: str) -> str:
     # Do not close(): HTMLParser would reinterpret an unfinished token as text.
     if parser.ambiguous_self_closing or parser.source_offset() != len(html_text) or url in parser.hrefs:
         return html_text
-    pattern = re.compile(rf"(?<!\w){re.escape(html.escape(name, quote=False))}(?!\w)")
+    pattern = re.compile(rf"(?<!\w){re.escape(name)}(?!\w)")
     for start, end in parser.spans:
         linked = _link_in_text(html_text, start, end, pattern=pattern, url=url)
         if linked is not None:
@@ -565,11 +581,64 @@ def _link_first_mention(html_text: str, *, name: str, url: str) -> str:
 
 
 def _link_in_text(html_text: str, start: int, end: int, *, pattern: re.Pattern[str], url: str) -> str | None:
-    match = pattern.search(html_text, start, end)
-    if match is None:
-        return None
-    anchor = f'<a href="{html.escape(url)}">{match.group(0)}</a>'
-    return html_text[: match.start()] + anchor + html_text[match.end() :]
+    parts: list[str] = []
+    references: list[tuple[int, int, int]] = []  # decoded start, decoded end, source end
+    source_end = start
+    decoded_end = 0
+    for reference in _CHARACTER_REFERENCE_RE.finditer(html_text, start, end):
+        decoded = _decode_reference(reference)
+        if decoded is None:
+            continue
+        replacement, length = decoded
+        parts.append(html_text[source_end : reference.start()])
+        parts.append(replacement)
+        decoded_start = decoded_end + reference.start() - source_end
+        decoded_end = decoded_start + len(replacement)
+        source_end = reference.start() + length
+        references.append((decoded_start, decoded_end, source_end))
+    parts.append(html_text[source_end:end])
+
+    decoded_text = "".join(parts)
+    search_from = 0
+    while match := pattern.search(decoded_text, search_from):
+        left = _source_text_boundary(references, start, match.start())
+        right = _source_text_boundary(references, start, match.end())
+        if left is not None and right is not None:
+            anchor = f'<a href="{html.escape(url)}">{html_text[left:right]}</a>'
+            return html_text[:left] + anchor + html_text[right:]
+        search_from = match.start() + 1
+    return None
+
+
+_CHARACTER_REFERENCE_RE = re.compile(
+    r"&(?:#(?P<number>[0-9]+|[xX][0-9a-fA-F]+);?|(?P<name>[a-zA-Z][a-zA-Z0-9]{0,30};?))"
+)
+
+
+def _decode_reference(reference: re.Match[str]) -> tuple[str, int] | None:
+    if number := reference["number"]:
+        hexadecimal = number[0] in "xX"
+        digits = (number[1:] if hexadecimal else number).lstrip("0")
+        # Clamp out-of-range inputs before integer conversion, including arbitrarily long references.
+        codepoint = int(digits or "0", 16 if hexadecimal else 10) if len(digits) <= 7 else 0x110000
+        return html.unescape(f"&#{codepoint};") or chr(codepoint), reference.end() - reference.start()
+
+    # Legacy named references can omit the semicolon and end before the scanned name does.
+    name = reference["name"]
+    for length in range(len(name), 0, -1):
+        if replacement := html5.get(name[:length]):
+            return replacement, length + 1  # including '&'
+    return None
+
+
+def _source_text_boundary(references: list[tuple[int, int, int]], start: int, offset: int) -> int | None:
+    index = bisect_right(references, offset, key=lambda ref: ref[1])
+    if index < len(references) and references[index][0] < offset:
+        return None  # Inserting markup here would split a reference that expands to multiple characters.
+    if index == 0:
+        return start + offset
+    _, decoded_end, source_end = references[index - 1]
+    return source_end + offset - decoded_end
 
 
 _LEADING_HEADING_RE = re.compile(r"\A\s*<h[1-6][^>]*>.*?</h[1-6]>\s*", re.DOTALL | re.IGNORECASE)

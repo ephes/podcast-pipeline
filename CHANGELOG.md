@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Link hosts in CMS draft overviews when their names contain HTML character references, preserving the original HTML.
+
+- Stop CMS draft planning before HTTP when saved chapter state is unreadable or invalid. An absent `state.json` still gives empty chapter marks.
+
 - Preserve the previous transcript chunk generation when staging its replacement encounters a short write.
 
 - Refuse short workspace backup and restore writes, retaining the complete sibling backup when a restore fails.
