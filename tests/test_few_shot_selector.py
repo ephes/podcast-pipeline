@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import heapq
+from collections.abc import Iterable
+
 import pytest
 
 from podcast_pipeline import few_shot_selector as selector
@@ -103,3 +106,33 @@ def test_english_numeric_words_and_casefolding() -> None:
     from podcast_pipeline.few_shot_selector import _tokens_from_values
 
     assert _tokens_from_values(["AI Python_3 123 STRASSE Straße"]) == {"ai", "python", "3", "123", "strasse"}
+
+
+def test_ranking_only_considers_positive_distinct_records_for_top_five(monkeypatch: pytest.MonkeyPatch) -> None:
+    records = [
+        selector.FewShotExampleRecord(str(index), "python" if index % 2 else "unrelated", "example")
+        for index in range(selector.MAX_CORPUS_RECORDS - 2)
+    ]
+    records.extend(
+        [
+            selector.FewShotExampleRecord("1", "higher-scoring duplicate", "example", tags=("python",)),
+            selector.FewShotExampleRecord("3", "python tied duplicate", "example"),
+        ]
+    )
+    expected: dict[str, selector.FewShotExampleRecord] = {}
+    for record in sorted(records, key=lambda record: -record.match_score({"python"})):
+        expected.setdefault(record.example_id, record)
+
+    nsmallest = heapq.nsmallest
+    ranking_sizes: list[tuple[int, int]] = []
+
+    def track_ranking(limit: int, candidates: Iterable[selector.ScoredRecord]) -> list[selector.ScoredRecord]:
+        pool = list(candidates)
+        ranking_sizes.append((limit, len(pool)))
+        return nsmallest(limit, pool)
+
+    monkeypatch.setattr(heapq, "nsmallest", track_ranking)
+    assert selector.select_few_shot_records(examples=records, topics=["python"], limit=5) == tuple(
+        list(expected.values())[:5]
+    )
+    assert ranking_sizes == [(5, (selector.MAX_CORPUS_RECORDS - 2) // 2)]

@@ -21,9 +21,21 @@ _JSON_TOKEN = re.compile(
 )
 
 
-def _admit_structure(raw: str) -> None:
-    if len(raw) > MAX_JSON_BYTES or len(raw.encode("utf-8")) > MAX_JSON_BYTES:
+def _admit_text_utf8(raw: str) -> None:
+    if len(raw) > MAX_JSON_BYTES:
         raise ValueError("JSON byte limit")
+    if raw.isascii():
+        return
+
+    remaining = MAX_JSON_BYTES
+    for start in range(0, len(raw), 4096):
+        # Strict encoding also rejects literal surrogates before hydration.
+        remaining -= len(raw[start : start + 4096].encode("utf-8"))
+        if remaining < 0:
+            raise ValueError("JSON byte limit")
+
+
+def _admit_structure(raw: str) -> None:
     depth = tokens = 0
     for match in _JSON_TOKEN.finditer(raw):
         token = match.group()
@@ -60,10 +72,14 @@ def _finite_float(value: str) -> float:
 def load_control_json(raw: str | bytes | bytearray) -> Any:
     """Raise a content-free ValueError for invalid or excessive control JSON."""
     try:
-        if not isinstance(raw, str):
-            if len(raw) > MAX_JSON_BYTES:
-                raise ValueError("JSON byte limit")
-            raw = raw.decode("utf-8")
+        if isinstance(raw, str):
+            _admit_text_utf8(raw)
+        else:
+            # Keep a bytearray's length fixed from admission through decoding.
+            with memoryview(raw) as data:
+                if len(data) > MAX_JSON_BYTES:
+                    raise ValueError("JSON byte limit")
+                raw = raw.decode("utf-8")
         _admit_structure(raw)
         value = json.loads(
             raw,

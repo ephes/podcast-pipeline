@@ -47,8 +47,9 @@ Examples are unique by a non-blank string `example_id`/`id` (compared exactly, i
 or by the generated input/output hash. A truthy `example_id` takes precedence over `id`;
 if that chosen value is not a non-blank string, the input/output hash is used.
 With empty or blank topics, the first record for each id wins in dataset order; later unique
-records fill the limit. With topics, positive scores rank highest first, with ties in dataset order.
-If fewer unique IDs match than the limit allows, a scan in dataset order fills remaining slots
+records fill the limit. With topics, each ID contributes its highest positive score. Ties use
+dataset order, including ties between records for the same ID. Ranking selects up to the requested
+limit from these matches. If fewer unique IDs match, a scan in dataset order fills remaining slots
 with IDs that have yet to be selected.
 Matching uses Unicode words (underscores separate words), casefolding and NFC normalization,
 so Latin accented words with precomposable characters and decomposed umlauts match consistently

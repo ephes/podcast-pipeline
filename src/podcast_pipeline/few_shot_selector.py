@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import heapq
 import json
 import math
 import os
@@ -193,35 +194,29 @@ def select_few_shot_records(
         return ()
 
     topic_tokens = _tokens_from_values(topics)
-    selected = _select_scored(_score_records(records, topic_tokens), limit) if topic_tokens else []
+    selected = _select_scored(records, topic_tokens, limit) if topic_tokens else []
     if len(selected) < limit:
         selected = _fill_remaining(selected, records, limit)
 
     return tuple(selected)
 
 
-def _score_records(
+def _select_scored(
     records: Sequence[FewShotExampleRecord],
     topic_tokens: set[str],
-) -> list[ScoredRecord]:
-    scored = [(record.match_score(topic_tokens), idx, record) for idx, record in enumerate(records)]
-    scored.sort(key=lambda item: (-item[0], item[1]))
-    return scored
-
-
-def _select_scored(scored: Sequence[ScoredRecord], limit: int) -> list[FewShotExampleRecord]:
-    selected: list[FewShotExampleRecord] = []
-    seen_ids: set[str] = set()
-    for score, _, record in scored:
+    limit: int,
+) -> list[FewShotExampleRecord]:
+    best_by_id: dict[str, ScoredRecord] = {}
+    for index, record in enumerate(records):
+        score = record.match_score(topic_tokens)
         if score <= 0:
-            break
-        if record.example_id in seen_ids:
             continue
-        selected.append(record)
-        seen_ids.add(record.example_id)
-        if len(selected) >= limit:
-            break
-    return selected
+        current = best_by_id.get(record.example_id)
+        if current is None or -score < current[0]:
+            best_by_id[record.example_id] = (-score, index, record)
+
+    # Negative score ranks higher matches first. Original indices break ties.
+    return [record for _, _, record in heapq.nsmallest(limit, best_by_id.values())]
 
 
 def _fill_remaining(

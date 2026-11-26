@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Admit UTF-8 control JSON without re-encoding the full document.
+
+- Rank only the requested number of distinct matching few-shot examples, then fill from corpus order.
+
 - Report confirmed standalone draft candidate IDs when publication fails partway through a run.
 
 - Keep existing standalone draft candidates and selections when regenerated copy changes by assigning the new copy its own IDs.
