@@ -466,7 +466,8 @@ What `cms-draft` sends:
 - **Audio**: one `POST api/editor/media/audios/` with the Auphonic MP3 (`auphonic/outputs/<output_basename>.mp3`,
   `output_basename` defaulting to `episode_id`; set `cms.audio_file` in `episode.yaml` to upload another file), the
   episode title as `title`, `subtitle_auphonic` as `subtitle`, `auphonic.chapters` (or the chapters in `state.json`)
-  as `chaptermarks` lines `HH:MM:SS Title`, `cms.audio_collection` as `collection`, and
+  as `chaptermarks` lines `HH:MM:SS Title` (a chapter may give its time as `start` or `start_sec`; with both, they
+  must agree to the microsecond), `cms.audio_collection` as `collection`, and
   `transcript_diarization_mode` (`cms.transcript_diarization`, default `enabled`) when the site accepts it.
   django-cast accepts exactly one file per upload.
 - **Episode**: `POST api/editor/episodes/` with the podcast page as `parent`, `title` (`title_detail`), `slug`,

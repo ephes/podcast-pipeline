@@ -276,7 +276,7 @@ def build_cms_draft_plan(
         detail_html=detail_html,
         audio=audio,
         extra_audio_files=extra_audio_files,
-        contributors=tuple(known[name] for name in hosts if name in known),
+        contributors=tuple(dict.fromkeys(known[name] for name in hosts if name in known)),
         unmapped_hosts=tuple(name for name in hosts if name not in known),
         selected_copy=tuple(selections.values()),
         hosts_listed=bool(hosts),
@@ -420,9 +420,24 @@ def _episode_chapters(episode_yaml: Mapping[str, Any], layout: EpisodeWorkspaceL
         title = item.get("title")
         if not isinstance(title, str) or not title.strip():
             raise CmsConfigError(f"auphonic.chapters[{idx}].title must be a non-empty string")
-        start = item.get("start", item.get("start_sec"))
-        chapters.append((_chapter_seconds(start, idx=idx), title.strip()))
+        chapters.append((_chapter_start(item, idx=idx), title.strip()))
     return chapters
+
+
+def _chapter_start(item: Mapping[str, Any], *, idx: int) -> float:
+    """``start``, or its ``start_sec`` alias; when both are given they must agree at microsecond precision."""
+    if "start_sec" not in item:
+        return _chapter_seconds(item.get("start"), idx=idx)
+    start_sec = _chapter_seconds(item["start_sec"], idx=idx, key="start_sec")
+    if "start" not in item:
+        return start_sec
+    start = _chapter_seconds(item["start"], idx=idx)
+    if round(start * 1_000_000) != round(start_sec * 1_000_000):
+        raise CmsConfigError(
+            f"auphonic.chapters[{idx}].start and .start_sec disagree ({item['start']!r} vs {item['start_sec']!r}); "
+            "keep one of them"
+        )
+    return start
 
 
 def _state_chapters(layout: EpisodeWorkspaceLayout) -> list[tuple[float, str]]:
@@ -445,8 +460,8 @@ def _state_chapters(layout: EpisodeWorkspaceLayout) -> list[tuple[float, str]]:
     return [(chapter.start_sec, chapter.title) for chapter in workspace.chapters]
 
 
-def _chapter_seconds(value: object, *, idx: int) -> float:
-    message = f"auphonic.chapters[{idx}].start must be seconds or HH:MM:SS"
+def _chapter_seconds(value: object, *, idx: int, key: str = "start") -> float:
+    message = f"auphonic.chapters[{idx}].{key} must be seconds or HH:MM:SS"
     if isinstance(value, bool) or value is None:
         raise CmsConfigError(message)
     if isinstance(value, (int, float)):
@@ -720,13 +735,25 @@ def _host_links(value: object, *, source: str) -> dict[str, str]:
     if not isinstance(value, Mapping):
         raise CmsConfigError(f"cms.host_links in {source} must map host names to URLs")
     links: dict[str, str] = {}
+    keys: dict[str, str] = {}
     for name, url in value.items():
         if not isinstance(name, str) or not name.strip() or not isinstance(url, str) or not url.strip():
             raise CmsConfigError(f"cms.host_links in {source} must map host names to URLs")
         if urlparse(url.strip()).scheme not in {"http", "https"}:
             raise CmsConfigError(f"cms.host_links.{name} in {source} must be an http(s) URL")
+        _claim_host_name(keys, name, field="cms.host_links", source=source)
         links[name.strip()] = url.strip()
     return links
+
+
+def _claim_host_name(keys: dict[str, str], name: str, *, field: str, source: str) -> None:
+    """Refuse two keys of one mapping that name the same host once surrounding whitespace is stripped."""
+    host = name.strip()
+    if host in keys:
+        raise CmsConfigError(
+            f"{field} in {source} has keys {keys[host]!r} and {name!r} that both name host {host!r}; keep one of them"
+        )
+    keys[host] = name
 
 
 def _contributors(value: object, *, source: str) -> dict[str, ContributorRef]:
@@ -737,9 +764,11 @@ def _contributors(value: object, *, source: str) -> dict[str, ContributorRef]:
     if not isinstance(value, Mapping):
         raise CmsConfigError(message)
     refs: dict[str, ContributorRef] = {}
+    keys: dict[str, str] = {}
     for name, entry in value.items():
         if not isinstance(name, str) or not name.strip():
             raise CmsConfigError(message)
+        _claim_host_name(keys, name, field="cms.contributors", source=source)
         slug: object = entry
         role: object = "host"
         if isinstance(entry, Mapping):

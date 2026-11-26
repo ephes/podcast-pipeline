@@ -215,6 +215,9 @@ and keep the hosts from an admitted episode snapshot. Pickers do not load exampl
 
 `podcast cms-draft` and `podcast cms-publish` read a `cms` section from the global config. A `cms` section in
 `episode.yaml` overrides single keys for one episode (`host_links` and `contributors` entries are merged).
+Host names are compared with surrounding whitespace stripped: two keys of one `host_links` or `contributors`
+mapping that name the same host (for example `Jochen` and `" Jochen "`) are refused before contacting the site,
+while an episode entry still replaces the global entry of the same host.
 An optional global config may be a symlink; its target must be a regular UTF-8 file of at most 1 MiB.
 CMS rejects duplicate YAML keys, alias cycles, more than 64 levels of nesting, or more than
 100,000 YAML nodes (counting each use of an alias) before contacting the site.
@@ -246,7 +249,7 @@ cms:
 | `explicit` | global or episode | iTunes explicit flag of the episode. |
 | `detail_intro_html` | global or episode | HTML placed before the shownotes in the detail section. |
 | `host_links` | global and episode (merged) | Host name → profile URL. Only hosts in `hosts` of `episode.yaml` are linked (all configured names when `hosts` is unset); names already linked, or whose URL is already in the overview, are left alone. |
-| `contributors` | global and episode (merged) | Host name → Contributor slug (role `host`) or `{slug, role}` with role `host` or `guest`. The episode's `hosts` are credited in that order. A host without an entry, or an episode without `hosts`, is listed as a manual step, and the transcript is not started automatically. Sent to django-cast once its editor API accepts episode contributors. |
+| `contributors` | global and episode (merged) | Host name → Contributor slug (role `host`) or `{slug, role}` with role `host` or `guest`. The episode's `hosts` are credited in that order; hosts that map to the same slug and role (aliases of one person) are credited once, at the first. A host without an entry, or an episode without `hosts`, is listed as a manual step, and the transcript is not started automatically. Sent to django-cast once its editor API accepts episode contributors. |
 | `transcript_diarization` | global or episode | Diarization mode of the uploaded Audio. `enabled` (default) gives speaker labels regardless of the site's Voxhelm settings; `inherit` follows them. The transcript is only started automatically when the Audio reports `enabled`. |
 | `audio_file` | episode only | File to upload as the Audio (relative to the workspace or absolute; `.mp3`, `.m4a`, `.ogg`/`.oga` or `.opus`). Default: `auphonic/outputs/<output_basename>.mp3`, else the only regular MP3 file there. Files with the same name and another of these extensions are the further formats. |
 
