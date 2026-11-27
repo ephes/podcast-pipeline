@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import select
 import subprocess
 import sys
 from pathlib import Path
@@ -195,6 +196,68 @@ def test_terminal_resume_makes_no_calls_or_selection_changes(tmp_path: Path) -> 
     assert len(creator.calls) == len(reviewer.calls) == 1
     assert store.layout.state_json.read_bytes() == state_before
     assert store.layout.selected_text_path("description", TextFormat.markdown).read_text() == "manual\n"
+
+
+def test_review_ownership_is_per_asset_across_processes(tmp_path: Path) -> None:
+    store = _init_workspace(tmp_path)
+    script = """
+import sys
+from pathlib import Path
+from podcast_pipeline.domain.models import Candidate, ReviewIteration, ReviewVerdict
+from podcast_pipeline.review_loop_engine import CreatorOutput
+from podcast_pipeline.review_loop_orchestrator import run_review_loop_orchestrator
+
+def creator(inp):
+    if inp.iteration == 2:
+        print("ready", flush=True)
+        assert sys.stdin.readline().strip() == "finish"
+    return CreatorOutput(Candidate(asset_id=inp.asset_id, content=f"round {inp.iteration}"), inp.iteration == 2)
+
+def reviewer(inp):
+    verdict = ReviewVerdict.changes_requested if inp.iteration == 1 else ReviewVerdict.ok
+    return ReviewIteration(iteration=inp.iteration, verdict=verdict)
+
+run_review_loop_orchestrator(
+    workspace=Path(sys.argv[1]), asset_id="description", max_iterations=2, creator=creator, reviewer=reviewer,
+)
+"""
+    owner = subprocess.Popen(
+        [sys.executable, "-c", script, str(tmp_path)],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        assert owner.stdout is not None
+        assert select.select([owner.stdout], [], [], 10)[0]
+        assert owner.stdout.readline().strip() == "ready"
+        checkpoint = store.layout.protocol_state_json_path("description")
+        before = checkpoint.read_bytes()
+        creator = FakeCreatorRunner(layout=store.layout, replies=[{"done": True, "candidate": {"content": "other"}}])
+        reviewer = FakeReviewerRunner(layout=store.layout, reviewer="synthetic", replies=[{"verdict": "ok"}])
+
+        with pytest.raises(LoopProtocolError, match=r"description.*already running.*retry"):
+            run_review_loop_orchestrator(
+                workspace=tmp_path, asset_id="description", max_iterations=2, creator=creator, reviewer=reviewer
+            )
+        assert not creator.calls and not reviewer.calls
+        assert checkpoint.read_bytes() == before
+        other = run_review_loop_orchestrator(
+            workspace=tmp_path, asset_id="shownotes", max_iterations=2, creator=creator, reviewer=reviewer
+        )
+        assert other.decision is not None and other.decision.outcome == LoopOutcome.converged
+        owner.communicate("finish\n", timeout=10)
+        assert owner.returncode == 0
+        resumed = run_review_loop_orchestrator(
+            workspace=tmp_path, asset_id="description", max_iterations=2, creator=creator, reviewer=reviewer
+        )
+        assert resumed.decision is not None and resumed.decision.outcome == LoopOutcome.converged
+        assert len(resumed.iterations) == 2
+        assert len(creator.calls) == len(reviewer.calls) == 1
+    finally:
+        if owner.poll() is None:
+            owner.kill()
+        owner.communicate(timeout=10)
 
 
 @pytest.mark.parametrize("kind", ["fifo", "dangling-symlink"])

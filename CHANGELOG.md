@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Allow one review loop per workspace and asset across CLI and dashboard processes. Concurrent attempts on the same asset stop before calling agents.
+
 - Refuse CMS `host_links` or `contributors` keys that name the same host once whitespace is stripped, instead of letting the later key silently replace the earlier URL or contributor.
 
 - Refuse CMS chapters whose `start` and `start_sec` disagree at microsecond precision, instead of silently using `start`. An invalid `start_sec` is reported under its own name.

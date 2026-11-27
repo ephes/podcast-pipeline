@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import fcntl
 import os
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
@@ -155,6 +157,47 @@ def run_review_loop_orchestrator(
     seed_candidate: Candidate | None = None,
 ) -> LoopProtocolState:
     store = EpisodeWorkspaceStore(workspace)
+    lock_dir = workspace / ".review-locks" / store.layout.protocol_state_json_path(asset_id).parent.name
+    with _review_lock(lock_dir, asset_id):
+        return _run_review_loop(
+            store=store,
+            asset_id=asset_id,
+            max_iterations=max_iterations,
+            creator=creator,
+            reviewer=reviewer,
+            seed_candidate=seed_candidate,
+        )
+
+
+@contextmanager
+def _review_lock(lock_dir: Path, asset_id: str) -> Iterator[None]:
+    try:
+        # Keep the directory inode stable even when the protocol is archived.
+        lock_dir.mkdir(parents=True, exist_ok=True)
+        fd = os.open(lock_dir, os.O_RDONLY | os.O_DIRECTORY)
+    except OSError as exc:
+        raise LoopProtocolError(f"Cannot open review lock at {lock_dir}; check the workspace and retry.") from exc
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            raise LoopProtocolError(
+                f"Review for {asset_id} is already running; wait for it to finish and retry."
+            ) from exc
+        yield
+    finally:
+        os.close(fd)
+
+
+def _run_review_loop(
+    *,
+    store: EpisodeWorkspaceStore,
+    asset_id: str,
+    max_iterations: int,
+    creator: Callable[[CreatorInput], CreatorOutput],
+    reviewer: Callable[[ReviewerInput], ReviewIteration],
+    seed_candidate: Candidate | None,
+) -> LoopProtocolState:
     layout = store.layout
     protocol_path = layout.protocol_state_json_path(asset_id)
     existing = (

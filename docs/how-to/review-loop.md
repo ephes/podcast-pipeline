@@ -47,6 +47,10 @@ podcast review \
 
 Notes:
 
+- One review loop per asset can run in a workspace at a time, across CLI and dashboard processes.
+  If review reports that the asset is already running, wait for it to finish and retry.
+  Other assets can run in parallel. The lock releases when the process exits.
+  Leave the workspace's `.review-locks/` directories in place when archiving checkpoints.
 - `--workspace` can name an existing initialized workspace. Repeating the command resumes
   `copy/protocol/<asset_id>/state.json` with the same `--max-iterations`; completed rounds
   are not sent to the agents again. Locked terminal runs make no agent calls or selection changes;
