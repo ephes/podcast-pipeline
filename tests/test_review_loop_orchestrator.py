@@ -208,7 +208,35 @@ def test_terminal_resume_makes_no_calls_or_selection_changes(tmp_path: Path) -> 
     assert store.layout.selected_text_path("description", TextFormat.markdown).read_text() == "manual\n"
 
 
-@pytest.mark.parametrize("sidecar", ["changed", "retyped", "missing", "invalid", "legacy"])
+def _damage_review_sidecar(path: Path, sidecar: str) -> None:
+    if sidecar == "missing":
+        path.unlink()
+        return
+    if sidecar == "invalid":
+        path.write_text('{"verdict":"ok",' + path.read_text()[1:])
+        return
+    raw = json.loads(path.read_text())
+    if sidecar == "changed":
+        raw["verdict"] = ReviewVerdict.needs_human.value
+    elif sidecar == "retyped":
+        # Python equality treats True == 1; JSON evidence must not.
+        raw["provenance"][0]["metadata"]["attempt"] = True
+    elif sidecar == "coerced_iteration":
+        # Validation would coerce true to 1; the file must still state the integer.
+        raw["iteration"] = True
+    elif sidecar == "deep":
+        nested: list[object] = []
+        for _ in range(300):
+            nested = [nested]
+        raw["provenance"][0]["metadata"]["attempt"] = nested
+    else:
+        del raw["reviewer"], raw["provenance"]
+    path.write_text(json.dumps(raw))
+
+
+@pytest.mark.parametrize(
+    "sidecar", ["changed", "retyped", "coerced_iteration", "deep", "missing", "invalid", "legacy"]
+)
 def test_resume_checks_every_committed_review_sidecar(tmp_path: Path, sidecar: str) -> None:
     store = _init_workspace(tmp_path)
     creator = FakeCreatorRunner(
@@ -236,20 +264,7 @@ def test_resume_checks_every_committed_review_sidecar(tmp_path: Path, sidecar: s
         workspace=tmp_path, asset_id="description", max_iterations=3, creator=creator, reviewer=reviewer
     )
     path = store.layout.review_iteration_json_path("description", 1, reviewer=first_reviewer)
-    if sidecar == "missing":
-        path.unlink()
-    elif sidecar == "invalid":
-        path.write_text('{"verdict":"ok",' + path.read_text()[1:])
-    else:
-        raw = json.loads(path.read_text())
-        if sidecar == "changed":
-            raw["verdict"] = ReviewVerdict.needs_human.value
-        elif sidecar == "retyped":
-            # Python equality treats True == 1; JSON evidence must not.
-            raw["provenance"][0]["metadata"]["attempt"] = True
-        else:
-            del raw["reviewer"], raw["provenance"]
-        path.write_text(json.dumps(raw))
+    _damage_review_sidecar(path, sidecar)
     before = {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
 
     no_creator = FakeCreatorRunner(layout=store.layout, replies=[])

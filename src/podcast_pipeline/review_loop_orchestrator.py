@@ -335,17 +335,29 @@ def _verify_saved_reviews(store: EpisodeWorkspaceStore, asset_id: str, state: Lo
             ) from exc
         message = f"Review at {path} is missing, invalid or changed; restore the matching file before retrying."
         try:
-            saved = store.read_review(asset_id, number, reviewer=reviewer)
-        except (OSError, WorkspaceStoreError) as exc:
+            saved, document = store.read_review_document(asset_id, number, reviewer=reviewer)
+            matches = _matches_checkpoint(saved, document, iteration.review)
+        except (OSError, WorkspaceStoreError, ValueError, TypeError, RecursionError) as exc:
             raise LoopProtocolError(message) from exc
-        if not _same_json(saved, iteration.review):
+        if not matches:
             raise LoopProtocolError(message)
 
 
-def _same_json(left: ReviewIteration, right: ReviewIteration) -> bool:
-    # Canonical JSON keeps types apart: Python treats ``True == 1`` but JSON does not.
-    return json.dumps(left.model_dump(mode="json"), sort_keys=True) == json.dumps(
-        right.model_dump(mode="json"), sort_keys=True
+def _canonical_json(value: Any) -> str:
+    # Canonical JSON keeps types apart: Python treats ``True == 1`` and ``1 == 1.0``, JSON text does not.
+    return json.dumps(value, sort_keys=True, allow_nan=False)
+
+
+def _matches_checkpoint(saved: ReviewIteration, document: Any, expected: ReviewIteration) -> bool:
+    dumped = saved.model_dump(mode="json")
+    if _canonical_json(dumped) != _canonical_json(expected.model_dump(mode="json")):
+        return False
+    # Validation coerces some values (``"iteration": true`` becomes ``1``). Every field the file
+    # does state must already be in canonical form; omitted fields keep their legacy defaults.
+    if not isinstance(document, dict):
+        return False
+    return all(
+        key in dumped and _canonical_json(value) == _canonical_json(dumped[key]) for key, value in document.items()
     )
 
 

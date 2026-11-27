@@ -78,7 +78,7 @@ Notes:
   On resume, every completed round must match its numbered review in `copy/reviews/<asset_id>/`.
   Older reviews without a reviewer label use `iteration_XX.json`. Review stops before calling agents
   or changing the checkpoint or selection if a numbered review is missing, invalid or changed.
-  Values are compared as JSON, so `true` in place of `1` counts as a change.
+  Values are compared as JSON, so `true` in place of `1` counts as a change, also in `iteration`.
   Restore the matching file from backup or archive the run before starting fresh.
   Protocol JSON accepts only finite numbers, including in candidate and review provenance metadata.
   Nonfinite numbers in a new candidate or review stop publication of that round's checkpoint.
