@@ -3,6 +3,7 @@ from __future__ import annotations
 import fcntl
 import json
 import os
+import re
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
@@ -403,7 +404,20 @@ def _states_only_saved_values(stated: Any, saved: Any) -> bool:
             and len(stated) == len(saved)
             and all(_states_only_saved_values(a, b) for a, b in zip(stated, saved, strict=True))
         )
+    if isinstance(stated, str) and isinstance(saved, str) and stated != saved:
+        return _legacy_utc_spelling(stated, saved)
     return type(stated) is type(saved) and stated == saved
+
+
+_ISO_UTC_PREFIX = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?")
+
+
+def _legacy_utc_spelling(stated: str, saved: str) -> bool:
+    # Before sub-minute offsets were saved in UTC, a -30 s offset was written as ``-00:00``. Continuing
+    # such a run rewrites the checkpoint as ``Z`` while the numbered review keeps ``-00:00``.
+    # Accept only that suffix with an identical timestamp prefix, so no digit can change.
+    prefix = saved.removesuffix("Z")
+    return saved.endswith("Z") and stated == prefix + "-00:00" and _ISO_UTC_PREFIX.fullmatch(prefix) is not None
 
 
 def _load_seed_candidates(layout: EpisodeWorkspaceLayout, asset_id: str) -> list[Candidate]:

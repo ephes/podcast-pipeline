@@ -852,9 +852,17 @@ def test_review_bounds_saved_candidate_evidence(tmp_path: Path, monkeypatch: pyt
     assert paths[0].is_symlink() == (defect == "symlink")
 
 
-def test_sub_minute_offset_review_survives_continuation_and_second_resume(tmp_path: Path) -> None:
+@pytest.mark.parametrize("written_before_utc_fix", [False, True])
+def test_sub_minute_offset_review_survives_continuation_and_second_resume(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, written_before_utc_fix: bool
+) -> None:
+    from podcast_pipeline import review_loop_engine
     from podcast_pipeline.review_loop_engine import CreatorInput
 
+    whole_minute_offset = review_loop_engine._whole_minute_offset
+    if written_before_utc_fix:
+        # Older versions saved the offset as written, which JSON stores as ``-00:00``.
+        monkeypatch.setattr(review_loop_engine, "_whole_minute_offset", lambda value: value)
     store = _init_workspace(tmp_path)
     fail_round_two = True
 
@@ -877,6 +885,9 @@ def test_sub_minute_offset_review_survives_continuation_and_second_resume(tmp_pa
 
     with pytest.raises(RuntimeError, match="interrupted"):
         run()
+    first_review = store.layout.review_iteration_json_path("description", 1, reviewer=None).read_text()
+    assert ("-00:00" in first_review) is written_before_utc_fix
+    monkeypatch.setattr(review_loop_engine, "_whole_minute_offset", whole_minute_offset)
     fail_round_two = False
     finished = run()
     assert finished.decision is not None and finished.decision.outcome == LoopOutcome.converged
