@@ -4,7 +4,7 @@
 
 - Allow one review loop per workspace and asset across CLI and dashboard processes. Concurrent attempts on the same asset stop before calling agents. Symlinked lock directories are refused, and the CLI and dashboard report a resumed finished review from the checkpoint read under the lock.
 
-- Check each completed round's numbered review against the checkpoint on resume. Missing, invalid or changed reviews stop the run with the path to restore; every value a review file states must equal the checkpoint's saved JSON exactly. New reviews with a sub-minute UTC offset are saved in UTC, because JSON keeps whole-minute offsets only.
+- Check each completed round's numbered review against the checkpoint on resume. Missing, invalid or changed reviews stop the run with the path to restore; every value a review file states must equal the checkpoint's saved JSON exactly, except that an older `+00:00` or `-00:00` timestamp matches a checkpoint `Z` with an otherwise identical timestamp. New reviews with a sub-minute UTC offset are saved in UTC, because JSON keeps whole-minute offsets only.
 
 - Refuse CMS `host_links` or `contributors` keys that name the same host once whitespace is stripped, instead of letting the later key silently replace the earlier URL or contributor.
 
