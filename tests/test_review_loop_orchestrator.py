@@ -5,7 +5,9 @@ import os
 import select
 import subprocess
 import sys
+from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -214,6 +216,40 @@ def _first_round_provenance(sidecar: str) -> list[ProvenanceRef]:
     return [ProvenanceRef(kind="run", ref="r1", metadata={} if sidecar == "nested_legacy" else {"attempt": 1})]
 
 
+def _deeply_nested() -> list[object]:
+    nested: list[object] = []
+    for _ in range(300):
+        nested = [nested]
+    return nested
+
+
+def _set_path(raw: dict[str, Any], keys: tuple[str | int, ...], value: object) -> None:
+    target: Any = raw
+    for key in keys[:-1]:
+        target = target[key]
+    target[keys[-1]] = value
+
+
+_ATTEMPT = ("provenance", 0, "metadata", "attempt")
+# Each edit maps to (field path, new value); ``None`` as value deletes the field.
+_SIDECAR_EDITS: dict[str, list[tuple[tuple[str | int, ...], object]]] = {
+    "changed": [(("verdict",), ReviewVerdict.needs_human.value)],
+    # Python equality treats True == 1; JSON evidence must not.
+    "retyped": [(_ATTEMPT, True)],
+    # Validation would coerce true to 1; the file must still state the integer.
+    "coerced_iteration": [(("iteration",), True)],
+    "deep": [(_ATTEMPT, _deeply_nested())],
+    # Older files omit nested defaults such as provenance metadata.
+    "nested_legacy": [(("provenance", 0, "metadata"), None)],
+    # The same instant spelled with other offsets is the same saved value.
+    "offset": [(("created_at",), "2026-01-01T12:00:00.123456+00:00")],
+    "other_offset": [(("created_at",), "2026-01-01T13:00:00.123456+01:00")],
+    # A digit below a microsecond is lost on validation, so it counts as a change.
+    "submicrosecond": [(("created_at",), "2026-01-01T12:00:00.1234561Z")],
+    "legacy": [(("reviewer",), None), (("provenance",), None)],
+}
+
+
 def _damage_review_sidecar(path: Path, sidecar: str) -> None:
     if sidecar == "missing":
         path.unlink()
@@ -222,34 +258,33 @@ def _damage_review_sidecar(path: Path, sidecar: str) -> None:
         path.write_text('{"verdict":"ok",' + path.read_text()[1:])
         return
     raw = json.loads(path.read_text())
-    if sidecar == "changed":
-        raw["verdict"] = ReviewVerdict.needs_human.value
-    elif sidecar == "retyped":
-        # Python equality treats True == 1; JSON evidence must not.
-        raw["provenance"][0]["metadata"]["attempt"] = True
-    elif sidecar == "coerced_iteration":
-        # Validation would coerce true to 1; the file must still state the integer.
-        raw["iteration"] = True
-    elif sidecar == "deep":
-        nested: list[object] = []
-        for _ in range(300):
-            nested = [nested]
-        raw["provenance"][0]["metadata"]["attempt"] = nested
-    elif sidecar == "nested_legacy":
-        # Older files omit nested defaults such as provenance metadata.
-        del raw["provenance"][0]["metadata"]
-    elif sidecar == "offset":
-        # The same instant spelled with another offset is the same saved value.
-        assert raw["created_at"].endswith("Z")
-        raw["created_at"] = raw["created_at"].removesuffix("Z") + "+00:00"
-    else:
-        del raw["reviewer"], raw["provenance"]
+    assert raw["created_at"] == "2026-01-01T12:00:00.123456Z"
+    for keys, value in _SIDECAR_EDITS[sidecar]:
+        if value is None:
+            target: Any = raw
+            for key in keys[:-1]:
+                target = target[key]
+            del target[keys[-1]]
+        else:
+            _set_path(raw, keys, value)
     path.write_text(json.dumps(raw))
 
 
 @pytest.mark.parametrize(
     "sidecar",
-    ["changed", "retyped", "coerced_iteration", "deep", "nested_legacy", "offset", "missing", "invalid", "legacy"],
+    [
+        "changed",
+        "retyped",
+        "coerced_iteration",
+        "deep",
+        "nested_legacy",
+        "offset",
+        "other_offset",
+        "submicrosecond",
+        "missing",
+        "invalid",
+        "legacy",
+    ],
 )
 def test_resume_checks_every_committed_review_sidecar(tmp_path: Path, sidecar: str) -> None:
     store = _init_workspace(tmp_path)
@@ -268,6 +303,7 @@ def test_resume_checks_every_committed_review_sidecar(tmp_path: Path, sidecar: s
                 iteration=1,
                 reviewer=first_reviewer,
                 verdict=ReviewVerdict.changes_requested,
+                created_at=datetime(2026, 1, 1, 12, 0, 0, 123456, tzinfo=UTC),
                 provenance=_first_round_provenance(sidecar),
             )
         return ReviewIteration(iteration=2, reviewer="final_reviewer", verdict=ReviewVerdict.ok)
@@ -287,7 +323,7 @@ def test_resume_checks_every_committed_review_sidecar(tmp_path: Path, sidecar: s
             workspace=tmp_path, asset_id="description", max_iterations=3, creator=no_creator, reviewer=no_reviewer
         )
 
-    if sidecar in ("legacy", "nested_legacy", "offset"):
+    if sidecar in ("legacy", "nested_legacy", "offset", "other_offset"):
         assert resume() == original
     else:
         with pytest.raises(

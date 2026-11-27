@@ -3,9 +3,12 @@ from __future__ import annotations
 import fcntl
 import json
 import os
+import re
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
+from datetime import UTC, datetime
+from enum import Enum
 from pathlib import Path
 from typing import Any
 from uuid import UUID
@@ -343,19 +346,36 @@ def _verify_saved_reviews(store: EpisodeWorkspaceStore, asset_id: str, state: Lo
             raise LoopProtocolError(message)
 
 
-def _canonical_json(value: Any) -> str:
+_SUBMICROSECOND_DIGITS = re.compile(r"T\d{2}:\d{2}:\d{2}\.\d{6}(\d+)")
+
+
+def _comparable(value: Any) -> Any:
+    # Instants compare across offsets (``12:00Z`` equals ``13:00+01:00``); everything else keeps its JSON type.
+    if isinstance(value, datetime):
+        return value.astimezone(UTC).isoformat()
+    if isinstance(value, Enum):
+        return _comparable(value.value)
+    if isinstance(value, UUID):
+        return str(value)
+    if isinstance(value, dict):
+        return {str(key): _comparable(item) for key, item in value.items()}
+    if isinstance(value, list | tuple):
+        return [_comparable(item) for item in value]
+    return value
+
+
+def _canonical_json(model: ReviewIteration) -> str:
     # Canonical JSON keeps types apart: Python treats ``True == 1`` and ``1 == 1.0``, JSON text does not.
-    return json.dumps(value, sort_keys=True, allow_nan=False)
+    return json.dumps(_comparable(model.model_dump(mode="python")), sort_keys=True, allow_nan=False)
 
 
 def _matches_checkpoint(saved: ReviewIteration, document: Any, expected: ReviewIteration) -> bool:
-    dumped = saved.model_dump(mode="json")
-    if _canonical_json(dumped) != _canonical_json(expected.model_dump(mode="json")):
+    if _canonical_json(saved) != _canonical_json(expected):
         return False
     # Validation coerces some values (``"iteration": true`` becomes ``1``), so every value the file
     # states must already have its saved JSON type. Omitted fields keep their legacy defaults, and
     # equal values may be spelled differently (a ``-00:00`` offset is saved again as ``Z``).
-    return _same_json_types(document, dumped)
+    return _same_json_types(document, saved.model_dump(mode="json"))
 
 
 def _same_json_types(stated: Any, saved: Any) -> bool:
@@ -369,6 +389,10 @@ def _same_json_types(stated: Any, saved: Any) -> bool:
             and len(stated) == len(saved)
             and all(_same_json_types(a, b) for a, b in zip(stated, saved, strict=True))
         )
+    if isinstance(stated, str) and isinstance(saved, str) and stated != saved:
+        # Validation drops digits below a microsecond; a nonzero one is a change the model cannot hold.
+        tail = _SUBMICROSECOND_DIGITS.search(stated)
+        return tail is None or not tail.group(1).strip("0")
     return type(stated) is type(saved)
 
 
