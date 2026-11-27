@@ -212,7 +212,7 @@ def test_terminal_resume_makes_no_calls_or_selection_changes(tmp_path: Path) -> 
 
 def _first_round_created_at(sidecar: str) -> datetime:
     if sidecar == "sub_minute_offset":
-        # Saved as ``-00:00`` in both files and loaded again as ``Z``; untouched files must still resume.
+        # Saved in UTC so the stored text round-trips; untouched files must still resume.
         return datetime(2026, 1, 1, 12, 0, 0, 123456, tzinfo=timezone(timedelta(seconds=-30)))
     return datetime(2026, 1, 1, 12, 0, 0, 123456, tzinfo=UTC)
 
@@ -269,7 +269,8 @@ def _damage_review_sidecar(path: Path, sidecar: str) -> None:
         return
     raw = json.loads(path.read_text())
     if sidecar == "sub_minute_offset":
-        assert raw["created_at"].endswith("-00:00")
+        # JSON keeps only whole-minute offsets, so the round is saved as the same instant in UTC.
+        assert raw["created_at"] == "2026-01-01T12:00:30.123456Z"
         return
     assert raw["created_at"] == "2026-01-01T12:00:00.123456Z"
     for keys, value in _SIDECAR_EDITS[sidecar]:
@@ -849,3 +850,36 @@ def test_review_bounds_saved_candidate_evidence(tmp_path: Path, monkeypatch: pyt
     assert not creator.calls and not reviewer.calls
     assert {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
     assert paths[0].is_symlink() == (defect == "symlink")
+
+
+def test_sub_minute_offset_review_survives_continuation_and_second_resume(tmp_path: Path) -> None:
+    from podcast_pipeline.review_loop_engine import CreatorInput
+
+    store = _init_workspace(tmp_path)
+    fail_round_two = True
+
+    def creator(inp: CreatorInput) -> CreatorOutput:
+        if inp.iteration == 2 and fail_round_two:
+            raise RuntimeError("interrupted")
+        return CreatorOutput(Candidate(asset_id=inp.asset_id, content=f"round {inp.iteration}"), inp.iteration == 2)
+
+    def reviewer(inp: ReviewerInput) -> ReviewIteration:
+        verdict = ReviewVerdict.changes_requested if inp.iteration == 1 else ReviewVerdict.ok
+        offset = timezone(timedelta(seconds=-30))
+        return ReviewIteration(
+            iteration=inp.iteration, verdict=verdict, created_at=datetime(2026, 1, 1, 12, 0, tzinfo=offset)
+        )
+
+    def run() -> LoopProtocolState:
+        return run_review_loop_orchestrator(
+            workspace=tmp_path, asset_id="description", max_iterations=3, creator=creator, reviewer=reviewer
+        )
+
+    with pytest.raises(RuntimeError, match="interrupted"):
+        run()
+    fail_round_two = False
+    finished = run()
+    assert finished.decision is not None and finished.decision.outcome == LoopOutcome.converged
+    checkpoint = store.layout.protocol_state_json_path("description").read_text()
+    assert "-00:00" not in checkpoint
+    assert run().decision == finished.decision

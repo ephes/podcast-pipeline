@@ -22,11 +22,10 @@ from podcast_pipeline.domain.models import (
     ReviewVerdict,
     TextFormat,
 )
-from podcast_pipeline.file_inputs import read_regular_bytes, read_workspace_utf8
+from podcast_pipeline.file_inputs import read_workspace_utf8
 from podcast_pipeline.pick_core import build_asset, clear_manual_selection_provenance
 from podcast_pipeline.protocol_schemas import parse_candidate_json
 from podcast_pipeline.review_loop_engine import (
-    MAX_PROTOCOL_STATE_BYTES,
     CreatorInput,
     CreatorOutput,
     LoopDecision,
@@ -35,7 +34,7 @@ from podcast_pipeline.review_loop_engine import (
     LoopProtocolState,
     ProtocolWrite,
     ReviewerInput,
-    load_loop_protocol_state,
+    load_loop_protocol_state_with_body,
     run_review_loop_engine,
     unique_json_members,
 )
@@ -250,9 +249,7 @@ def _run_review_loop(
 ) -> tuple[LoopProtocolState, LoopProtocolState | None]:
     layout = store.layout
     protocol_path = layout.protocol_state_json_path(asset_id)
-    existing = (
-        load_loop_protocol_state(protocol_path) if protocol_path.is_symlink() or protocol_path.exists() else None
-    )
+    existing, existing_body = _load_existing_checkpoint(protocol_path)
     default = EpisodeWorkspace(episode_id=_episode_id_from_yaml(store), root_dir=".")
     selected_workspace, selected_texts = store.read_selection_snapshot(asset_id, default=default)
     selection_generation = _selection_generation(selected_workspace, asset_id, selected_texts)
@@ -269,7 +266,7 @@ def _run_review_loop(
     if existing is not None:
         if any(saved_by_id.get(it.candidate.candidate_id) != it.candidate for it in existing.iterations):
             raise LoopProtocolError("Invalid review protocol state; saved candidate evidence is missing or changed.")
-        _verify_saved_reviews(store, asset_id, existing, _saved_checkpoint_reviews(protocol_path, existing))
+        _verify_saved_reviews(store, asset_id, existing, _saved_checkpoint_reviews(existing_body, existing))
     if seed_candidate is None:
         seed_candidate = _select_seed_candidate(saved_candidates)
 
@@ -325,15 +322,21 @@ def _run_review_loop(
     return protocol_state, existing
 
 
-def _saved_checkpoint_reviews(protocol_path: Path, state: LoopProtocolState) -> list[Any]:
+def _load_existing_checkpoint(protocol_path: Path) -> tuple[LoopProtocolState | None, bytes]:
+    if not (protocol_path.is_symlink() or protocol_path.exists()):
+        return None, b""
+    # One read: the sidecar check compares with exactly these checkpoint bytes.
+    return load_loop_protocol_state_with_body(protocol_path)
+
+
+def _saved_checkpoint_reviews(body: bytes, state: LoopProtocolState) -> list[Any]:
     """Return each round's review exactly as the checkpoint file stores it, numbers kept as text."""
     try:
-        body = read_regular_bytes(protocol_path, max_bytes=MAX_PROTOCOL_STATE_BYTES)
-        rounds = _lossless_json(body.decode("utf-8"))["iterations"]
+        rounds = _lossless_json(body)["iterations"]
         if not isinstance(rounds, list) or len(rounds) != len(state.iterations):
             raise ValueError("checkpoint rounds changed")
         return [entry["reviewer"] for entry in rounds]
-    except (OSError, ValueError, TypeError, KeyError, RecursionError):
+    except (ValueError, TypeError, KeyError, RecursionError):
         raise LoopProtocolError("Invalid review protocol state; restore or repair the saved evidence.") from None
 
 
@@ -364,7 +367,7 @@ def _canonical_json(model: ReviewIteration) -> str:
     return json.dumps(model.model_dump(mode="json"), sort_keys=True, allow_nan=False)
 
 
-def _lossless_json(text: str) -> Any:
+def _lossless_json(text: str | bytes) -> Any:
     # Keep number tokens as text: ``1.0`` and ``1.0000000000000001`` decode to the same float.
     return json.loads(
         text,

@@ -4,6 +4,7 @@ import json
 import math
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
@@ -11,7 +12,7 @@ from typing import TYPE_CHECKING, Any, Literal
 from pydantic import BaseModel, ConfigDict, StrictBool, StrictInt, field_validator
 from pydantic_core import to_jsonable_python
 
-from podcast_pipeline.domain.models import Candidate, ReviewIteration, ReviewVerdict
+from podcast_pipeline.domain.models import Candidate, ProvenanceRef, ReviewIteration, ReviewVerdict
 from podcast_pipeline.file_inputs import read_regular_bytes
 
 if TYPE_CHECKING:
@@ -201,9 +202,15 @@ MAX_PROTOCOL_STATE_BYTES = 8 * 1024 * 1024
 
 
 def load_loop_protocol_state(path: Path) -> LoopProtocolState:
+    state, _ = load_loop_protocol_state_with_body(path)
+    return state
+
+
+def load_loop_protocol_state_with_body(path: Path) -> tuple[LoopProtocolState, bytes]:
+    """Return the parsed checkpoint and the exact bytes it was parsed from (one bounded read)."""
     try:
         body = read_regular_bytes(path, max_bytes=MAX_PROTOCOL_STATE_BYTES)
-        return parse_loop_protocol_state(decode_review_json(body))
+        return parse_loop_protocol_state(decode_review_json(body)), body
     except (OSError, ValueError, RecursionError):
         raise LoopProtocolError("Invalid review protocol state; restore or repair the saved evidence.") from None
 
@@ -382,9 +389,36 @@ def run_review_loop_engine(
 
 
 def _normalize_review_iteration(review: ReviewIteration, iteration: int) -> ReviewIteration:
-    if review.iteration == iteration:
-        return review
-    return review.model_copy(update={"iteration": iteration})
+    update: dict[str, Any] = {}
+    if review.iteration != iteration:
+        update["iteration"] = iteration
+    created_at = _whole_minute_offset(review.created_at)
+    if created_at is not review.created_at:
+        update["created_at"] = created_at
+    provenance = [_ref_with_whole_minute_offset(ref) for ref in review.provenance]
+    if any(new is not old for new, old in zip(provenance, review.provenance, strict=True)):
+        update["provenance"] = provenance
+    return review.model_copy(update=update) if update else review
+
+
+def _ref_with_whole_minute_offset(ref: ProvenanceRef) -> ProvenanceRef:
+    if ref.created_at is None:
+        return ref
+    created_at = _whole_minute_offset(ref.created_at)
+    return ref if created_at is ref.created_at else ref.model_copy(update={"created_at": created_at})
+
+
+def _whole_minute_offset(value: datetime) -> datetime:
+    """Store sub-minute UTC offsets as UTC: JSON keeps only whole minutes, so the saved text would not round-trip."""
+    offset = value.utcoffset()
+    if offset is None or not offset % timedelta(minutes=1):
+        return value
+    try:
+        return value.astimezone(UTC)
+    except OverflowError:
+        raise LoopProtocolError(
+            "Review timestamp is outside the supported range; use a whole-minute UTC offset."
+        ) from None
 
 
 def _terminal_decision(*, outcome: LoopOutcome, iteration: int, reason: str) -> LoopDecision:
