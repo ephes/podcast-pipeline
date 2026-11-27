@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import json
 import os
+import select
 import subprocess
 import sys
+from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -16,8 +20,17 @@ from podcast_pipeline.domain.models import (
     ReviewVerdict,
     TextFormat,
 )
-from podcast_pipeline.review_loop_engine import CreatorOutput, LoopOutcome, LoopProtocolError, ReviewerInput
-from podcast_pipeline.review_loop_orchestrator import run_review_loop_orchestrator
+from podcast_pipeline.review_loop_engine import (
+    CreatorOutput,
+    LoopOutcome,
+    LoopProtocolError,
+    LoopProtocolState,
+    ReviewerInput,
+)
+from podcast_pipeline.review_loop_orchestrator import (
+    run_review_loop_orchestrator,
+    run_review_loop_orchestrator_with_previous,
+)
 from podcast_pipeline.workspace_store import EpisodeWorkspaceStore
 
 
@@ -195,6 +208,251 @@ def test_terminal_resume_makes_no_calls_or_selection_changes(tmp_path: Path) -> 
     assert len(creator.calls) == len(reviewer.calls) == 1
     assert store.layout.state_json.read_bytes() == state_before
     assert store.layout.selected_text_path("description", TextFormat.markdown).read_text() == "manual\n"
+
+
+def _first_round_created_at(sidecar: str) -> datetime:
+    if sidecar == "sub_minute_offset":
+        # Saved in UTC so the stored text round-trips; untouched files must still resume.
+        return datetime(2026, 1, 1, 12, 0, 0, 123456, tzinfo=timezone(timedelta(seconds=-30)))
+    return datetime(2026, 1, 1, 12, 0, 0, 123456, tzinfo=UTC)
+
+
+def _first_round_provenance(sidecar: str) -> list[ProvenanceRef]:
+    if sidecar == "legacy":
+        return []
+    metadata: dict[str, Any] = {"attempt": 1.0 if sidecar == "float_token" else 1}
+    return [ProvenanceRef(kind="run", ref="r1", metadata={} if sidecar == "nested_legacy" else metadata)]
+
+
+def _deeply_nested() -> list[object]:
+    nested: list[object] = []
+    for _ in range(300):
+        nested = [nested]
+    return nested
+
+
+def _set_path(raw: dict[str, Any], keys: tuple[str | int, ...], value: object) -> None:
+    target: Any = raw
+    for key in keys[:-1]:
+        target = target[key]
+    target[keys[-1]] = value
+
+
+_ATTEMPT = ("provenance", 0, "metadata", "attempt")
+# Each edit maps to (field path, new value); ``None`` as value deletes the field.
+_SIDECAR_EDITS: dict[str, list[tuple[tuple[str | int, ...], object]]] = {
+    "changed": [(("verdict",), ReviewVerdict.needs_human.value)],
+    # Python equality treats True == 1; JSON evidence must not.
+    "retyped": [(_ATTEMPT, True)],
+    # Validation would coerce true to 1; the file must still state the integer.
+    "coerced_iteration": [(("iteration",), True)],
+    "deep": [(_ATTEMPT, _deeply_nested())],
+    # Older files omit nested defaults such as provenance metadata.
+    "nested_legacy": [(("provenance", 0, "metadata"), None)],
+    # Stated values must match the saved text; a respelled instant is refused (restore the file).
+    "offset": [(("created_at",), "2026-01-01T13:00:00.123456+01:00")],
+    "comma_fraction": [(("created_at",), "2026-01-01T12:00:00,1234561Z")],
+    # Both decode to the same binary float, but they are different JSON numbers.
+    "float_token": [(_ATTEMPT, "FLOAT_TOKEN")],
+    # A digit below a microsecond is lost on validation, so it counts as a change.
+    "submicrosecond": [(("created_at",), "2026-01-01T12:00:00.1234561Z")],
+    "legacy": [(("reviewer",), None), (("provenance",), None)],
+}
+
+
+def _damage_review_sidecar(path: Path, sidecar: str) -> None:
+    if sidecar == "missing":
+        path.unlink()
+        return
+    if sidecar == "invalid":
+        path.write_text('{"verdict":"ok",' + path.read_text()[1:])
+        return
+    raw = json.loads(path.read_text())
+    if sidecar == "sub_minute_offset":
+        # JSON keeps only whole-minute offsets, so the round is saved as the same instant in UTC.
+        assert raw["created_at"] == "2026-01-01T12:00:30.123456Z"
+        return
+    assert raw["created_at"] == "2026-01-01T12:00:00.123456Z"
+    for keys, value in _SIDECAR_EDITS[sidecar]:
+        if value is None:
+            target: Any = raw
+            for key in keys[:-1]:
+                target = target[key]
+            del target[keys[-1]]
+        else:
+            _set_path(raw, keys, value)
+    text = json.dumps(raw)
+    if sidecar == "float_token":
+        assert json.loads("1.0000000000000001") == 1.0
+        text = text.replace('"FLOAT_TOKEN"', "1.0000000000000001")
+    path.write_text(text)
+
+
+@pytest.mark.parametrize(
+    "sidecar",
+    [
+        "changed",
+        "retyped",
+        "coerced_iteration",
+        "deep",
+        "nested_legacy",
+        "offset",
+        "comma_fraction",
+        "float_token",
+        "submicrosecond",
+        "missing",
+        "invalid",
+        "legacy",
+        "sub_minute_offset",
+    ],
+)
+def test_resume_checks_every_committed_review_sidecar(tmp_path: Path, sidecar: str) -> None:
+    store = _init_workspace(tmp_path)
+    creator = FakeCreatorRunner(
+        layout=store.layout,
+        replies=[
+            {"done": False, "candidate": {"content": "first"}},
+            {"done": True, "candidate": {"content": "final"}},
+        ],
+    )
+    first_reviewer = None if sidecar == "legacy" else "first_reviewer"
+
+    def reviewer(inp: ReviewerInput) -> ReviewIteration:
+        if inp.iteration == 1:
+            return ReviewIteration(
+                iteration=1,
+                reviewer=first_reviewer,
+                verdict=ReviewVerdict.changes_requested,
+                created_at=_first_round_created_at(sidecar),
+                provenance=_first_round_provenance(sidecar),
+            )
+        return ReviewIteration(iteration=2, reviewer="final_reviewer", verdict=ReviewVerdict.ok)
+
+    original = run_review_loop_orchestrator(
+        workspace=tmp_path, asset_id="description", max_iterations=3, creator=creator, reviewer=reviewer
+    )
+    path = store.layout.review_iteration_json_path("description", 1, reviewer=first_reviewer)
+    _damage_review_sidecar(path, sidecar)
+    before = {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
+
+    no_creator = FakeCreatorRunner(layout=store.layout, replies=[])
+    no_reviewer = FakeReviewerRunner(layout=store.layout, reviewer="unused", replies=[])
+
+    def resume() -> LoopProtocolState:
+        return run_review_loop_orchestrator(
+            workspace=tmp_path, asset_id="description", max_iterations=3, creator=no_creator, reviewer=no_reviewer
+        )
+
+    if sidecar == "sub_minute_offset":
+        # Loading normalizes the offset, so compare what resume decided rather than the in-memory original.
+        resumed = resume()
+        assert resumed.decision == original.decision
+        assert [it.candidate for it in resumed.iterations] == [it.candidate for it in original.iterations]
+    elif sidecar in ("legacy", "nested_legacy"):
+        assert resume() == original
+    else:
+        with pytest.raises(
+            LoopProtocolError, match=r"copy/reviews/description/iteration_01\.first_reviewer\.json.*restore"
+        ):
+            resume()
+    assert not no_creator.calls and not no_reviewer.calls
+    assert {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()} == before
+
+
+def test_review_ownership_is_per_asset_across_processes(tmp_path: Path) -> None:
+    store = _init_workspace(tmp_path)
+    script = """
+import sys
+from pathlib import Path
+from podcast_pipeline.domain.models import Candidate, ReviewIteration, ReviewVerdict
+from podcast_pipeline.review_loop_engine import CreatorOutput
+from podcast_pipeline.review_loop_orchestrator import run_review_loop_orchestrator
+
+def creator(inp):
+    if inp.iteration == 2:
+        print("ready", flush=True)
+        assert sys.stdin.readline().strip() == "finish"
+    return CreatorOutput(Candidate(asset_id=inp.asset_id, content=f"round {inp.iteration}"), inp.iteration == 2)
+
+def reviewer(inp):
+    verdict = ReviewVerdict.changes_requested if inp.iteration == 1 else ReviewVerdict.ok
+    return ReviewIteration(iteration=inp.iteration, verdict=verdict)
+
+run_review_loop_orchestrator(
+    workspace=Path(sys.argv[1]), asset_id="description", max_iterations=2, creator=creator, reviewer=reviewer,
+)
+"""
+    owner = subprocess.Popen(
+        [sys.executable, "-c", script, str(tmp_path)],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        assert owner.stdout is not None
+        assert select.select([owner.stdout], [], [], 10)[0]
+        assert owner.stdout.readline().strip() == "ready"
+        checkpoint = store.layout.protocol_state_json_path("description")
+        before = checkpoint.read_bytes()
+        creator = FakeCreatorRunner(layout=store.layout, replies=[{"done": True, "candidate": {"content": "other"}}])
+        reviewer = FakeReviewerRunner(layout=store.layout, reviewer="synthetic", replies=[{"verdict": "ok"}])
+
+        with pytest.raises(LoopProtocolError, match=r"description.*already running.*retry"):
+            run_review_loop_orchestrator(
+                workspace=tmp_path, asset_id="description", max_iterations=2, creator=creator, reviewer=reviewer
+            )
+        assert not creator.calls and not reviewer.calls
+        assert checkpoint.read_bytes() == before
+        other = run_review_loop_orchestrator(
+            workspace=tmp_path, asset_id="shownotes", max_iterations=2, creator=creator, reviewer=reviewer
+        )
+        assert other.decision is not None and other.decision.outcome == LoopOutcome.converged
+        owner.communicate("finish\n", timeout=10)
+        assert owner.returncode == 0
+        resumed = run_review_loop_orchestrator(
+            workspace=tmp_path, asset_id="description", max_iterations=2, creator=creator, reviewer=reviewer
+        )
+        assert resumed.decision is not None and resumed.decision.outcome == LoopOutcome.converged
+        assert len(resumed.iterations) == 2
+        assert len(creator.calls) == len(reviewer.calls) == 1
+    finally:
+        if owner.poll() is None:
+            owner.kill()
+        owner.communicate(timeout=10)
+
+
+@pytest.mark.parametrize("link", ["locks_dir", "asset_dir"])
+def test_review_lock_refuses_symlinked_lock_directories(tmp_path: Path, link: str) -> None:
+    store = _init_workspace(tmp_path)
+    locks = tmp_path / ".review-locks"
+    if link == "locks_dir":
+        locks.symlink_to(tmp_path, target_is_directory=True)
+    else:
+        locks.mkdir()
+        (locks / "description").symlink_to(tmp_path, target_is_directory=True)
+    creator = FakeCreatorRunner(layout=store.layout, replies=[{"done": True, "candidate": {"content": "x"}}])
+    reviewer = FakeReviewerRunner(layout=store.layout, reviewer="synthetic", replies=[{"verdict": "ok"}])
+
+    with pytest.raises(LoopProtocolError, match=r"Cannot open review lock"):
+        run_review_loop_orchestrator(
+            workspace=tmp_path, asset_id="description", max_iterations=2, creator=creator, reviewer=reviewer
+        )
+    assert not creator.calls and not reviewer.calls
+
+
+def test_with_previous_returns_checkpoint_read_under_the_lock(tmp_path: Path) -> None:
+    store = _init_workspace(tmp_path)
+    creator = FakeCreatorRunner(layout=store.layout, replies=[{"done": True, "candidate": {"content": "final"}}])
+    reviewer = FakeReviewerRunner(layout=store.layout, reviewer="synthetic", replies=[{"verdict": "ok"}])
+    first, previous = run_review_loop_orchestrator_with_previous(
+        workspace=tmp_path, asset_id="description", max_iterations=3, creator=creator, reviewer=reviewer
+    )
+    assert previous is None
+    second, resumed = run_review_loop_orchestrator_with_previous(
+        workspace=tmp_path, asset_id="description", max_iterations=3, creator=creator, reviewer=reviewer
+    )
+    assert resumed == first == second
+    assert len(creator.calls) == len(reviewer.calls) == 1
 
 
 @pytest.mark.parametrize("kind", ["fifo", "dangling-symlink"])
@@ -592,3 +850,49 @@ def test_review_bounds_saved_candidate_evidence(tmp_path: Path, monkeypatch: pyt
     assert not creator.calls and not reviewer.calls
     assert {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
     assert paths[0].is_symlink() == (defect == "symlink")
+
+
+@pytest.mark.parametrize("seconds", [-30, 30])
+@pytest.mark.parametrize("written_before_utc_fix", [False, True])
+def test_sub_minute_offset_review_survives_continuation_and_second_resume(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, written_before_utc_fix: bool, seconds: int
+) -> None:
+    from podcast_pipeline import review_loop_engine
+    from podcast_pipeline.review_loop_engine import CreatorInput
+
+    whole_minute_offset = review_loop_engine._whole_minute_offset
+    if written_before_utc_fix:
+        # Older versions saved the offset as written, which JSON stores as ``-00:00``.
+        monkeypatch.setattr(review_loop_engine, "_whole_minute_offset", lambda value: value)
+    store = _init_workspace(tmp_path)
+    fail_round_two = True
+
+    def creator(inp: CreatorInput) -> CreatorOutput:
+        if inp.iteration == 2 and fail_round_two:
+            raise RuntimeError("interrupted")
+        return CreatorOutput(Candidate(asset_id=inp.asset_id, content=f"round {inp.iteration}"), inp.iteration == 2)
+
+    def reviewer(inp: ReviewerInput) -> ReviewIteration:
+        verdict = ReviewVerdict.changes_requested if inp.iteration == 1 else ReviewVerdict.ok
+        offset = timezone(timedelta(seconds=seconds))
+        return ReviewIteration(
+            iteration=inp.iteration, verdict=verdict, created_at=datetime(2026, 1, 1, 12, 0, tzinfo=offset)
+        )
+
+    def run() -> LoopProtocolState:
+        return run_review_loop_orchestrator(
+            workspace=tmp_path, asset_id="description", max_iterations=3, creator=creator, reviewer=reviewer
+        )
+
+    with pytest.raises(RuntimeError, match="interrupted"):
+        run()
+    first_review = store.layout.review_iteration_json_path("description", 1, reviewer=None).read_text()
+    legacy_suffix = "-00:00" if seconds < 0 else "+00:00"
+    assert (legacy_suffix in first_review) is written_before_utc_fix
+    monkeypatch.setattr(review_loop_engine, "_whole_minute_offset", whole_minute_offset)
+    fail_round_two = False
+    finished = run()
+    assert finished.decision is not None and finished.decision.outcome == LoopOutcome.converged
+    checkpoint = store.layout.protocol_state_json_path("description").read_text()
+    assert "-00:00" not in checkpoint and "+00:00" not in checkpoint
+    assert run().decision == finished.decision

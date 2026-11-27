@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import fcntl
+import json
 import os
-from collections.abc import Callable, Sequence
+import re
+from collections.abc import Callable, Iterator, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
@@ -31,10 +35,16 @@ from podcast_pipeline.review_loop_engine import (
     LoopProtocolState,
     ProtocolWrite,
     ReviewerInput,
-    load_loop_protocol_state,
+    load_loop_protocol_state_with_body,
     run_review_loop_engine,
+    unique_json_members,
 )
-from podcast_pipeline.workspace_store import EpisodeWorkspaceLayout, EpisodeWorkspaceStore, atomic_write_text
+from podcast_pipeline.workspace_store import (
+    EpisodeWorkspaceLayout,
+    EpisodeWorkspaceStore,
+    WorkspaceStoreError,
+    atomic_write_text,
+)
 
 MAX_CANDIDATE_EVIDENCE_FILE_BYTES = MAX_JSON_BYTES
 MAX_CANDIDATE_EVIDENCE_TOTAL_BYTES = 64 * 1024 * 1024
@@ -154,12 +164,93 @@ def run_review_loop_orchestrator(
     reviewer: Callable[[ReviewerInput], ReviewIteration],
     seed_candidate: Candidate | None = None,
 ) -> LoopProtocolState:
+    protocol_state, _ = run_review_loop_orchestrator_with_previous(
+        workspace=workspace,
+        asset_id=asset_id,
+        max_iterations=max_iterations,
+        creator=creator,
+        reviewer=reviewer,
+        seed_candidate=seed_candidate,
+    )
+    return protocol_state
+
+
+def run_review_loop_orchestrator_with_previous(
+    *,
+    workspace: Path,
+    asset_id: str,
+    max_iterations: int,
+    creator: Callable[[CreatorInput], CreatorOutput],
+    reviewer: Callable[[ReviewerInput], ReviewIteration],
+    seed_candidate: Candidate | None = None,
+) -> tuple[LoopProtocolState, LoopProtocolState | None]:
+    """Run the loop and also return the checkpoint it resumed, read under the review lock."""
     store = EpisodeWorkspaceStore(workspace)
+    lock_name = store.layout.protocol_state_json_path(asset_id).parent.name
+    with _review_lock(workspace, lock_name, asset_id):
+        return _run_review_loop(
+            store=store,
+            asset_id=asset_id,
+            max_iterations=max_iterations,
+            creator=creator,
+            reviewer=reviewer,
+            seed_candidate=seed_candidate,
+        )
+
+
+_LOCKS_DIR_NAME = ".review-locks"
+
+
+def _open_lock_child(parent_fd: int, name: str) -> int:
+    """Create and open a real directory below ``parent_fd`` without following symlinks."""
+    try:
+        os.mkdir(name, dir_fd=parent_fd)
+    except FileExistsError:
+        pass
+    return os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent_fd)
+
+
+@contextmanager
+def _review_lock(workspace: Path, lock_name: str, asset_id: str) -> Iterator[None]:
+    lock_dir = workspace / _LOCKS_DIR_NAME / lock_name
+    try:
+        workspace.mkdir(parents=True, exist_ok=True)
+        root_fd = os.open(workspace, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            locks_fd = _open_lock_child(root_fd, _LOCKS_DIR_NAME)
+        finally:
+            os.close(root_fd)
+        try:
+            # Keep the directory inode stable even when the protocol is archived.
+            fd = _open_lock_child(locks_fd, lock_name)
+        finally:
+            os.close(locks_fd)
+    except OSError as exc:
+        raise LoopProtocolError(f"Cannot open review lock at {lock_dir}; check the workspace and retry.") from exc
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            raise LoopProtocolError(
+                f"Review for {asset_id} is already running; wait for it to finish and retry."
+            ) from exc
+        yield
+    finally:
+        os.close(fd)
+
+
+def _run_review_loop(
+    *,
+    store: EpisodeWorkspaceStore,
+    asset_id: str,
+    max_iterations: int,
+    creator: Callable[[CreatorInput], CreatorOutput],
+    reviewer: Callable[[ReviewerInput], ReviewIteration],
+    seed_candidate: Candidate | None,
+) -> tuple[LoopProtocolState, LoopProtocolState | None]:
     layout = store.layout
     protocol_path = layout.protocol_state_json_path(asset_id)
-    existing = (
-        load_loop_protocol_state(protocol_path) if protocol_path.is_symlink() or protocol_path.exists() else None
-    )
+    existing, existing_body = _load_existing_checkpoint(protocol_path)
     default = EpisodeWorkspace(episode_id=_episode_id_from_yaml(store), root_dir=".")
     selected_workspace, selected_texts = store.read_selection_snapshot(asset_id, default=default)
     selection_generation = _selection_generation(selected_workspace, asset_id, selected_texts)
@@ -173,10 +264,10 @@ def run_review_loop_orchestrator(
             f"Invalid saved review candidate evidence; repair or archive copy/candidates/{asset_id}/."
         ) from exc
     saved_by_id = {candidate.candidate_id: candidate for candidate in saved_candidates}
-    if existing is not None and any(
-        saved_by_id.get(it.candidate.candidate_id) != it.candidate for it in existing.iterations
-    ):
-        raise LoopProtocolError("Invalid review protocol state; saved candidate evidence is missing or changed.")
+    if existing is not None:
+        if any(saved_by_id.get(it.candidate.candidate_id) != it.candidate for it in existing.iterations):
+            raise LoopProtocolError("Invalid review protocol state; saved candidate evidence is missing or changed.")
+        _verify_saved_reviews(store, asset_id, existing, _saved_checkpoint_reviews(existing_body, existing))
     if seed_candidate is None:
         seed_candidate = _select_seed_candidate(saved_candidates)
 
@@ -229,7 +320,108 @@ def run_review_loop_orchestrator(
         checkpoint=checkpoint,
     )
 
-    return protocol_state
+    return protocol_state, existing
+
+
+def _load_existing_checkpoint(protocol_path: Path) -> tuple[LoopProtocolState | None, bytes]:
+    if not (protocol_path.is_symlink() or protocol_path.exists()):
+        return None, b""
+    # One read: the sidecar check compares with exactly these checkpoint bytes.
+    return load_loop_protocol_state_with_body(protocol_path)
+
+
+def _saved_checkpoint_reviews(body: bytes, state: LoopProtocolState) -> list[Any]:
+    """Return each round's review exactly as the checkpoint file stores it, numbers kept as text."""
+    try:
+        rounds = _lossless_json(body)["iterations"]
+        if not isinstance(rounds, list) or len(rounds) != len(state.iterations):
+            raise ValueError("checkpoint rounds changed")
+        return [entry["reviewer"] for entry in rounds]
+    except (ValueError, TypeError, KeyError, RecursionError):
+        raise LoopProtocolError("Invalid review protocol state; restore or repair the saved evidence.") from None
+
+
+def _verify_saved_reviews(
+    store: EpisodeWorkspaceStore, asset_id: str, state: LoopProtocolState, saved_reviews: list[Any]
+) -> None:
+    for iteration, saved_review in zip(state.iterations, saved_reviews, strict=True):
+        number = iteration.iteration
+        reviewer = iteration.review.reviewer
+        try:
+            path = store.layout.review_iteration_json_path(asset_id, number, reviewer=reviewer)
+        except ValueError as exc:
+            raise LoopProtocolError(
+                f"Invalid review protocol state; repair the reviewer identity for round {number}."
+            ) from exc
+        message = f"Review at {path} is missing, invalid or changed; restore the matching file before retrying."
+        try:
+            saved, text = store.read_review_document(asset_id, number, reviewer=reviewer)
+            matches = _matches_checkpoint(saved, text, iteration.review, saved_review)
+        except (OSError, WorkspaceStoreError, ValueError, TypeError, RecursionError) as exc:
+            raise LoopProtocolError(message) from exc
+        if not matches:
+            raise LoopProtocolError(message)
+
+
+def _canonical_json(model: ReviewIteration) -> str:
+    # Canonical JSON keeps types apart: Python treats ``True == 1`` and ``1 == 1.0``, JSON text does not.
+    return json.dumps(model.model_dump(mode="json"), sort_keys=True, allow_nan=False)
+
+
+def _lossless_json(text: str | bytes) -> Any:
+    # Keep number tokens as text: ``1.0`` and ``1.0000000000000001`` decode to the same float.
+    return json.loads(
+        text,
+        object_pairs_hook=unique_json_members,
+        parse_constant=_reject_constant,
+        parse_float=lambda token: ("float", token),
+        parse_int=lambda token: ("int", token),
+    )
+
+
+def _reject_constant(_: str) -> Any:
+    raise ValueError("nonfinite JSON number")
+
+
+def _matches_checkpoint(saved: ReviewIteration, text: str, expected: ReviewIteration, persisted: Any) -> bool:
+    # Omitted fields of older files keep their defaults; the validated values must still agree.
+    if _canonical_json(saved) != _canonical_json(expected):
+        return False
+    # Validation coerces and truncates (``"iteration": true`` becomes ``1``, a seventh fraction digit
+    # is dropped), so every value the file states must equal the value the checkpoint file stores,
+    # token by token. Compare with the stored text, not a reserialization, which may respell it.
+    return _states_only_saved_values(_lossless_json(text), persisted)
+
+
+def _states_only_saved_values(stated: Any, saved: Any) -> bool:
+    if isinstance(stated, dict):
+        return isinstance(saved, dict) and all(
+            key in saved and _states_only_saved_values(value, saved[key]) for key, value in stated.items()
+        )
+    if isinstance(stated, list):
+        return (
+            isinstance(saved, list)
+            and len(stated) == len(saved)
+            and all(_states_only_saved_values(a, b) for a, b in zip(stated, saved, strict=True))
+        )
+    if isinstance(stated, str) and isinstance(saved, str) and stated != saved:
+        return _legacy_utc_spelling(stated, saved)
+    return type(stated) is type(saved) and stated == saved
+
+
+_ISO_UTC_PREFIX = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?")
+
+
+def _legacy_utc_spelling(stated: str, saved: str) -> bool:
+    # Before sub-minute offsets were saved in UTC, a +/-30 s offset was written as ``+00:00`` or ``-00:00``.
+    # Continuing such a run rewrites the checkpoint as ``Z`` while the numbered review keeps the old suffix.
+    # Accept only those suffixes with an identical timestamp prefix, so no digit can change.
+    prefix = saved.removesuffix("Z")
+    return (
+        saved.endswith("Z")
+        and stated in (prefix + "+00:00", prefix + "-00:00")
+        and _ISO_UTC_PREFIX.fullmatch(prefix) is not None
+    )
 
 
 def _load_seed_candidates(layout: EpisodeWorkspaceLayout, asset_id: str) -> list[Candidate]:

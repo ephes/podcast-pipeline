@@ -1043,14 +1043,9 @@ def _run_review_job(
         from podcast_pipeline.agent_cli_config import load_agent_cli_bundle
         from podcast_pipeline.agent_runners import build_local_cli_runners
         from podcast_pipeline.prompting import PromptRenderer, default_prompt_registry
-        from podcast_pipeline.review_loop_engine import load_loop_protocol_state
-        from podcast_pipeline.review_loop_orchestrator import run_review_loop_orchestrator
+        from podcast_pipeline.review_loop_orchestrator import run_review_loop_orchestrator_with_previous
         from podcast_pipeline.workspace_store import EpisodeWorkspaceLayout
 
-        protocol_path = EpisodeWorkspaceLayout(root=ctx.workspace).protocol_state_json_path(asset_id)
-        previous = (
-            load_loop_protocol_state(protocol_path) if protocol_path.is_symlink() or protocol_path.exists() else None
-        )
         capture = _ProgressCapture(ctx, job)
         _thread_local.capture = capture
         try:
@@ -1061,7 +1056,8 @@ def _run_review_job(
                 bundle=bundle,
                 renderer=PromptRenderer(default_prompt_registry()),
             )
-            protocol_state = run_review_loop_orchestrator(
+            # The resumed checkpoint is read under the review lock, so a concurrent run cannot skew it.
+            protocol_state, previous = run_review_loop_orchestrator_with_previous(
                 workspace=ctx.workspace,
                 asset_id=asset_id,
                 max_iterations=max_iterations,

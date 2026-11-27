@@ -21,9 +21,11 @@ from podcast_pipeline.review_loop_engine import (
     LoopOutcome,
     LoopProtocolError,
     ReviewerInput,
-    load_loop_protocol_state,
 )
-from podcast_pipeline.review_loop_orchestrator import ReviewSelectionConflict, run_review_loop_orchestrator
+from podcast_pipeline.review_loop_orchestrator import (
+    ReviewSelectionConflict,
+    run_review_loop_orchestrator_with_previous,
+)
 from podcast_pipeline.workspace_store import EpisodeWorkspaceStore, WorkspaceStoreError
 
 _ASSET_ID_RE = re.compile(r"^[a-z][a-z0-9_]*$")
@@ -221,10 +223,8 @@ def _run_and_report_review(
 ) -> None:
     protocol_path = store.layout.protocol_state_json_path(asset_id)
     try:
-        previous = (
-            load_loop_protocol_state(protocol_path) if protocol_path.is_symlink() or protocol_path.exists() else None
-        )
-        protocol_state = run_review_loop_orchestrator(
+        # The resumed checkpoint is read under the review lock, so a concurrent run cannot skew it.
+        protocol_state, previous = run_review_loop_orchestrator_with_previous(
             workspace=store.layout.root,
             asset_id=asset_id,
             max_iterations=max_iterations,

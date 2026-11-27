@@ -21,6 +21,7 @@ from pydantic import ValidationError
 from yaml.nodes import MappingNode, Node, SequenceNode
 
 from podcast_pipeline.auphonic_history import record_new_production
+from podcast_pipeline.control_json import MAX_JSON_BYTES
 from podcast_pipeline.domain.episode_yaml import EpisodeYaml, try_load_episode_yaml
 from podcast_pipeline.domain.models import (
     Candidate,
@@ -29,8 +30,9 @@ from podcast_pipeline.domain.models import (
     ReviewIteration,
     TextFormat,
 )
-from podcast_pipeline.file_inputs import read_regular_utf8
+from podcast_pipeline.file_inputs import read_regular_utf8, read_workspace_utf8
 from podcast_pipeline.markdown_html import markdown_to_deterministic_html
+from podcast_pipeline.review_loop_engine import decode_review_json
 from podcast_pipeline.yaml_inputs import DuplicateYamlKeyError, UniqueKeySafeLoader
 
 
@@ -750,19 +752,30 @@ class EpisodeWorkspaceStore:
         *,
         reviewer: str | None = None,
     ) -> ReviewIteration:
+        review, _ = self.read_review_document(asset_id, iteration, reviewer=reviewer)
+        return review
+
+    def read_review_document(
+        self,
+        asset_id: str,
+        iteration: int,
+        *,
+        reviewer: str | None = None,
+    ) -> tuple[ReviewIteration, str]:
+        """Return the validated review and the JSON text it was validated from."""
         path = self.layout.review_iteration_json_path(
             asset_id,
             iteration,
             reviewer=reviewer,
         )
-        raw = _read_json(path)
         try:
-            review = ReviewIteration.model_validate(raw)
-        except ValidationError as exc:
-            raise WorkspaceStoreError(f"Invalid review JSON at {path}: {exc}") from exc
+            raw = read_workspace_utf8(self.layout.root, path.relative_to(self.layout.root), max_bytes=MAX_JSON_BYTES)
+            review = ReviewIteration.model_validate(decode_review_json(raw))
+        except (ValueError, RecursionError) as exc:
+            raise WorkspaceStoreError(f"Invalid review JSON at {path}") from exc
         if review.iteration != iteration or review.reviewer != reviewer:
             raise WorkspaceStoreError(f"Review identity does not match requested path at {path}")
-        return review
+        return review, raw
 
     def write_selected_text(
         self,
