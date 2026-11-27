@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import fcntl
+import json
 import os
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
@@ -161,9 +162,30 @@ def run_review_loop_orchestrator(
     reviewer: Callable[[ReviewerInput], ReviewIteration],
     seed_candidate: Candidate | None = None,
 ) -> LoopProtocolState:
+    protocol_state, _ = run_review_loop_orchestrator_with_previous(
+        workspace=workspace,
+        asset_id=asset_id,
+        max_iterations=max_iterations,
+        creator=creator,
+        reviewer=reviewer,
+        seed_candidate=seed_candidate,
+    )
+    return protocol_state
+
+
+def run_review_loop_orchestrator_with_previous(
+    *,
+    workspace: Path,
+    asset_id: str,
+    max_iterations: int,
+    creator: Callable[[CreatorInput], CreatorOutput],
+    reviewer: Callable[[ReviewerInput], ReviewIteration],
+    seed_candidate: Candidate | None = None,
+) -> tuple[LoopProtocolState, LoopProtocolState | None]:
+    """Run the loop and also return the checkpoint it resumed, read under the review lock."""
     store = EpisodeWorkspaceStore(workspace)
-    lock_dir = workspace / ".review-locks" / store.layout.protocol_state_json_path(asset_id).parent.name
-    with _review_lock(lock_dir, asset_id):
+    lock_name = store.layout.protocol_state_json_path(asset_id).parent.name
+    with _review_lock(workspace, lock_name, asset_id):
         return _run_review_loop(
             store=store,
             asset_id=asset_id,
@@ -174,12 +196,33 @@ def run_review_loop_orchestrator(
         )
 
 
-@contextmanager
-def _review_lock(lock_dir: Path, asset_id: str) -> Iterator[None]:
+_LOCKS_DIR_NAME = ".review-locks"
+
+
+def _open_lock_child(parent_fd: int, name: str) -> int:
+    """Create and open a real directory below ``parent_fd`` without following symlinks."""
     try:
-        # Keep the directory inode stable even when the protocol is archived.
-        lock_dir.mkdir(parents=True, exist_ok=True)
-        fd = os.open(lock_dir, os.O_RDONLY | os.O_DIRECTORY)
+        os.mkdir(name, dir_fd=parent_fd)
+    except FileExistsError:
+        pass
+    return os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent_fd)
+
+
+@contextmanager
+def _review_lock(workspace: Path, lock_name: str, asset_id: str) -> Iterator[None]:
+    lock_dir = workspace / _LOCKS_DIR_NAME / lock_name
+    try:
+        workspace.mkdir(parents=True, exist_ok=True)
+        root_fd = os.open(workspace, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            locks_fd = _open_lock_child(root_fd, _LOCKS_DIR_NAME)
+        finally:
+            os.close(root_fd)
+        try:
+            # Keep the directory inode stable even when the protocol is archived.
+            fd = _open_lock_child(locks_fd, lock_name)
+        finally:
+            os.close(locks_fd)
     except OSError as exc:
         raise LoopProtocolError(f"Cannot open review lock at {lock_dir}; check the workspace and retry.") from exc
     try:
@@ -202,7 +245,7 @@ def _run_review_loop(
     creator: Callable[[CreatorInput], CreatorOutput],
     reviewer: Callable[[ReviewerInput], ReviewIteration],
     seed_candidate: Candidate | None,
-) -> LoopProtocolState:
+) -> tuple[LoopProtocolState, LoopProtocolState | None]:
     layout = store.layout
     protocol_path = layout.protocol_state_json_path(asset_id)
     existing = (
@@ -277,7 +320,7 @@ def _run_review_loop(
         checkpoint=checkpoint,
     )
 
-    return protocol_state
+    return protocol_state, existing
 
 
 def _verify_saved_reviews(store: EpisodeWorkspaceStore, asset_id: str, state: LoopProtocolState) -> None:
@@ -295,8 +338,15 @@ def _verify_saved_reviews(store: EpisodeWorkspaceStore, asset_id: str, state: Lo
             saved = store.read_review(asset_id, number, reviewer=reviewer)
         except (OSError, WorkspaceStoreError) as exc:
             raise LoopProtocolError(message) from exc
-        if saved != iteration.review:
+        if not _same_json(saved, iteration.review):
             raise LoopProtocolError(message)
+
+
+def _same_json(left: ReviewIteration, right: ReviewIteration) -> bool:
+    # Canonical JSON keeps types apart: Python treats ``True == 1`` but JSON does not.
+    return json.dumps(left.model_dump(mode="json"), sort_keys=True) == json.dumps(
+        right.model_dump(mode="json"), sort_keys=True
+    )
 
 
 def _load_seed_candidates(layout: EpisodeWorkspaceLayout, asset_id: str) -> list[Candidate]:

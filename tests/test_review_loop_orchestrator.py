@@ -25,7 +25,10 @@ from podcast_pipeline.review_loop_engine import (
     LoopProtocolState,
     ReviewerInput,
 )
-from podcast_pipeline.review_loop_orchestrator import run_review_loop_orchestrator
+from podcast_pipeline.review_loop_orchestrator import (
+    run_review_loop_orchestrator,
+    run_review_loop_orchestrator_with_previous,
+)
 from podcast_pipeline.workspace_store import EpisodeWorkspaceStore
 
 
@@ -205,7 +208,7 @@ def test_terminal_resume_makes_no_calls_or_selection_changes(tmp_path: Path) -> 
     assert store.layout.selected_text_path("description", TextFormat.markdown).read_text() == "manual\n"
 
 
-@pytest.mark.parametrize("sidecar", ["changed", "missing", "invalid", "legacy"])
+@pytest.mark.parametrize("sidecar", ["changed", "retyped", "missing", "invalid", "legacy"])
 def test_resume_checks_every_committed_review_sidecar(tmp_path: Path, sidecar: str) -> None:
     store = _init_workspace(tmp_path)
     creator = FakeCreatorRunner(
@@ -219,7 +222,14 @@ def test_resume_checks_every_committed_review_sidecar(tmp_path: Path, sidecar: s
 
     def reviewer(inp: ReviewerInput) -> ReviewIteration:
         if inp.iteration == 1:
-            return ReviewIteration(iteration=1, reviewer=first_reviewer, verdict=ReviewVerdict.changes_requested)
+            return ReviewIteration(
+                iteration=1,
+                reviewer=first_reviewer,
+                verdict=ReviewVerdict.changes_requested,
+                provenance=[]
+                if sidecar == "legacy"
+                else [ProvenanceRef(kind="run", ref="r1", metadata={"attempt": 1})],
+            )
         return ReviewIteration(iteration=2, reviewer="final_reviewer", verdict=ReviewVerdict.ok)
 
     original = run_review_loop_orchestrator(
@@ -234,6 +244,9 @@ def test_resume_checks_every_committed_review_sidecar(tmp_path: Path, sidecar: s
         raw = json.loads(path.read_text())
         if sidecar == "changed":
             raw["verdict"] = ReviewVerdict.needs_human.value
+        elif sidecar == "retyped":
+            # Python equality treats True == 1; JSON evidence must not.
+            raw["provenance"][0]["metadata"]["attempt"] = True
         else:
             del raw["reviewer"], raw["provenance"]
         path.write_text(json.dumps(raw))
@@ -318,6 +331,40 @@ run_review_loop_orchestrator(
         if owner.poll() is None:
             owner.kill()
         owner.communicate(timeout=10)
+
+
+@pytest.mark.parametrize("link", ["locks_dir", "asset_dir"])
+def test_review_lock_refuses_symlinked_lock_directories(tmp_path: Path, link: str) -> None:
+    store = _init_workspace(tmp_path)
+    locks = tmp_path / ".review-locks"
+    if link == "locks_dir":
+        locks.symlink_to(tmp_path, target_is_directory=True)
+    else:
+        locks.mkdir()
+        (locks / "description").symlink_to(tmp_path, target_is_directory=True)
+    creator = FakeCreatorRunner(layout=store.layout, replies=[{"done": True, "candidate": {"content": "x"}}])
+    reviewer = FakeReviewerRunner(layout=store.layout, reviewer="synthetic", replies=[{"verdict": "ok"}])
+
+    with pytest.raises(LoopProtocolError, match=r"Cannot open review lock"):
+        run_review_loop_orchestrator(
+            workspace=tmp_path, asset_id="description", max_iterations=2, creator=creator, reviewer=reviewer
+        )
+    assert not creator.calls and not reviewer.calls
+
+
+def test_with_previous_returns_checkpoint_read_under_the_lock(tmp_path: Path) -> None:
+    store = _init_workspace(tmp_path)
+    creator = FakeCreatorRunner(layout=store.layout, replies=[{"done": True, "candidate": {"content": "final"}}])
+    reviewer = FakeReviewerRunner(layout=store.layout, reviewer="synthetic", replies=[{"verdict": "ok"}])
+    first, previous = run_review_loop_orchestrator_with_previous(
+        workspace=tmp_path, asset_id="description", max_iterations=3, creator=creator, reviewer=reviewer
+    )
+    assert previous is None
+    second, resumed = run_review_loop_orchestrator_with_previous(
+        workspace=tmp_path, asset_id="description", max_iterations=3, creator=creator, reviewer=reviewer
+    )
+    assert resumed == first == second
+    assert len(creator.calls) == len(reviewer.calls) == 1
 
 
 @pytest.mark.parametrize("kind", ["fifo", "dangling-symlink"])

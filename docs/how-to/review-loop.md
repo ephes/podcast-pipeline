@@ -51,6 +51,7 @@ Notes:
   If review reports that the asset is already running, wait for it to finish and retry.
   Other assets can run in parallel. The lock releases when the process exits.
   Leave the workspace's `.review-locks/` directories in place when archiving checkpoints.
+  They must be real directories; review refuses a symlinked lock path.
 - `--workspace` can name an existing initialized workspace. Repeating the command resumes
   `copy/protocol/<asset_id>/state.json` with the same `--max-iterations`; completed rounds
   are not sent to the agents again. Locked terminal runs make no agent calls or selection changes;
@@ -77,6 +78,7 @@ Notes:
   On resume, every completed round must match its numbered review in `copy/reviews/<asset_id>/`.
   Older reviews without a reviewer label use `iteration_XX.json`. Review stops before calling agents
   or changing the checkpoint or selection if a numbered review is missing, invalid or changed.
+  Values are compared as JSON, so `true` in place of `1` counts as a change.
   Restore the matching file from backup or archive the run before starting fresh.
   Protocol JSON accepts only finite numbers, including in candidate and review provenance metadata.
   Nonfinite numbers in a new candidate or review stop publication of that round's checkpoint.

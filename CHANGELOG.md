@@ -2,9 +2,9 @@
 
 ## Unreleased
 
-- Allow one review loop per workspace and asset across CLI and dashboard processes. Concurrent attempts on the same asset stop before calling agents.
+- Allow one review loop per workspace and asset across CLI and dashboard processes. Concurrent attempts on the same asset stop before calling agents. Symlinked lock directories are refused, and the CLI and dashboard report a resumed finished review from the checkpoint read under the lock.
 
-- Check each completed round's numbered review against the checkpoint on resume. Missing, invalid or changed reviews stop the run with the path to restore.
+- Check each completed round's numbered review against the checkpoint on resume. Missing, invalid or changed reviews stop the run with the path to restore; values are compared as JSON, so `true` does not match `1`.
 
 - Refuse CMS `host_links` or `contributors` keys that name the same host once whitespace is stripped, instead of letting the later key silently replace the earlier URL or contributor.
 
