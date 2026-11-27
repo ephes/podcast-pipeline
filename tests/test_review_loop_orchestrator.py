@@ -852,9 +852,10 @@ def test_review_bounds_saved_candidate_evidence(tmp_path: Path, monkeypatch: pyt
     assert paths[0].is_symlink() == (defect == "symlink")
 
 
+@pytest.mark.parametrize("seconds", [-30, 30])
 @pytest.mark.parametrize("written_before_utc_fix", [False, True])
 def test_sub_minute_offset_review_survives_continuation_and_second_resume(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, written_before_utc_fix: bool
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, written_before_utc_fix: bool, seconds: int
 ) -> None:
     from podcast_pipeline import review_loop_engine
     from podcast_pipeline.review_loop_engine import CreatorInput
@@ -873,7 +874,7 @@ def test_sub_minute_offset_review_survives_continuation_and_second_resume(
 
     def reviewer(inp: ReviewerInput) -> ReviewIteration:
         verdict = ReviewVerdict.changes_requested if inp.iteration == 1 else ReviewVerdict.ok
-        offset = timezone(timedelta(seconds=-30))
+        offset = timezone(timedelta(seconds=seconds))
         return ReviewIteration(
             iteration=inp.iteration, verdict=verdict, created_at=datetime(2026, 1, 1, 12, 0, tzinfo=offset)
         )
@@ -886,11 +887,12 @@ def test_sub_minute_offset_review_survives_continuation_and_second_resume(
     with pytest.raises(RuntimeError, match="interrupted"):
         run()
     first_review = store.layout.review_iteration_json_path("description", 1, reviewer=None).read_text()
-    assert ("-00:00" in first_review) is written_before_utc_fix
+    legacy_suffix = "-00:00" if seconds < 0 else "+00:00"
+    assert (legacy_suffix in first_review) is written_before_utc_fix
     monkeypatch.setattr(review_loop_engine, "_whole_minute_offset", whole_minute_offset)
     fail_round_two = False
     finished = run()
     assert finished.decision is not None and finished.decision.outcome == LoopOutcome.converged
     checkpoint = store.layout.protocol_state_json_path("description").read_text()
-    assert "-00:00" not in checkpoint
+    assert "-00:00" not in checkpoint and "+00:00" not in checkpoint
     assert run().decision == finished.decision

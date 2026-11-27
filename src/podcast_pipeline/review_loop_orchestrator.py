@@ -413,11 +413,15 @@ _ISO_UTC_PREFIX = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?
 
 
 def _legacy_utc_spelling(stated: str, saved: str) -> bool:
-    # Before sub-minute offsets were saved in UTC, a -30 s offset was written as ``-00:00``. Continuing
-    # such a run rewrites the checkpoint as ``Z`` while the numbered review keeps ``-00:00``.
-    # Accept only that suffix with an identical timestamp prefix, so no digit can change.
+    # Before sub-minute offsets were saved in UTC, a +/-30 s offset was written as ``+00:00`` or ``-00:00``.
+    # Continuing such a run rewrites the checkpoint as ``Z`` while the numbered review keeps the old suffix.
+    # Accept only those suffixes with an identical timestamp prefix, so no digit can change.
     prefix = saved.removesuffix("Z")
-    return saved.endswith("Z") and stated == prefix + "-00:00" and _ISO_UTC_PREFIX.fullmatch(prefix) is not None
+    return (
+        saved.endswith("Z")
+        and stated in (prefix + "+00:00", prefix + "-00:00")
+        and _ISO_UTC_PREFIX.fullmatch(prefix) is not None
+    )
 
 
 def _load_seed_candidates(layout: EpisodeWorkspaceLayout, asset_id: str) -> list[Candidate]:

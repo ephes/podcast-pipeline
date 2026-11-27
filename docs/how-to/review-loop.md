@@ -81,7 +81,7 @@ Notes:
   Every value the file states must equal the checkpoint's saved JSON exactly, so `true` in place
   of `1`, a respelled number or a respelled timestamp counts as a change. Older files may omit fields.
   Review timestamps with a sub-minute UTC offset are saved in UTC, because JSON keeps whole minutes only.
-  Numbered reviews from older runs that still say `-00:00` match a checkpoint that says `Z`.
+  Numbered reviews from older runs that still say `+00:00` or `-00:00` match a checkpoint that says `Z`.
   Restore the matching file from backup or archive the run before starting fresh.
   Protocol JSON accepts only finite numbers, including in candidate and review provenance metadata.
   Nonfinite numbers in a new candidate or review stop publication of that round's checkpoint.
