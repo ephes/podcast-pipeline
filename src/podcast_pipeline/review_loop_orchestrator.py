@@ -3,12 +3,9 @@ from __future__ import annotations
 import fcntl
 import json
 import os
-import re
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
-from datetime import UTC, datetime
-from enum import Enum
 from pathlib import Path
 from typing import Any
 from uuid import UUID
@@ -39,6 +36,7 @@ from podcast_pipeline.review_loop_engine import (
     ReviewerInput,
     load_loop_protocol_state,
     run_review_loop_engine,
+    unique_json_members,
 )
 from podcast_pipeline.workspace_store import (
     EpisodeWorkspaceLayout,
@@ -338,62 +336,55 @@ def _verify_saved_reviews(store: EpisodeWorkspaceStore, asset_id: str, state: Lo
             ) from exc
         message = f"Review at {path} is missing, invalid or changed; restore the matching file before retrying."
         try:
-            saved, document = store.read_review_document(asset_id, number, reviewer=reviewer)
-            matches = _matches_checkpoint(saved, document, iteration.review)
+            saved, text = store.read_review_document(asset_id, number, reviewer=reviewer)
+            matches = _matches_checkpoint(saved, text, iteration.review)
         except (OSError, WorkspaceStoreError, ValueError, TypeError, RecursionError) as exc:
             raise LoopProtocolError(message) from exc
         if not matches:
             raise LoopProtocolError(message)
 
 
-_SUBMICROSECOND_DIGITS = re.compile(r"T\d{2}:\d{2}:\d{2}\.\d{6}(\d+)")
-
-
-def _comparable(value: Any) -> Any:
-    # Instants compare across offsets (``12:00Z`` equals ``13:00+01:00``); everything else keeps its JSON type.
-    if isinstance(value, datetime):
-        return value.astimezone(UTC).isoformat()
-    if isinstance(value, Enum):
-        return _comparable(value.value)
-    if isinstance(value, UUID):
-        return str(value)
-    if isinstance(value, dict):
-        return {str(key): _comparable(item) for key, item in value.items()}
-    if isinstance(value, list | tuple):
-        return [_comparable(item) for item in value]
-    return value
-
-
 def _canonical_json(model: ReviewIteration) -> str:
     # Canonical JSON keeps types apart: Python treats ``True == 1`` and ``1 == 1.0``, JSON text does not.
-    return json.dumps(_comparable(model.model_dump(mode="python")), sort_keys=True, allow_nan=False)
+    return json.dumps(model.model_dump(mode="json"), sort_keys=True, allow_nan=False)
 
 
-def _matches_checkpoint(saved: ReviewIteration, document: Any, expected: ReviewIteration) -> bool:
+def _lossless_json(text: str) -> Any:
+    # Keep number tokens as text: ``1.0`` and ``1.0000000000000001`` decode to the same float.
+    return json.loads(
+        text,
+        object_pairs_hook=unique_json_members,
+        parse_constant=_reject_constant,
+        parse_float=lambda token: ("float", token),
+        parse_int=lambda token: ("int", token),
+    )
+
+
+def _reject_constant(_: str) -> Any:
+    raise ValueError("nonfinite JSON number")
+
+
+def _matches_checkpoint(saved: ReviewIteration, text: str, expected: ReviewIteration) -> bool:
+    # Omitted fields of older files keep their defaults; the validated values must still agree.
     if _canonical_json(saved) != _canonical_json(expected):
         return False
-    # Validation coerces some values (``"iteration": true`` becomes ``1``), so every value the file
-    # states must already have its saved JSON type. Omitted fields keep their legacy defaults, and
-    # equal values may be spelled differently (a ``-00:00`` offset is saved again as ``Z``).
-    return _same_json_types(document, saved.model_dump(mode="json"))
+    # Validation coerces and truncates (``"iteration": true`` becomes ``1``, a seventh fraction digit
+    # is dropped), so every value the file states must equal the saved checkpoint value token by token.
+    return _states_only_saved_values(_lossless_json(text), _lossless_json(_canonical_json(expected)))
 
 
-def _same_json_types(stated: Any, saved: Any) -> bool:
+def _states_only_saved_values(stated: Any, saved: Any) -> bool:
     if isinstance(stated, dict):
         return isinstance(saved, dict) and all(
-            key in saved and _same_json_types(value, saved[key]) for key, value in stated.items()
+            key in saved and _states_only_saved_values(value, saved[key]) for key, value in stated.items()
         )
     if isinstance(stated, list):
         return (
             isinstance(saved, list)
             and len(stated) == len(saved)
-            and all(_same_json_types(a, b) for a, b in zip(stated, saved, strict=True))
+            and all(_states_only_saved_values(a, b) for a, b in zip(stated, saved, strict=True))
         )
-    if isinstance(stated, str) and isinstance(saved, str) and stated != saved:
-        # Validation drops digits below a microsecond; a nonzero one is a change the model cannot hold.
-        tail = _SUBMICROSECOND_DIGITS.search(stated)
-        return tail is None or not tail.group(1).strip("0")
-    return type(stated) is type(saved)
+    return type(stated) is type(saved) and stated == saved
 
 
 def _load_seed_candidates(layout: EpisodeWorkspaceLayout, asset_id: str) -> list[Candidate]:

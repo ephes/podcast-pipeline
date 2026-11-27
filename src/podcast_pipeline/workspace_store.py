@@ -761,8 +761,8 @@ class EpisodeWorkspaceStore:
         iteration: int,
         *,
         reviewer: str | None = None,
-    ) -> tuple[ReviewIteration, Any]:
-        """Return the validated review and the decoded JSON it was validated from."""
+    ) -> tuple[ReviewIteration, str]:
+        """Return the validated review and the JSON text it was validated from."""
         path = self.layout.review_iteration_json_path(
             asset_id,
             iteration,
@@ -770,13 +770,12 @@ class EpisodeWorkspaceStore:
         )
         try:
             raw = read_workspace_utf8(self.layout.root, path.relative_to(self.layout.root), max_bytes=MAX_JSON_BYTES)
-            document = decode_review_json(raw)
-            review = ReviewIteration.model_validate(document)
+            review = ReviewIteration.model_validate(decode_review_json(raw))
         except (ValueError, RecursionError) as exc:
             raise WorkspaceStoreError(f"Invalid review JSON at {path}") from exc
         if review.iteration != iteration or review.reviewer != reviewer:
             raise WorkspaceStoreError(f"Review identity does not match requested path at {path}")
-        return review, document
+        return review, raw
 
     def write_selected_text(
         self,

@@ -213,7 +213,8 @@ def test_terminal_resume_makes_no_calls_or_selection_changes(tmp_path: Path) -> 
 def _first_round_provenance(sidecar: str) -> list[ProvenanceRef]:
     if sidecar == "legacy":
         return []
-    return [ProvenanceRef(kind="run", ref="r1", metadata={} if sidecar == "nested_legacy" else {"attempt": 1})]
+    metadata: dict[str, Any] = {"attempt": 1.0 if sidecar == "float_token" else 1}
+    return [ProvenanceRef(kind="run", ref="r1", metadata={} if sidecar == "nested_legacy" else metadata)]
 
 
 def _deeply_nested() -> list[object]:
@@ -241,9 +242,11 @@ _SIDECAR_EDITS: dict[str, list[tuple[tuple[str | int, ...], object]]] = {
     "deep": [(_ATTEMPT, _deeply_nested())],
     # Older files omit nested defaults such as provenance metadata.
     "nested_legacy": [(("provenance", 0, "metadata"), None)],
-    # The same instant spelled with other offsets is the same saved value.
-    "offset": [(("created_at",), "2026-01-01T12:00:00.123456+00:00")],
-    "other_offset": [(("created_at",), "2026-01-01T13:00:00.123456+01:00")],
+    # Stated values must match the saved text; a respelled instant is refused (restore the file).
+    "offset": [(("created_at",), "2026-01-01T13:00:00.123456+01:00")],
+    "comma_fraction": [(("created_at",), "2026-01-01T12:00:00,1234561Z")],
+    # Both decode to the same binary float, but they are different JSON numbers.
+    "float_token": [(_ATTEMPT, "FLOAT_TOKEN")],
     # A digit below a microsecond is lost on validation, so it counts as a change.
     "submicrosecond": [(("created_at",), "2026-01-01T12:00:00.1234561Z")],
     "legacy": [(("reviewer",), None), (("provenance",), None)],
@@ -267,7 +270,11 @@ def _damage_review_sidecar(path: Path, sidecar: str) -> None:
             del target[keys[-1]]
         else:
             _set_path(raw, keys, value)
-    path.write_text(json.dumps(raw))
+    text = json.dumps(raw)
+    if sidecar == "float_token":
+        assert json.loads("1.0000000000000001") == 1.0
+        text = text.replace('"FLOAT_TOKEN"', "1.0000000000000001")
+    path.write_text(text)
 
 
 @pytest.mark.parametrize(
@@ -279,7 +286,8 @@ def _damage_review_sidecar(path: Path, sidecar: str) -> None:
         "deep",
         "nested_legacy",
         "offset",
-        "other_offset",
+        "comma_fraction",
+        "float_token",
         "submicrosecond",
         "missing",
         "invalid",
@@ -323,7 +331,7 @@ def test_resume_checks_every_committed_review_sidecar(tmp_path: Path, sidecar: s
             workspace=tmp_path, asset_id="description", max_iterations=3, creator=no_creator, reviewer=no_reviewer
         )
 
-    if sidecar in ("legacy", "nested_legacy", "offset", "other_offset"):
+    if sidecar in ("legacy", "nested_legacy"):
         assert resume() == original
     else:
         with pytest.raises(
