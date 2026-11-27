@@ -208,6 +208,12 @@ def test_terminal_resume_makes_no_calls_or_selection_changes(tmp_path: Path) -> 
     assert store.layout.selected_text_path("description", TextFormat.markdown).read_text() == "manual\n"
 
 
+def _first_round_provenance(sidecar: str) -> list[ProvenanceRef]:
+    if sidecar == "legacy":
+        return []
+    return [ProvenanceRef(kind="run", ref="r1", metadata={} if sidecar == "nested_legacy" else {"attempt": 1})]
+
+
 def _damage_review_sidecar(path: Path, sidecar: str) -> None:
     if sidecar == "missing":
         path.unlink()
@@ -229,13 +235,21 @@ def _damage_review_sidecar(path: Path, sidecar: str) -> None:
         for _ in range(300):
             nested = [nested]
         raw["provenance"][0]["metadata"]["attempt"] = nested
+    elif sidecar == "nested_legacy":
+        # Older files omit nested defaults such as provenance metadata.
+        del raw["provenance"][0]["metadata"]
+    elif sidecar == "offset":
+        # The same instant spelled with another offset is the same saved value.
+        assert raw["created_at"].endswith("Z")
+        raw["created_at"] = raw["created_at"].removesuffix("Z") + "+00:00"
     else:
         del raw["reviewer"], raw["provenance"]
     path.write_text(json.dumps(raw))
 
 
 @pytest.mark.parametrize(
-    "sidecar", ["changed", "retyped", "coerced_iteration", "deep", "missing", "invalid", "legacy"]
+    "sidecar",
+    ["changed", "retyped", "coerced_iteration", "deep", "nested_legacy", "offset", "missing", "invalid", "legacy"],
 )
 def test_resume_checks_every_committed_review_sidecar(tmp_path: Path, sidecar: str) -> None:
     store = _init_workspace(tmp_path)
@@ -254,9 +268,7 @@ def test_resume_checks_every_committed_review_sidecar(tmp_path: Path, sidecar: s
                 iteration=1,
                 reviewer=first_reviewer,
                 verdict=ReviewVerdict.changes_requested,
-                provenance=[]
-                if sidecar == "legacy"
-                else [ProvenanceRef(kind="run", ref="r1", metadata={"attempt": 1})],
+                provenance=_first_round_provenance(sidecar),
             )
         return ReviewIteration(iteration=2, reviewer="final_reviewer", verdict=ReviewVerdict.ok)
 
@@ -275,7 +287,7 @@ def test_resume_checks_every_committed_review_sidecar(tmp_path: Path, sidecar: s
             workspace=tmp_path, asset_id="description", max_iterations=3, creator=no_creator, reviewer=no_reviewer
         )
 
-    if sidecar == "legacy":
+    if sidecar in ("legacy", "nested_legacy", "offset"):
         assert resume() == original
     else:
         with pytest.raises(

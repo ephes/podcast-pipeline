@@ -352,13 +352,24 @@ def _matches_checkpoint(saved: ReviewIteration, document: Any, expected: ReviewI
     dumped = saved.model_dump(mode="json")
     if _canonical_json(dumped) != _canonical_json(expected.model_dump(mode="json")):
         return False
-    # Validation coerces some values (``"iteration": true`` becomes ``1``). Every field the file
-    # does state must already be in canonical form; omitted fields keep their legacy defaults.
-    if not isinstance(document, dict):
-        return False
-    return all(
-        key in dumped and _canonical_json(value) == _canonical_json(dumped[key]) for key, value in document.items()
-    )
+    # Validation coerces some values (``"iteration": true`` becomes ``1``), so every value the file
+    # states must already have its saved JSON type. Omitted fields keep their legacy defaults, and
+    # equal values may be spelled differently (a ``-00:00`` offset is saved again as ``Z``).
+    return _same_json_types(document, dumped)
+
+
+def _same_json_types(stated: Any, saved: Any) -> bool:
+    if isinstance(stated, dict):
+        return isinstance(saved, dict) and all(
+            key in saved and _same_json_types(value, saved[key]) for key, value in stated.items()
+        )
+    if isinstance(stated, list):
+        return (
+            isinstance(saved, list)
+            and len(stated) == len(saved)
+            and all(_same_json_types(a, b) for a, b in zip(stated, saved, strict=True))
+        )
+    return type(stated) is type(saved)
 
 
 def _load_seed_candidates(layout: EpisodeWorkspaceLayout, asset_id: str) -> list[Candidate]:
