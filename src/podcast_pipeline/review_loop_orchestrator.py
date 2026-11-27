@@ -22,10 +22,11 @@ from podcast_pipeline.domain.models import (
     ReviewVerdict,
     TextFormat,
 )
-from podcast_pipeline.file_inputs import read_workspace_utf8
+from podcast_pipeline.file_inputs import read_regular_bytes, read_workspace_utf8
 from podcast_pipeline.pick_core import build_asset, clear_manual_selection_provenance
 from podcast_pipeline.protocol_schemas import parse_candidate_json
 from podcast_pipeline.review_loop_engine import (
+    MAX_PROTOCOL_STATE_BYTES,
     CreatorInput,
     CreatorOutput,
     LoopDecision,
@@ -268,7 +269,7 @@ def _run_review_loop(
     if existing is not None:
         if any(saved_by_id.get(it.candidate.candidate_id) != it.candidate for it in existing.iterations):
             raise LoopProtocolError("Invalid review protocol state; saved candidate evidence is missing or changed.")
-        _verify_saved_reviews(store, asset_id, existing)
+        _verify_saved_reviews(store, asset_id, existing, _saved_checkpoint_reviews(protocol_path, existing))
     if seed_candidate is None:
         seed_candidate = _select_seed_candidate(saved_candidates)
 
@@ -324,8 +325,22 @@ def _run_review_loop(
     return protocol_state, existing
 
 
-def _verify_saved_reviews(store: EpisodeWorkspaceStore, asset_id: str, state: LoopProtocolState) -> None:
-    for iteration in state.iterations:
+def _saved_checkpoint_reviews(protocol_path: Path, state: LoopProtocolState) -> list[Any]:
+    """Return each round's review exactly as the checkpoint file stores it, numbers kept as text."""
+    try:
+        body = read_regular_bytes(protocol_path, max_bytes=MAX_PROTOCOL_STATE_BYTES)
+        rounds = _lossless_json(body.decode("utf-8"))["iterations"]
+        if not isinstance(rounds, list) or len(rounds) != len(state.iterations):
+            raise ValueError("checkpoint rounds changed")
+        return [entry["reviewer"] for entry in rounds]
+    except (OSError, ValueError, TypeError, KeyError, RecursionError):
+        raise LoopProtocolError("Invalid review protocol state; restore or repair the saved evidence.") from None
+
+
+def _verify_saved_reviews(
+    store: EpisodeWorkspaceStore, asset_id: str, state: LoopProtocolState, saved_reviews: list[Any]
+) -> None:
+    for iteration, saved_review in zip(state.iterations, saved_reviews, strict=True):
         number = iteration.iteration
         reviewer = iteration.review.reviewer
         try:
@@ -337,7 +352,7 @@ def _verify_saved_reviews(store: EpisodeWorkspaceStore, asset_id: str, state: Lo
         message = f"Review at {path} is missing, invalid or changed; restore the matching file before retrying."
         try:
             saved, text = store.read_review_document(asset_id, number, reviewer=reviewer)
-            matches = _matches_checkpoint(saved, text, iteration.review)
+            matches = _matches_checkpoint(saved, text, iteration.review, saved_review)
         except (OSError, WorkspaceStoreError, ValueError, TypeError, RecursionError) as exc:
             raise LoopProtocolError(message) from exc
         if not matches:
@@ -364,13 +379,14 @@ def _reject_constant(_: str) -> Any:
     raise ValueError("nonfinite JSON number")
 
 
-def _matches_checkpoint(saved: ReviewIteration, text: str, expected: ReviewIteration) -> bool:
+def _matches_checkpoint(saved: ReviewIteration, text: str, expected: ReviewIteration, persisted: Any) -> bool:
     # Omitted fields of older files keep their defaults; the validated values must still agree.
     if _canonical_json(saved) != _canonical_json(expected):
         return False
     # Validation coerces and truncates (``"iteration": true`` becomes ``1``, a seventh fraction digit
-    # is dropped), so every value the file states must equal the saved checkpoint value token by token.
-    return _states_only_saved_values(_lossless_json(text), _lossless_json(_canonical_json(expected)))
+    # is dropped), so every value the file states must equal the value the checkpoint file stores,
+    # token by token. Compare with the stored text, not a reserialization, which may respell it.
+    return _states_only_saved_values(_lossless_json(text), persisted)
 
 
 def _states_only_saved_values(stated: Any, saved: Any) -> bool:

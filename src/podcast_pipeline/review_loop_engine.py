@@ -197,9 +197,12 @@ def _check_candidate_identity(candidate: Candidate, known: dict[object, Candidat
         raise LoopProtocolError("Review candidate identity cannot change; use a fresh candidate UUID.")
 
 
+MAX_PROTOCOL_STATE_BYTES = 8 * 1024 * 1024
+
+
 def load_loop_protocol_state(path: Path) -> LoopProtocolState:
     try:
-        body = read_regular_bytes(path, max_bytes=8 * 1024 * 1024)
+        body = read_regular_bytes(path, max_bytes=MAX_PROTOCOL_STATE_BYTES)
         return parse_loop_protocol_state(decode_review_json(body))
     except (OSError, ValueError, RecursionError):
         raise LoopProtocolError("Invalid review protocol state; restore or repair the saved evidence.") from None

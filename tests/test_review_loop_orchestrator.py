@@ -5,7 +5,7 @@ import os
 import select
 import subprocess
 import sys
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -210,6 +210,13 @@ def test_terminal_resume_makes_no_calls_or_selection_changes(tmp_path: Path) -> 
     assert store.layout.selected_text_path("description", TextFormat.markdown).read_text() == "manual\n"
 
 
+def _first_round_created_at(sidecar: str) -> datetime:
+    if sidecar == "sub_minute_offset":
+        # Saved as ``-00:00`` in both files and loaded again as ``Z``; untouched files must still resume.
+        return datetime(2026, 1, 1, 12, 0, 0, 123456, tzinfo=timezone(timedelta(seconds=-30)))
+    return datetime(2026, 1, 1, 12, 0, 0, 123456, tzinfo=UTC)
+
+
 def _first_round_provenance(sidecar: str) -> list[ProvenanceRef]:
     if sidecar == "legacy":
         return []
@@ -261,6 +268,9 @@ def _damage_review_sidecar(path: Path, sidecar: str) -> None:
         path.write_text('{"verdict":"ok",' + path.read_text()[1:])
         return
     raw = json.loads(path.read_text())
+    if sidecar == "sub_minute_offset":
+        assert raw["created_at"].endswith("-00:00")
+        return
     assert raw["created_at"] == "2026-01-01T12:00:00.123456Z"
     for keys, value in _SIDECAR_EDITS[sidecar]:
         if value is None:
@@ -292,6 +302,7 @@ def _damage_review_sidecar(path: Path, sidecar: str) -> None:
         "missing",
         "invalid",
         "legacy",
+        "sub_minute_offset",
     ],
 )
 def test_resume_checks_every_committed_review_sidecar(tmp_path: Path, sidecar: str) -> None:
@@ -311,7 +322,7 @@ def test_resume_checks_every_committed_review_sidecar(tmp_path: Path, sidecar: s
                 iteration=1,
                 reviewer=first_reviewer,
                 verdict=ReviewVerdict.changes_requested,
-                created_at=datetime(2026, 1, 1, 12, 0, 0, 123456, tzinfo=UTC),
+                created_at=_first_round_created_at(sidecar),
                 provenance=_first_round_provenance(sidecar),
             )
         return ReviewIteration(iteration=2, reviewer="final_reviewer", verdict=ReviewVerdict.ok)
@@ -331,7 +342,12 @@ def test_resume_checks_every_committed_review_sidecar(tmp_path: Path, sidecar: s
             workspace=tmp_path, asset_id="description", max_iterations=3, creator=no_creator, reviewer=no_reviewer
         )
 
-    if sidecar in ("legacy", "nested_legacy"):
+    if sidecar == "sub_minute_offset":
+        # Loading normalizes the offset, so compare what resume decided rather than the in-memory original.
+        resumed = resume()
+        assert resumed.decision == original.decision
+        assert [it.candidate for it in resumed.iterations] == [it.candidate for it in original.iterations]
+    elif sidecar in ("legacy", "nested_legacy"):
         assert resume() == original
     else:
         with pytest.raises(
