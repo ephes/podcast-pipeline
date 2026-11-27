@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import select
 import subprocess
@@ -17,7 +18,13 @@ from podcast_pipeline.domain.models import (
     ReviewVerdict,
     TextFormat,
 )
-from podcast_pipeline.review_loop_engine import CreatorOutput, LoopOutcome, LoopProtocolError, ReviewerInput
+from podcast_pipeline.review_loop_engine import (
+    CreatorOutput,
+    LoopOutcome,
+    LoopProtocolError,
+    LoopProtocolState,
+    ReviewerInput,
+)
 from podcast_pipeline.review_loop_orchestrator import run_review_loop_orchestrator
 from podcast_pipeline.workspace_store import EpisodeWorkspaceStore
 
@@ -196,6 +203,59 @@ def test_terminal_resume_makes_no_calls_or_selection_changes(tmp_path: Path) -> 
     assert len(creator.calls) == len(reviewer.calls) == 1
     assert store.layout.state_json.read_bytes() == state_before
     assert store.layout.selected_text_path("description", TextFormat.markdown).read_text() == "manual\n"
+
+
+@pytest.mark.parametrize("sidecar", ["changed", "missing", "invalid", "legacy"])
+def test_resume_checks_every_committed_review_sidecar(tmp_path: Path, sidecar: str) -> None:
+    store = _init_workspace(tmp_path)
+    creator = FakeCreatorRunner(
+        layout=store.layout,
+        replies=[
+            {"done": False, "candidate": {"content": "first"}},
+            {"done": True, "candidate": {"content": "final"}},
+        ],
+    )
+    first_reviewer = None if sidecar == "legacy" else "first_reviewer"
+
+    def reviewer(inp: ReviewerInput) -> ReviewIteration:
+        if inp.iteration == 1:
+            return ReviewIteration(iteration=1, reviewer=first_reviewer, verdict=ReviewVerdict.changes_requested)
+        return ReviewIteration(iteration=2, reviewer="final_reviewer", verdict=ReviewVerdict.ok)
+
+    original = run_review_loop_orchestrator(
+        workspace=tmp_path, asset_id="description", max_iterations=3, creator=creator, reviewer=reviewer
+    )
+    path = store.layout.review_iteration_json_path("description", 1, reviewer=first_reviewer)
+    if sidecar == "missing":
+        path.unlink()
+    elif sidecar == "invalid":
+        path.write_text('{"verdict":"ok",' + path.read_text()[1:])
+    else:
+        raw = json.loads(path.read_text())
+        if sidecar == "changed":
+            raw["verdict"] = ReviewVerdict.needs_human.value
+        else:
+            del raw["reviewer"], raw["provenance"]
+        path.write_text(json.dumps(raw))
+    before = {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
+
+    no_creator = FakeCreatorRunner(layout=store.layout, replies=[])
+    no_reviewer = FakeReviewerRunner(layout=store.layout, reviewer="unused", replies=[])
+
+    def resume() -> LoopProtocolState:
+        return run_review_loop_orchestrator(
+            workspace=tmp_path, asset_id="description", max_iterations=3, creator=no_creator, reviewer=no_reviewer
+        )
+
+    if sidecar == "legacy":
+        assert resume() == original
+    else:
+        with pytest.raises(
+            LoopProtocolError, match=r"copy/reviews/description/iteration_01\.first_reviewer\.json.*restore"
+        ):
+            resume()
+    assert not no_creator.calls and not no_reviewer.calls
+    assert {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()} == before
 
 
 def test_review_ownership_is_per_asset_across_processes(tmp_path: Path) -> None:

@@ -74,6 +74,10 @@ Notes:
   Review stops before calling either agent or changing the checkpoint or selection.
 - Each completed candidate/review is checkpointed before the next agent call. After an agent
   failure, fix the cause and repeat the command. Invalid protocol state stops before agent calls.
+  On resume, every completed round must match its numbered review in `copy/reviews/<asset_id>/`.
+  Older reviews without a reviewer label use `iteration_XX.json`. Review stops before calling agents
+  or changing the checkpoint or selection if a numbered review is missing, invalid or changed.
+  Restore the matching file from backup or archive the run before starting fresh.
   Protocol JSON accepts only finite numbers, including in candidate and review provenance metadata.
   Nonfinite numbers in a new candidate or review stop publication of that round's checkpoint.
 - For an intentional fresh run, archive `copy/protocol/<asset_id>/` and

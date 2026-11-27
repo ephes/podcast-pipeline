@@ -76,7 +76,11 @@ The orchestrator publishes this resume marker after the round's supporting artif
 passes it back to the engine on retry. Unknown envelope fields and malformed models are refused;
 no incomplete creator-only round is advertised. Persisted candidates and reviews must include all
 model fields; resume never invents missing UUIDs or timestamps. Candidate artifacts must still match
-the checkpoint records. Keep the original maximum when resuming.
+the checkpoint records. Each committed review must match the corresponding
+`copy/reviews/<asset_id>/iteration_XX.<reviewer>.json` (or `iteration_XX.json` for an unnamed reviewer).
+The reader accepts legacy optional provenance and unnamed reviews when the resulting record matches
+the embedded review. Numbered reviews must be regular workspace UTF-8 files without symlink components,
+up to 8 MiB, without duplicate JSON members or nonfinite numbers. Keep the original maximum when resuming.
 
 Candidate UUIDs bind the complete candidate record (asset, format, content, timestamp and provenance).
 Review creators must return a fresh UUID for any changed record. Reusing an identical candidate is allowed;

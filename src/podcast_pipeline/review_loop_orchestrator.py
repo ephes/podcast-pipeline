@@ -36,7 +36,12 @@ from podcast_pipeline.review_loop_engine import (
     load_loop_protocol_state,
     run_review_loop_engine,
 )
-from podcast_pipeline.workspace_store import EpisodeWorkspaceLayout, EpisodeWorkspaceStore, atomic_write_text
+from podcast_pipeline.workspace_store import (
+    EpisodeWorkspaceLayout,
+    EpisodeWorkspaceStore,
+    WorkspaceStoreError,
+    atomic_write_text,
+)
 
 MAX_CANDIDATE_EVIDENCE_FILE_BYTES = MAX_JSON_BYTES
 MAX_CANDIDATE_EVIDENCE_TOTAL_BYTES = 64 * 1024 * 1024
@@ -216,10 +221,10 @@ def _run_review_loop(
             f"Invalid saved review candidate evidence; repair or archive copy/candidates/{asset_id}/."
         ) from exc
     saved_by_id = {candidate.candidate_id: candidate for candidate in saved_candidates}
-    if existing is not None and any(
-        saved_by_id.get(it.candidate.candidate_id) != it.candidate for it in existing.iterations
-    ):
-        raise LoopProtocolError("Invalid review protocol state; saved candidate evidence is missing or changed.")
+    if existing is not None:
+        if any(saved_by_id.get(it.candidate.candidate_id) != it.candidate for it in existing.iterations):
+            raise LoopProtocolError("Invalid review protocol state; saved candidate evidence is missing or changed.")
+        _verify_saved_reviews(store, asset_id, existing)
     if seed_candidate is None:
         seed_candidate = _select_seed_candidate(saved_candidates)
 
@@ -273,6 +278,25 @@ def _run_review_loop(
     )
 
     return protocol_state
+
+
+def _verify_saved_reviews(store: EpisodeWorkspaceStore, asset_id: str, state: LoopProtocolState) -> None:
+    for iteration in state.iterations:
+        number = iteration.iteration
+        reviewer = iteration.review.reviewer
+        try:
+            path = store.layout.review_iteration_json_path(asset_id, number, reviewer=reviewer)
+        except ValueError as exc:
+            raise LoopProtocolError(
+                f"Invalid review protocol state; repair the reviewer identity for round {number}."
+            ) from exc
+        message = f"Review at {path} is missing, invalid or changed; restore the matching file before retrying."
+        try:
+            saved = store.read_review(asset_id, number, reviewer=reviewer)
+        except (OSError, WorkspaceStoreError) as exc:
+            raise LoopProtocolError(message) from exc
+        if saved != iteration.review:
+            raise LoopProtocolError(message)
 
 
 def _load_seed_candidates(layout: EpisodeWorkspaceLayout, asset_id: str) -> list[Candidate]:

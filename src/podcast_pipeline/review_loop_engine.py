@@ -6,14 +6,16 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, StrictBool, StrictInt, field_validator
 from pydantic_core import to_jsonable_python
 
 from podcast_pipeline.domain.models import Candidate, ReviewIteration, ReviewVerdict
 from podcast_pipeline.file_inputs import read_regular_bytes
-from podcast_pipeline.workspace_store import EpisodeWorkspaceLayout
+
+if TYPE_CHECKING:
+    from podcast_pipeline.workspace_store import EpisodeWorkspaceLayout
 
 
 class LoopOutcome(StrEnum):
@@ -198,16 +200,19 @@ def _check_candidate_identity(candidate: Candidate, known: dict[object, Candidat
 def load_loop_protocol_state(path: Path) -> LoopProtocolState:
     try:
         body = read_regular_bytes(path, max_bytes=8 * 1024 * 1024)
-        return parse_loop_protocol_state(
-            json.loads(
-                body,
-                object_pairs_hook=unique_json_members,
-                parse_constant=_reject_nonfinite_constant,
-                parse_float=_parse_finite_float,
-            )
-        )
+        return parse_loop_protocol_state(decode_review_json(body))
     except (OSError, ValueError, RecursionError):
         raise LoopProtocolError("Invalid review protocol state; restore or repair the saved evidence.") from None
+
+
+def decode_review_json(body: str | bytes) -> Any:
+    """Decode checkpoint and sidecar JSON with the same rules."""
+    return json.loads(
+        body,
+        object_pairs_hook=unique_json_members,
+        parse_constant=_reject_nonfinite_constant,
+        parse_float=_parse_finite_float,
+    )
 
 
 def _reject_nonfinite_constant(_: str) -> float:
